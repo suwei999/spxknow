@@ -1,0 +1,57 @@
+// 颜色变量 - 科技感配色
+$primary-color: #409eff;
+$primary-light: #66b1ff;
+$primary-dark: #2b5aa0;
+$success-color: #67c23a;
+$warning-color: #e6a23c;
+$danger-color: #f56c6c;
+$info-color: #909399;
+
+// 背景色
+$bg-dark: #0a0a0a;
+$bg-dark-1: #1a1a1e;
+$bg-dark-2: #2a2a2e;
+$bg-glass: rgba(255, 255, 255, 0.05);
+$bg-glass-light: rgba(255, 255, 255, 0.08);
+
+// 边框色
+$border-color: rgba(255, 255, 255, 0.1);
+$border-color-light: rgba(255, 255, 255, 0.2);
+
+// 渐变
+$gradient-primary: linear-gradient(135deg, #409eff 0%, #67c23a 100%);
+$gradient-dark: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #16213e 100%);
+
+// 尺寸
+$header-height: 60px;
+$sidebar-width: 240px;
+$sidebar-collapsed-width: 64px;
+
+// 字体
+$font-size-small: 13px;
+$font-size-base: 15px;
+$font-size-large: 17px;
+$font-size-extra-large: 20px;
+$font-size-huge: 22px;
+
+// 间距
+$spacing-xs: 4px;
+$spacing-sm: 8px;
+$spacing-md: 16px;
+$spacing-lg: 24px;
+$spacing-xl: 32px;
+$spacing-xxl: 40px;
+
+// 圆角
+$border-radius-sm: 4px;
+$border-radius-md: 8px;
+$border-radius-lg: 12px;
+$border-radius-xl: 16px;
+$border-radius-round: 50px;
+
+// 阴影
+$shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.1);
+$shadow-md: 0 4px 16px rgba(0, 0, 0, 0.15);
+$shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.2);
+$shadow-glow: 0 0 20px rgba(64, 158, 255, 0.3);
+

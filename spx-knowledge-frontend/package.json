@@ -1,0 +1,47 @@
+{
+  "name": "spx-knowledge-frontend",
+  "version": "1.0.0",
+  "description": "SPX Knowledge Base Frontend",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore",
+    "test": "vitest",
+    "test:unit": "vitest run --dir tests/unit",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "vue": "^3.4.21",
+    "vue-router": "^4.4.0",
+    "pinia": "^2.1.7",
+    "axios": "^1.6.7",
+    "element-plus": "^2.6.3",
+    "@element-plus/icons-vue": "^2.3.1",
+    "echarts": "^5.5.1",
+    "vue-echarts": "^6.7.1",
+    "@vueup/vue-quill": "^1.2.0",
+    "@vueuse/core": "^10.9.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "vite": "^5.4.11",
+    "typescript": "^5.4.5",
+    "vue-tsc": "^2.0.6",
+    "@types/node": "^20.14.12",
+    "sass": "^1.77.8",
+    "autoprefixer": "^10.4.19",
+    "tailwindcss": "^3.4.6",
+    "postcss": "^8.4.41",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "eslint-plugin-vue": "^9.27.0",
+    "vitest": "^2.0.5",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^24.1.0",
+    "@playwright/test": "^1.47.0"
+  }
+}
+

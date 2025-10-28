@@ -1,0 +1,31 @@
+RAGDOCS/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.env
+.env.*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Builds
+build/
+dist/
+*.log
+
+# Node
+node_modules/
+
+# Cache
+.cache/
+*.sqlite3

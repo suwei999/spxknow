@@ -16,7 +16,8 @@ class DocumentImage(BaseModel):
     width = Column(Integer, comment="图片宽度")
     height = Column(Integer, comment="图片高度")
     ocr_text = Column(Text, comment="OCR识别文本")
-    metadata = Column(Text, comment="元数据JSON")
+    # SQLAlchemy 保留名冲突：列名 metadata、属性名 meta
+    meta = Column('metadata', Text, comment="元数据JSON")
     status = Column(String(50), default="pending", comment="处理状态")
     error_message = Column(Text, comment="错误信息")
     

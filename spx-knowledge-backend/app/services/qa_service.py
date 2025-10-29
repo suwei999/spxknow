@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core.logging import logger
-from app.core.config import settings
+from app.config.settings import settings
 from app.models.qa_session import QASession
 from app.models.qa_question import QAQuestion, QAStatistics
 from app.services.opensearch_service import OpenSearchService

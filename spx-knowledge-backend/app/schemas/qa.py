@@ -4,7 +4,7 @@ QA Schemas
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Tuple
 from datetime import datetime
 from enum import Enum
 

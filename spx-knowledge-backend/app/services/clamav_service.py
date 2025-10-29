@@ -3,6 +3,10 @@ ClamAV Service
 反病毒扫描服务 - 根据设计文档实现
 """
 
+import warnings
+# 抑制 clamd 的 pkg_resources 弃用警告
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+
 import clamd
 import subprocess
 import platform

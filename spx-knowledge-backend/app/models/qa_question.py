@@ -6,7 +6,7 @@ QA Question Model
 from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Float, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-from app.db.base_class import BaseModel
+from app.models.base import BaseModel
 
 
 class QAQuestion(BaseModel):

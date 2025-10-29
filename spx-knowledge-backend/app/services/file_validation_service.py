@@ -5,7 +5,7 @@ File Validation Service
 
 import hashlib
 import os
-import magic
+import filetype
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from fastapi import UploadFile
@@ -36,7 +36,6 @@ class FileValidationService:
     MAX_FILE_SIZE = settings.MAX_FILE_SIZE
     
     def __init__(self):
-        self.magic = magic.Magic(mime=True)
         self.clamav = ClamAVService()  # 初始化ClamAV服务
     
     def validate_file_format(self, file: UploadFile) -> Dict[str, Any]:
@@ -60,7 +59,9 @@ class FileValidationService:
             file_content = file.file.read(settings.FILE_HEADER_READ_SIZE)  # 读取前N字节
             file.file.seek(0)  # 重置文件指针
             
-            detected_mime = self.magic.from_buffer(file_content)
+            # 使用 filetype 检测真实文件类型
+            kind = filetype.guess(file_content)
+            detected_mime = kind.mime if kind else file.content_type
             logger.debug(f"检测到的MIME类型: {detected_mime}")
             
             if detected_mime not in self.SUPPORTED_FORMATS:

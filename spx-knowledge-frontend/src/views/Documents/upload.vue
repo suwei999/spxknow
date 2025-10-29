@@ -124,7 +124,8 @@ const loadKnowledgeBases = async () => {
   loading.value = true
   try {
     const res = await getKnowledgeBases({ page: 1, size: 100 })
-    knowledgeBases.value = res.data.items
+    const data = res?.data ?? {}
+    knowledgeBases.value = data.list ?? data.items ?? []
   } catch (error) {
     ElMessage.error('加载知识库列表失败')
   } finally {

@@ -30,17 +30,20 @@
             <el-tag>{{ row.document_count || 0 }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="100">
+        <el-table-column prop="is_active" label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === 'active' ? 'success' : 'info'">
-              {{ row.status === 'active' ? '启用' : '禁用' }}
+            <el-tag :type="row.is_active ? 'success' : 'info'">
+              {{ row.is_active ? '启用' : '禁用' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200">
+        <el-table-column label="操作" width="260">
           <template #default="{ row }">
-            <el-button size="small" @click="handleEdit(row)">编辑</el-button>
-            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+            <div class="actions">
+              <el-button size="small" @click="handleDetail(row)">详情</el-button>
+              <el-button size="small" @click="handleEdit(row)">编辑</el-button>
+              <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -74,8 +77,10 @@ const loadData = async () => {
   loading.value = true
   try {
     const res = await getKnowledgeBases({ page: page.value, size: size.value })
-    knowledgeBases.value = res.data.items
-    total.value = res.data.total
+    // 后端统一为 {code, message, data: { list, total, page, size }}，兼容旧字段 items
+    const data = res.data || {}
+    knowledgeBases.value = data.list ?? data.items ?? []
+    total.value = data.total ?? 0
   } catch (error) {
     ElMessage.error('加载失败')
   } finally {
@@ -85,6 +90,10 @@ const loadData = async () => {
 
 const handleCreate = () => {
   router.push('/knowledge-bases/create')
+}
+
+const handleDetail = (row: KnowledgeBase) => {
+  router.push(`/knowledge-bases/${row.id}`)
 }
 
 const handleEdit = (row: KnowledgeBase) => {
@@ -125,6 +134,18 @@ onMounted(() => {
   .no-category {
     color: #909399;
     font-size: 12px;
+  }
+
+  .actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
+  /* 调低表格行悬停高亮，避免过亮导致文字不清晰 */
+  :deep(.el-table) {
+    --el-table-row-hover-bg-color: rgba(180, 180, 180, 0.16);
   }
 }
 </style>

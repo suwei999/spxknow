@@ -15,29 +15,33 @@ router = APIRouter()
 
 @router.get("/categories")
 async def get_categories(
-    skip: int = 0,
-    limit: int = 100,
+    page: int = 1,
+    size: int = 20,
     parent_id: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
     """获取分类树 - 根据设计文档实现"""
     try:
-        logger.info(f"API请求: 获取分类树，跳过: {skip}, 限制: {limit}, 父级ID: {parent_id}")
+        logger.info(f"API请求: 获取分类树，page: {page}, size: {size}, 父级ID: {parent_id}")
         
         service = KnowledgeBaseCategoryService(db)
         categories = service.get_category_tree(parent_id)
         
         # 应用分页
-        start_idx = skip
-        end_idx = skip + limit
+        start_idx = max(page - 1, 0) * max(size, 1)
+        end_idx = start_idx + size
         paginated_categories = categories[start_idx:end_idx]
         
         logger.info(f"API响应: 返回 {len(paginated_categories)} 个分类")
         return {
-            "categories": paginated_categories,
-            "total": len(categories),
-            "skip": skip,
-            "limit": limit
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "list": paginated_categories,
+                "total": len(categories),
+                "page": page,
+                "size": size
+            }
         }
         
     except CustomException as e:

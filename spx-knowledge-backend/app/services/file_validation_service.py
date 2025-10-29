@@ -64,6 +64,14 @@ class FileValidationService:
             detected_mime = kind.mime if kind else file.content_type
             logger.debug(f"检测到的MIME类型: {detected_mime}")
             
+            # 兼容 OOXML 容器：docx/xlsx/pptx 实际魔数常识别为 application/zip
+            if detected_mime == 'application/zip' and file.content_type in (
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ):
+                detected_mime = file.content_type
+            
             if detected_mime not in self.SUPPORTED_FORMATS:
                 logger.error(f"文件头魔数验证失败: {detected_mime}")
                 raise CustomException(

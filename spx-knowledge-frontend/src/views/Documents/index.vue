@@ -17,6 +17,7 @@
             {{ formatFileSize(row.file_size) }}
           </template>
         </el-table-column>
+        <el-table-column prop="knowledge_base_name" label="所属知识库" />
         <el-table-column prop="status" label="状态" width="150">
           <template #default="{ row }">
             <div class="status-cell">
@@ -73,8 +74,9 @@ const loadData = async () => {
   loading.value = true
   try {
     const res = await getDocuments({ page: page.value, size: size.value })
-    documents.value = res.data.items
-    total.value = res.data.total
+    const data = res?.data ?? {}
+    documents.value = data.list ?? data.items ?? []
+    total.value = data.total ?? 0
   } catch (error) {
     ElMessage.error('加载失败')
   } finally {
@@ -177,6 +179,11 @@ onUnmounted(() => {
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
+  }
+
+  /* 降低表格 hover 亮度，提升可读性 */
+  :deep(.el-table) {
+    --el-table-row-hover-bg-color: rgba(180, 180, 180, 0.16);
   }
 }
 </style>

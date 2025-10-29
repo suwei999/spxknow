@@ -11,7 +11,7 @@ from app.core.logging import logger
 
 router = APIRouter()
 
-@router.websocket("/ws/{user_id}")
+@router.websocket("/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     """WebSocket连接端点 - 根据设计文档实现"""
     try:
@@ -39,6 +39,26 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             
     except Exception as e:
         logger.error(f"WebSocket端点错误: {e}", exc_info=True)
+
+
+# 文档状态推送：无需鉴权，解决前端 /ws/documents/status 403 问题
+@router.websocket("/documents/status")
+async def documents_status_socket(websocket: WebSocket):
+    try:
+        await websocket.accept()
+        logger.info("WebSocket连接: 文档状态推送")
+        # 初次连接发送JSON欢迎包，避免前端解析错误
+        await websocket.send_json({"type": "connected", "message": "ok"})
+        # 简单心跳/占位实现，前端可仅用于建立可用连接
+        while True:
+            try:
+                data = await websocket.receive_text()
+                # 统一返回JSON，前端按JSON解析
+                await websocket.send_json({"type": "pong", "echo": data})
+            except WebSocketDisconnect:
+                break
+    except Exception as e:
+        logger.error(f"文档状态WebSocket错误: {e}", exc_info=True)
 
 async def handle_client_message(websocket: WebSocket, user_id: str, message: dict):
     """处理客户端消息 - 根据设计文档实现"""

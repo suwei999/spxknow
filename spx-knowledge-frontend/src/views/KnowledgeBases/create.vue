@@ -5,7 +5,7 @@
         <span>创建知识库</span>
       </template>
 
-      <el-form :model="form" label-width="120px">
+      <el-form :model="form" :rules="rules" ref="formRef" label-width="120px">
         <el-form-item label="知识库名称" required>
           <el-input v-model="form.name" placeholder="请输入知识库名称" />
         </el-form-item>
@@ -14,13 +14,21 @@
           <el-input v-model="form.description" type="textarea" :rows="4" placeholder="请输入描述" />
         </el-form-item>
 
-        <el-form-item label="分类">
-          <el-select v-model="form.category_id" placeholder="请选择分类">
+        <el-form-item label="分类" prop="categoryValue">
+          <el-select
+            v-model="form.categoryValue"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            :loading="loadingCategories"
+            placeholder="选择或输入分类"
+          >
             <el-option
-              v-for="category in categories"
-              :key="category.id"
-              :label="category.name"
-              :value="category.id"
+              v-for="opt in categoryOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
             />
           </el-select>
         </el-form-item>
@@ -42,32 +50,53 @@ import { createKnowledgeBase, getCategories } from '@/api/modules/knowledge-base
 
 const router = useRouter()
 const saving = ref(false)
-const categories = ref<any[]>([])
+const loadingCategories = ref(false)
+const categoryOptions = ref<{ label: string; value: number }[]>([])
 
 const form = ref({
   name: '',
   description: '',
-  category_id: undefined as number | undefined
+  // 可能为 number(已有分类 id) 或 string(新输入分类名)
+  categoryValue: '' as number | string | ''
 })
+
+const formRef = ref()
+const rules = {
+  name: [{ required: true, message: '请输入知识库名称', trigger: 'blur' }],
+  categoryValue: [{ validator: (_: any, v: any, cb: any) => {
+    if (typeof v === 'number') return cb()
+    if (typeof v === 'string' && v.trim()) return cb()
+    cb(new Error('请选择或输入分类'))
+  }, trigger: 'change' }]
+} as any
 
 const loadCategories = async () => {
   try {
+    loadingCategories.value = true
     const res = await getCategories()
-    categories.value = res.data
+    const list = res?.data?.list ?? res?.data ?? []
+    categoryOptions.value = list.map((c: any) => ({ label: c.name, value: c.id }))
   } catch (error) {
     ElMessage.error('加载分类列表失败')
+  } finally {
+    loadingCategories.value = false
   }
 }
 
 const handleSubmit = async () => {
-  if (!form.value.name) {
-    ElMessage.warning('请输入知识库名称')
-    return
-  }
-
+  const valid = await formRef.value?.validate().catch(() => false)
+  if (!valid) return
   saving.value = true
   try {
-    await createKnowledgeBase(form.value)
+    const payload: any = {
+      name: form.value.name,
+      description: form.value.description
+    }
+    const cv = form.value.categoryValue
+    if (typeof cv === 'number') payload.category_id = cv
+    else if (typeof cv === 'string' && cv.trim()) payload.category_name = cv.trim()
+
+    await createKnowledgeBase(payload)
     ElMessage.success('创建成功')
     router.push('/knowledge-bases')
   } catch (error) {

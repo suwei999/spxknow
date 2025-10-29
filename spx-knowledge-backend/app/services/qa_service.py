@@ -55,7 +55,10 @@ class QAService:
             
             if category_id:
                 query = query.filter(KnowledgeBase.category_id == category_id)
-            query = query.filter(KnowledgeBase.status == status)
+            # 使用布尔字段 is_active 映射到状态
+            if status in ("active", "inactive"):
+                is_active_flag = True if status == "active" else False
+                query = query.filter(KnowledgeBase.is_active == is_active_flag)
             
             db_kbs = query.offset((page - 1) * size).limit(size).all()
             
@@ -69,7 +72,8 @@ class QAService:
                     "document_count": 0,  # TODO: 统计文档数量
                     "storage_size": 0,  # TODO: 统计存储大小
                     "tags": [],  # TODO: 获取标签
-                    "status": kb.status,
+                    "status": "active" if getattr(kb, 'is_active', False) else "inactive",
+                    "is_active": bool(getattr(kb, 'is_active', False)),
                     "created_at": kb.created_at
                 }
                 for kb in db_kbs

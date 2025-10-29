@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS `knowledge_base_categories` (
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_parent_id` (`parent_id`),
-    INDEX `idx_is_active` (`is_active`),
+    INDEX `idx_category_parent_id` (`parent_id`),
+    INDEX `idx_category_is_active` (`is_active`),
     CONSTRAINT `fk_category_parent` FOREIGN KEY (`parent_id`) REFERENCES `knowledge_base_categories` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库分类表';
 
@@ -40,8 +40,9 @@ CREATE TABLE IF NOT EXISTS `knowledge_bases` (
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_category_id` (`category_id`),
-    INDEX `idx_is_active` (`is_active`),
+    UNIQUE KEY `uk_kb_name` (`name`),
+    INDEX `idx_kb_category_id` (`category_id`),
+    INDEX `idx_kb_is_active` (`is_active`),
     CONSTRAINT `fk_kb_category` FOREIGN KEY (`category_id`) REFERENCES `knowledge_base_categories` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库表';
 
@@ -69,10 +70,10 @@ CREATE TABLE IF NOT EXISTS `documents` (
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_knowledge_base_id` (`knowledge_base_id`),
-    INDEX `idx_category_id` (`category_id`),
-    INDEX `idx_status` (`status`),
-    INDEX `idx_file_hash` (`file_hash`),
+    INDEX `idx_doc_knowledge_base_id` (`knowledge_base_id`),
+    INDEX `idx_doc_category_id` (`category_id`),
+    INDEX `idx_doc_status` (`status`),
+    INDEX `idx_doc_file_hash` (`file_hash`),
     CONSTRAINT `fk_doc_kb` FOREIGN KEY (`knowledge_base_id`) REFERENCES `knowledge_bases` (`id`) ON DELETE RESTRICT,
     CONSTRAINT `fk_doc_category` FOREIGN KEY (`category_id`) REFERENCES `knowledge_base_categories` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档表';
@@ -95,7 +96,7 @@ CREATE TABLE IF NOT EXISTS `document_chunks` (
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_document_id` (`document_id`),
+    INDEX `idx_chunk_document_id` (`document_id`),
     INDEX `idx_chunk_index` (`document_id`, `chunk_index`),
     CONSTRAINT `fk_chunk_doc` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档分块表';
@@ -106,22 +107,18 @@ CREATE TABLE IF NOT EXISTS `document_chunks` (
 CREATE TABLE IF NOT EXISTS `chunk_versions` (
     `id` INT NOT NULL AUTO_INCREMENT COMMENT '版本ID',
     `chunk_id` INT NOT NULL COMMENT '分块ID',
-    `document_id` INT NOT NULL COMMENT '文档ID',
     `version_number` INT NOT NULL COMMENT '版本号',
-    `content` TEXT NOT NULL COMMENT '内容',
-    `content_hash` VARCHAR(64) COMMENT '内容哈希',
-    `modification_reason` TEXT COMMENT '修改原因',
-    `modification_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '修改时间',
-    `created_by` VARCHAR(100) COMMENT '创建者',
+    `content` TEXT NOT NULL COMMENT '版本内容',
+    `metadata` TEXT COMMENT '版本元数据JSON',
+    `modified_by` VARCHAR(100) COMMENT '修改者',
+    `version_comment` TEXT COMMENT '版本注释',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_chunk_id` (`chunk_id`),
-    INDEX `idx_document_id` (`document_id`),
-    INDEX `idx_version` (`chunk_id`, `version_number`),
-    CONSTRAINT `fk_version_chunk` FOREIGN KEY (`chunk_id`) REFERENCES `document_chunks` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_version_doc` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+    INDEX `idx_chunk_ver_chunk_id` (`chunk_id`),
+    INDEX `idx_chunk_ver_version` (`chunk_id`, `version_number`),
+    CONSTRAINT `fk_version_chunk` FOREIGN KEY (`chunk_id`) REFERENCES `document_chunks` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='分块版本表';
 
 -- ============================================
@@ -140,9 +137,9 @@ CREATE TABLE IF NOT EXISTS `document_versions` (
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_document_id` (`document_id`),
-    INDEX `idx_version` (`document_id`, `version_number`),
-    CONSTRAINT `fk_version_doc` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+    INDEX `idx_doc_ver_document_id` (`document_id`),
+    INDEX `idx_doc_ver_version` (`document_id`, `version_number`),
+    CONSTRAINT `fk_doc_ver_doc` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档版本表';
 
 -- ============================================
@@ -151,22 +148,20 @@ CREATE TABLE IF NOT EXISTS `document_versions` (
 CREATE TABLE IF NOT EXISTS `document_images` (
     `id` INT NOT NULL AUTO_INCREMENT COMMENT '图片ID',
     `document_id` INT NOT NULL COMMENT '文档ID',
-    `image_path` VARCHAR(500) COMMENT '图片路径',
-    `image_url` VARCHAR(500) COMMENT '图片URL',
-    `file_name` VARCHAR(255) COMMENT '文件名',
-    `file_type` VARCHAR(50) COMMENT '文件类型',
-    `file_size` INT COMMENT '文件大小',
+    `image_path` VARCHAR(500) NOT NULL COMMENT '图片路径',
+    `image_type` VARCHAR(50) COMMENT '图片类型',
     `width` INT COMMENT '宽度',
     `height` INT COMMENT '高度',
-    `description` TEXT COMMENT '描述',
-    `extracted_from` VARCHAR(100) COMMENT '提取来源',
-    `position_in_document` INT COMMENT '在文档中的位置',
+    `ocr_text` TEXT COMMENT 'OCR识别文本',
+    `metadata` TEXT COMMENT '元数据JSON',
+    `status` VARCHAR(50) DEFAULT 'pending' COMMENT '处理状态',
+    `error_message` TEXT COMMENT '错误信息',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_document_id` (`document_id`),
-    INDEX `idx_extracted_from` (`extracted_from`),
+    INDEX `idx_image_document_id` (`document_id`),
+    INDEX `idx_image_status` (`status`),
     CONSTRAINT `fk_image_doc` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档图片表';
 
@@ -191,10 +186,10 @@ CREATE TABLE IF NOT EXISTS `qa_sessions` (
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_session_id` (`session_id`),
-    INDEX `idx_knowledge_base_id` (`knowledge_base_id`),
-    INDEX `idx_user_id` (`user_id`),
-    INDEX `idx_last_activity_time` (`last_activity_time`),
-    INDEX `idx_status` (`status`)
+    INDEX `idx_qa_session_kb_id` (`knowledge_base_id`),
+    INDEX `idx_qa_session_user_id` (`user_id`),
+    INDEX `idx_qa_session_activity_time` (`last_activity_time`),
+    INDEX `idx_qa_session_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='问答会话表';
 
 -- ============================================
@@ -219,8 +214,8 @@ CREATE TABLE IF NOT EXISTS `qa_questions` (
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_question_id` (`question_id`),
-    INDEX `idx_session_id` (`session_id`),
-    INDEX `idx_similarity_score` (`similarity_score`)
+    INDEX `idx_qa_question_session_id` (`session_id`),
+    INDEX `idx_qa_question_similarity` (`similarity_score`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='问答记录表';
 
 -- ============================================
@@ -241,8 +236,8 @@ CREATE TABLE IF NOT EXISTS `qa_statistics` (
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_knowledge_base_id` (`knowledge_base_id`),
-    INDEX `idx_date` (`date`)
+    INDEX `idx_qa_stats_kb_id` (`knowledge_base_id`),
+    INDEX `idx_qa_stats_date` (`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='问答统计表';
 
 -- ============================================
@@ -251,21 +246,19 @@ CREATE TABLE IF NOT EXISTS `qa_statistics` (
 CREATE TABLE IF NOT EXISTS `celery_tasks` (
     `id` INT NOT NULL AUTO_INCREMENT COMMENT '任务ID',
     `task_id` VARCHAR(100) NOT NULL UNIQUE COMMENT 'Celery任务ID',
-    `task_name` VARCHAR(100) COMMENT '任务名称',
-    `task_type` VARCHAR(50) COMMENT '任务类型',
-    `status` VARCHAR(50) COMMENT '状态',
-    `progress` FLOAT DEFAULT 0.0 COMMENT '进度',
-    `result` JSON COMMENT '结果JSON',
+    `task_name` VARCHAR(100) NOT NULL COMMENT '任务名称',
+    `status` VARCHAR(50) DEFAULT 'pending' COMMENT '任务状态',
+    `progress` FLOAT DEFAULT 0.0 COMMENT '任务进度',
+    `result` TEXT COMMENT '任务结果',
     `error_message` TEXT COMMENT '错误信息',
     `started_at` DATETIME COMMENT '开始时间',
-    `finished_at` DATETIME COMMENT '完成时间',
+    `completed_at` DATETIME COMMENT '完成时间',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_task_id` (`task_id`),
-    INDEX `idx_status` (`status`),
-    INDEX `idx_task_type` (`task_type`)
+    INDEX `idx_celery_task_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Celery任务表';
 
 -- ============================================
@@ -273,15 +266,16 @@ CREATE TABLE IF NOT EXISTS `celery_tasks` (
 -- ============================================
 CREATE TABLE IF NOT EXISTS `system_configs` (
     `id` INT NOT NULL AUTO_INCREMENT COMMENT '配置ID',
-    `config_key` VARCHAR(100) NOT NULL UNIQUE COMMENT '配置键',
-    `config_value` TEXT COMMENT '配置值',
-    `config_type` VARCHAR(50) COMMENT '配置类型',
-    `description` TEXT COMMENT '描述',
+    `key` VARCHAR(100) NOT NULL UNIQUE COMMENT '配置键',
+    `value` TEXT COMMENT '配置值',
+    `description` TEXT COMMENT '配置描述',
+    `config_type` VARCHAR(50) DEFAULT 'string' COMMENT '配置类型',
+    `is_active` BOOLEAN DEFAULT TRUE COMMENT '是否激活',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    UNIQUE KEY `uk_config_key` (`config_key`)
+    UNIQUE KEY `uk_config_key` (`key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='系统配置表';
 
 -- ============================================
@@ -289,21 +283,21 @@ CREATE TABLE IF NOT EXISTS `system_configs` (
 -- ============================================
 CREATE TABLE IF NOT EXISTS `operation_logs` (
     `id` INT NOT NULL AUTO_INCREMENT COMMENT '日志ID',
-    `user_id` VARCHAR(100) COMMENT '用户ID',
-    `operation_type` VARCHAR(50) COMMENT '操作类型',
-    `operation_target` VARCHAR(100) COMMENT '操作目标',
-    `target_id` INT COMMENT '目标ID',
-    `operation_detail` TEXT COMMENT '操作详情',
+    `operation_type` VARCHAR(50) NOT NULL COMMENT '操作类型',
+    `operation_description` TEXT COMMENT '操作描述',
+    `user_id` INT COMMENT '用户ID',
+    `resource_type` VARCHAR(50) COMMENT '资源类型',
+    `resource_id` INT COMMENT '资源ID',
     `ip_address` VARCHAR(50) COMMENT 'IP地址',
-    `user_agent` VARCHAR(500) COMMENT '用户代理',
+    `user_agent` TEXT COMMENT '用户代理',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    INDEX `idx_user_id` (`user_id`),
-    INDEX `idx_operation_type` (`operation_type`),
-    INDEX `idx_target` (`operation_target`, `target_id`),
-    INDEX `idx_created_at` (`created_at`)
+    INDEX `idx_op_log_user_id` (`user_id`),
+    INDEX `idx_op_log_type` (`operation_type`),
+    INDEX `idx_op_log_resource` (`resource_type`, `resource_id`),
+    INDEX `idx_op_log_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作日志表';
 
 -- ============================================

@@ -34,8 +34,7 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = ""
     REDIS_DB: int = 0
     
-    # OpenSearch配置（docker-compose 禁用安全插件，使用 http 无鉴权）
-    OPENSEARCH_HOST: str = "http://localhost:9200"
+    # OpenSearch配置（统一仅使用 OPENSEARCH_URL）
     OPENSEARCH_URL: str = "http://localhost:9200"
     OPENSEARCH_USERNAME: str = ""
     OPENSEARCH_PASSWORD: str = ""

@@ -28,7 +28,7 @@ class OpenSearchService:
             
             # 根据设计文档的OpenSearch配置
             client = OpenSearch(
-                hosts=[settings.OPENSEARCH_HOST],
+                hosts=[settings.OPENSEARCH_URL],
                 use_ssl=settings.OPENSEARCH_USE_SSL,
                 verify_certs=settings.OPENSEARCH_VERIFY_CERTS,
                 connection_class=RequestsHttpConnection,

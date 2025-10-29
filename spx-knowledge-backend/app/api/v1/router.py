@@ -4,6 +4,10 @@ API Router Configuration
 
 from fastapi import APIRouter
 from app.api.v1.routes import (
+    # 放在前面，避免与 /knowledge-bases/{kb_id} 路由冲突
+    knowledge_base_categories,
+    knowledge_base_tags,
+    # 其他模块
     knowledge_bases,
     documents,
     chunks,
@@ -13,8 +17,6 @@ from app.api.v1.routes import (
     versions,
     document_modification,
     image_vectorization,
-    knowledge_base_categories,
-    knowledge_base_tags,
     document_recommendation,
     document_status,
     websocket,
@@ -23,12 +25,6 @@ from app.api.v1.routes import (
 api_router = APIRouter()
 
 # 注册各个模块的路由
-api_router.include_router(
-    knowledge_bases.router,
-    prefix="/knowledge-bases",
-    tags=["知识库管理"]
-)
-
 api_router.include_router(
     documents.router,
     prefix="/documents",
@@ -87,6 +83,12 @@ api_router.include_router(
     knowledge_base_tags.router,
     prefix="/knowledge-bases",
     tags=["知识库标签"]
+)
+
+api_router.include_router(
+    knowledge_bases.router,
+    prefix="/knowledge-bases",
+    tags=["知识库管理"]
 )
 
 api_router.include_router(

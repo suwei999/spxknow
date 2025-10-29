@@ -51,8 +51,8 @@ class ClamAVService:
             # Ubuntu/Unix - Unix Socket
             return "/var/run/clamav/clamd.ctl"
         elif system == "Windows":
-            # Windows - Named Pipe
-            return r'\\.\pipe\clamd'
+            # Windows 不支持 AF_UNIX，优先使用 TCP 方式连接 clamd（默认 localhost:3310）
+            return None
         else:
             # macOS或其他系统，使用默认路径
             return None
@@ -200,7 +200,10 @@ class ClamAVService:
                 logger.warning("文件超过流式扫描限制，改用文件扫描")
                 return self._scan_large_file(file_data)
             
-            result = self.client.instream(file_data)
+            # clamd.instream 需要一个带 read() 的类文件对象
+            import io
+            buffer = io.BytesIO(file_data)
+            result = self.client.instream(buffer)
             
             # result格式: {'stream': ('OK', '')} 或 {'stream': ('FOUND', 'Trojan.Foo')}
             stream_status = result.get('stream')

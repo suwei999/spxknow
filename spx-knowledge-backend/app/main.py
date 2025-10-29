@@ -8,9 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.v1.router import api_router
+from app.api.v1.routes import websocket as ws_routes
 from app.core.exceptions import setup_exception_handlers
 from app.core.logging import logger
 from app.config.settings import settings
+from app.middleware.logging import logging_middleware
 
 
 @asynccontextmanager
@@ -25,7 +27,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"连接 MySQL: {settings.DATABASE_URL.replace(settings.MYSQL_PASSWORD, '***')}")
         from app.config.database import engine
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.exec_driver_sql("SELECT 1")
         logger.info("✅ MySQL 连接正常")
     except Exception as e:
         logger.error(f"❌ MySQL 连接失败: {e}")
@@ -86,8 +88,14 @@ app.add_middleware(
     allowed_hosts=settings.ALLOWED_HOSTS,
 )
 
+# 请求日志中间件（记录每个请求的开始、结束、状态码与耗时）
+app.middleware("http")(logging_middleware)
+
 # 注册API路由 - 按照设计文档要求使用 /api 前缀
 app.include_router(api_router, prefix="/api")
+
+# 兼容前端 WebSocket 直接连接 /ws/... 的路径（不走 /api 前缀）
+app.include_router(ws_routes.router, prefix="/ws")
 
 # 设置异常处理器
 setup_exception_handlers(app)
@@ -110,7 +118,7 @@ async def health_check():
     try:
         from app.config.database import engine
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.exec_driver_sql("SELECT 1")
         health_status["services"]["mysql"] = {"status": "healthy"}
     except Exception as e:
         health_status["status"] = "unhealthy"

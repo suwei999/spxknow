@@ -165,6 +165,21 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .document-detail-page {
+  /* 提升标签页可读性 */
+  :deep(.el-tabs__item) {
+    color: rgba(255, 255, 255, 0.75);
+    font-weight: 500;
+  }
+  :deep(.el-tabs__item.is-active) {
+    color: #ffffff;
+  }
+  :deep(.el-tabs__item:hover) {
+    color: #ffffff;
+  }
+  :deep(.el-tabs__active-bar) {
+    background-color: #409eff; /* 高亮下划线颜色 */
+  }
+
   .content-preview {
     padding: 20px;
     background: #f9f9f9;

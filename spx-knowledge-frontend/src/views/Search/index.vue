@@ -141,7 +141,8 @@ const handleItemClick = (item: any) => {
 ;(async () => {
   try {
     const res = await getKnowledgeBases({ page: 1, size: 100 })
-    knowledgeBases.value = res.data.items
+    const data = res?.data ?? {}
+    knowledgeBases.value = data.list ?? data.items ?? []
   } catch (error) {
     console.error('加载知识库列表失败')
   }

@@ -18,4 +18,3 @@ class KnowledgeBase(BaseModel):
     # 关系
     documents = relationship("Document", back_populates="knowledge_base")
     category = relationship("KnowledgeBaseCategory", back_populates="knowledge_bases")
-    qa_questions = relationship("QAQuestion", back_populates="knowledge_base")

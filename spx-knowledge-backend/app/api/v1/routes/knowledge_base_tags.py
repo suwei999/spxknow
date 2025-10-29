@@ -14,20 +14,31 @@ router = APIRouter()
 
 @router.get("/tags")
 async def get_tags(
-    skip: int = 0,
-    limit: int = 100,
+    page: int = 1,
+    size: int = 20,
     tag_type: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """获取标签列表 - 根据设计文档实现"""
     try:
-        logger.info(f"API请求: 获取标签列表，跳过: {skip}, 限制: {limit}, 类型: {tag_type}")
+        logger.info(f"API请求: 获取标签列表，page: {page}, size: {size}, 类型: {tag_type}")
         
         service = KnowledgeBaseTagService(db)
-        result = service.get_tags(tag_type=tag_type, skip=skip, limit=limit)
+        skip = max(page - 1, 0) * max(size, 1)
+        result = service.get_tags(tag_type=tag_type, skip=skip, limit=size)
         
+        total = result.get('total', len(result.get('tags', [])))
         logger.info(f"API响应: 返回 {len(result['tags'])} 个标签")
-        return result
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "list": result.get('tags', []),
+                "total": total,
+                "page": page,
+                "size": size
+            }
+        }
         
     except Exception as e:
         logger.error(f"获取标签列表API错误: {e}", exc_info=True)

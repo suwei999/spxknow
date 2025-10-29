@@ -14,6 +14,7 @@ from app.services.file_validation_service import FileValidationService
 from app.services.minio_storage_service import MinioStorageService
 from app.services.duplicate_detection_service import DuplicateDetectionService
 from app.core.exceptions import CustomException, ErrorCode
+import os
 
 class DocumentService(BaseService[Document]):
     """文档服务"""
@@ -24,7 +25,7 @@ class DocumentService(BaseService[Document]):
         self.minio_storage = MinioStorageService()
         self.duplicate_detection = DuplicateDetectionService(db)
     
-    def get_documents(
+    async def get_documents(
         self, 
         skip: int = 0, 
         limit: int = 100,
@@ -38,7 +39,7 @@ class DocumentService(BaseService[Document]):
             if knowledge_base_id:
                 filters["knowledge_base_id"] = knowledge_base_id
             
-            documents = self.get_multi(skip=skip, limit=limit, **filters)
+            documents = await self.get_multi(skip=skip, limit=limit, **filters)
             logger.info(f"获取到 {len(documents)} 个文档")
             return documents
             
@@ -46,12 +47,12 @@ class DocumentService(BaseService[Document]):
             logger.error(f"获取文档列表错误: {e}", exc_info=True)
             raise e
     
-    def get_document(self, doc_id: int) -> Optional[Document]:
+    async def get_document(self, doc_id: int) -> Optional[Document]:
         """获取文档详情 - 根据文档处理流程设计实现"""
         try:
             logger.info(f"获取文档详情: {doc_id}")
             
-            document = self.get(doc_id)
+            document = await self.get(doc_id)
             if document:
                 logger.info(f"找到文档: {document.original_filename}")
             else:
@@ -63,7 +64,7 @@ class DocumentService(BaseService[Document]):
             logger.error(f"获取文档详情错误: {e}", exc_info=True)
             raise e
     
-    def upload_document(
+    async def upload_document(
         self, 
         file: UploadFile, 
         knowledge_base_id: int,
@@ -136,6 +137,12 @@ class DocumentService(BaseService[Document]):
             from datetime import datetime
             upload_timestamp = datetime.utcnow().isoformat()
             
+            # 补充元数据（默认标题为文件名去扩展名）
+            if metadata is None:
+                metadata = {}
+            if isinstance(metadata, dict) and not metadata.get("title"):
+                metadata["title"] = os.path.splitext(file.filename)[0]
+
             doc_data = {
                 "original_filename": file.filename,
                 "file_type": validation_result["format_validation"]["file_type"],
@@ -150,7 +157,7 @@ class DocumentService(BaseService[Document]):
                 "processing_progress": 0.0
             }
             
-            document = self.create(doc_data)
+            document = await self.create(doc_data)
             logger.info(f"文档元数据保存完成，文档ID: {document.id}")
             
             # 5. 触发异步处理任务

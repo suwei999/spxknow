@@ -47,8 +47,8 @@ easyocr>=1.7.0
 numpy<2.0,>=1.21.0
 
 # Computer Vision Models
-torch==2.0.0
-torchvision==0.15.1
+torch>=2.6.0
+torchvision>=0.21.0
 open-clip-torch>=2.24.0
 
 # File Type Detection (使用 filetype，纯 Python，跨平台，无需依赖)

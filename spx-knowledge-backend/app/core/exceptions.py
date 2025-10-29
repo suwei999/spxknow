@@ -75,6 +75,18 @@ def setup_exception_handlers(app: FastAPI):
             }
         )
     
+    @app.exception_handler(CustomException)
+    async def custom_exception_handler(request: Request, exc: CustomException):
+        """业务自定义异常处理器 - 返回200并用code区分，便于前端统一处理"""
+        return JSONResponse(
+            status_code=200,
+            content={
+                "code": 400,
+                "message": exc.message,
+                "error_code": exc.code
+            }
+        )
+    
     @app.exception_handler(StarletteHTTPException)
     async def starlette_exception_handler(request: Request, exc: StarletteHTTPException):
         """Starlette异常处理器"""

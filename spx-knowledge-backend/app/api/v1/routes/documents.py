@@ -14,26 +14,74 @@ from app.config.settings import settings
 
 router = APIRouter()
 
-@router.get("/", response_model=List[DocumentResponse])
-def get_documents(
-    skip: int = 0,
-    limit: int = settings.QA_DEFAULT_PAGE_SIZE,
+@router.get("/")
+async def get_documents(
+    page: int = 1,
+    size: int = settings.QA_DEFAULT_PAGE_SIZE,
     knowledge_base_id: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
     """获取文档列表 - 根据文档处理流程设计实现"""
     try:
-        logger.info(f"API请求: 获取文档列表，跳过: {skip}, 限制: {limit}, 知识库ID: {knowledge_base_id}")
+        logger.info(f"API请求: 获取文档列表，page: {page}, size: {size}, 知识库ID: {knowledge_base_id}")
         
         service = DocumentService(db)
-        documents = service.get_documents(
-            skip=skip, 
-            limit=limit, 
+        skip = max(page - 1, 0) * max(size, 1)
+        documents = await service.get_documents(
+            skip=skip,
+            limit=size,
             knowledge_base_id=knowledge_base_id
         )
-        
+        # 构建返回项并统计总数
+        from app.models.document import Document
+        from app.models.knowledge_base import KnowledgeBase
+        base_q = db.query(Document).filter(Document.is_deleted == False)
+        if knowledge_base_id:
+            base_q = base_q.filter(Document.knowledge_base_id == knowledge_base_id)
+        total = base_q.count()
+
+        # 预取知识库名称映射
+        kb_ids = {d.knowledge_base_id for d in documents}
+        kb_map = {}
+        if kb_ids:
+            rows = db.query(KnowledgeBase.id, KnowledgeBase.name).filter(KnowledgeBase.id.in_(kb_ids)).all()
+            kb_map = {rid: name for rid, name in rows}
+
+        items = []
+        for d in documents:
+            meta = getattr(d, 'meta', None)
+            title = None
+            if isinstance(meta, dict):
+                title = meta.get('title') or meta.get('name')
+            if not title:
+                # 默认使用原始文件名（去扩展名）作为标题
+                try:
+                    import os
+                    title = os.path.splitext(d.original_filename or '')[0] or d.original_filename
+                except Exception:
+                    title = d.original_filename
+            items.append({
+                "id": d.id,
+                "title": title,
+                "file_name": d.original_filename,
+                "file_type": d.file_type,
+                "file_size": d.file_size,
+                "status": d.status,
+                "knowledge_base_id": d.knowledge_base_id,
+                "knowledge_base_name": kb_map.get(d.knowledge_base_id)
+            })
+
         logger.info(f"API响应: 返回 {len(documents)} 个文档")
-        return documents
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "list": items,
+                "total": total,
+                "page": page,
+                "size": size
+            }
+        }
         
     except Exception as e:
         logger.error(f"获取文档列表API错误: {e}", exc_info=True)
@@ -43,7 +91,7 @@ def get_documents(
         )
 
 @router.post("/upload")
-def upload_document(
+async def upload_document(
     file: UploadFile = File(...),
     knowledge_base_id: int = Form(...),
     category_id: Optional[int] = Form(None),
@@ -94,7 +142,7 @@ def upload_document(
         
         # 调用服务上传文档
         service = DocumentService(db)
-        result = service.upload_document(
+        result = await service.upload_document(
             file=file,
             knowledge_base_id=knowledge_base_id,
             category_id=category_id,
@@ -130,8 +178,8 @@ def upload_document(
             detail=f"上传文档失败: {str(e)}"
         )
 
-@router.get("/{doc_id}", response_model=DocumentResponse)
-def get_document(
+@router.get("/{doc_id}")
+async def get_document(
     doc_id: int,
     db: Session = Depends(get_db)
 ):
@@ -140,7 +188,7 @@ def get_document(
         logger.info(f"API请求: 获取文档详情 {doc_id}")
         
         service = DocumentService(db)
-        doc = service.get_document(doc_id)
+        doc = await service.get_document(doc_id)
         
         if not doc:
             logger.warning(f"API响应: 文档不存在 {doc_id}")
@@ -148,9 +196,39 @@ def get_document(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="文档不存在"
             )
+        # 构造统一响应
+        from app.models.knowledge_base import KnowledgeBase
+        kb_name = None
+        try:
+            kb_name = db.query(KnowledgeBase.name).filter(KnowledgeBase.id == doc.knowledge_base_id).scalar()
+        except Exception:
+            kb_name = None
+        meta = getattr(doc, 'meta', None)
+        title = None
+        if isinstance(meta, dict):
+            title = meta.get('title') or meta.get('name')
+        if not title:
+            try:
+                import os
+                title = os.path.splitext(doc.original_filename or '')[0] or doc.original_filename
+            except Exception:
+                title = doc.original_filename
+
+        payload = {
+            "id": doc.id,
+            "title": title,
+            "file_name": doc.original_filename,
+            "file_type": doc.file_type,
+            "file_size": doc.file_size,
+            "status": doc.status,
+            "knowledge_base_id": doc.knowledge_base_id,
+            "knowledge_base_name": kb_name,
+            "created_at": doc.created_at,
+            "updated_at": doc.updated_at,
+        }
         
         logger.info(f"API响应: 返回文档详情 {doc.original_filename}")
-        return doc
+        return {"code": 0, "message": "ok", "data": payload}
         
     except HTTPException:
         raise
@@ -162,7 +240,7 @@ def get_document(
         )
 
 @router.put("/{doc_id}", response_model=DocumentResponse)
-def update_document(
+async def update_document(
     doc_id: int,
     document: DocumentUpdate,
     db: Session = Depends(get_db)
@@ -172,7 +250,7 @@ def update_document(
         logger.info(f"API请求: 更新文档 {doc_id}")
         
         service = DocumentService(db)
-        doc = service.update_document(doc_id, document)
+        doc = await service.update_document(doc_id, document)
         
         if not doc:
             logger.warning(f"API响应: 文档不存在 {doc_id}")
@@ -194,7 +272,7 @@ def update_document(
         )
 
 @router.delete("/{doc_id}")
-def delete_document(
+async def delete_document(
     doc_id: int,
     db: Session = Depends(get_db)
 ):
@@ -203,7 +281,7 @@ def delete_document(
         logger.info(f"API请求: 删除文档 {doc_id}")
         
         service = DocumentService(db)
-        success = service.delete_document(doc_id)
+        success = await service.delete_document(doc_id)
         
         if not success:
             logger.warning(f"API响应: 文档不存在 {doc_id}")
@@ -225,7 +303,7 @@ def delete_document(
         )
 
 @router.post("/batch-upload")
-def batch_upload_documents(
+async def batch_upload_documents(
     files: List[UploadFile] = File(...),
     knowledge_base_id: int = Form(...),
     category_id: Optional[int] = Form(None),
@@ -277,7 +355,7 @@ def batch_upload_documents(
         for file in files:
             try:
                 logger.info(f"处理文件: {file.filename}")
-                result = service.upload_document(
+                result = await service.upload_document(
                     file=file,
                     knowledge_base_id=knowledge_base_id,
                     category_id=category_id,

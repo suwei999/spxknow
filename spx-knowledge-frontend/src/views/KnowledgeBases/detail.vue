@@ -17,8 +17,8 @@
           <el-descriptions-item label="分类">{{ detail.category_name }}</el-descriptions-item>
           <el-descriptions-item label="描述" :span="2">{{ detail.description }}</el-descriptions-item>
           <el-descriptions-item label="状态">
-            <el-tag :type="detail.status === 'active' ? 'success' : 'info'">
-              {{ detail.status }}
+            <el-tag :type="detail.is_active ? 'success' : 'info'">
+              {{ detail.is_active ? '启用' : '禁用' }}
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDateTime(detail.created_at) }}</el-descriptions-item>
@@ -92,8 +92,9 @@ const loadDocuments = async () => {
       page: docPage.value,
       size: docSize.value
     })
-    documents.value = res.data.items
-    docTotal.value = res.data.total
+    const data = res.data || {}
+    documents.value = data.list ?? data.items ?? []
+    docTotal.value = data.total ?? 0
   } catch (error) {
     ElMessage.error('加载文档列表失败')
   } finally {

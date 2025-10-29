@@ -43,13 +43,16 @@ opencv-python>=4.8.0
 pytesseract>=0.3.10
 easyocr>=1.7.0
 
+# NumPy 1.x (torchvision 编译时基于 NumPy 1.x，NumPy 2.x 不兼容)
+numpy<2.0,>=1.21.0
+
 # Computer Vision Models
 torch==2.0.0
 torchvision==0.15.1
 open-clip-torch>=2.24.0
 
-# File Type Detection
-python-magic>=0.4.27
+# File Type Detection (使用 filetype，纯 Python，跨平台，无需依赖)
+filetype>=1.2.0
 
 # Antivirus Scanning (optional; requires ClamAV service)
 clamd>=1.0.2

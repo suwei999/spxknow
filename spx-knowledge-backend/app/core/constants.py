@@ -54,3 +54,12 @@ CACHE_PREFIXES = {
     "SEARCH": "search:",
     "QA": "qa:",
 }
+
+# 文档处理状态常量
+DOC_STATUS_UPLOADED = "uploaded"
+DOC_STATUS_PARSING = "parsing"
+DOC_STATUS_CHUNKING = "chunking"
+DOC_STATUS_VECTORIZING = "vectorizing"
+DOC_STATUS_INDEXING = "indexing"
+DOC_STATUS_COMPLETED = "completed"
+DOC_STATUS_FAILED = "failed"

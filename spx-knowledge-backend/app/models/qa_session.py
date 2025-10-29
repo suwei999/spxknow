@@ -5,7 +5,7 @@ QA Session Model
 
 from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Float, Boolean
 from sqlalchemy.sql import func
-from app.db.base_class import BaseModel
+from app.models.base import BaseModel
 
 
 class QASession(BaseModel):

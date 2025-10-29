@@ -14,7 +14,8 @@ class DocumentChunk(BaseModel):
     content = Column(Text, nullable=False, comment="分块内容")
     chunk_index = Column(Integer, nullable=False, comment="分块索引")
     chunk_type = Column(String(50), default="text", comment="分块类型")
-    metadata = Column(Text, comment="元数据JSON")
+    # SQLAlchemy 保留名冲突：列名 metadata、属性名 meta
+    meta = Column('metadata', Text, comment="元数据JSON")
     # 版本管理字段 - 根据文档修改功能设计添加
     version = Column(Integer, default=1, comment="版本号")
     last_modified_at = Column(DateTime, comment="最后修改时间")

@@ -14,7 +14,8 @@ class ChunkVersion(BaseModel):
     chunk_id = Column(Integer, ForeignKey("document_chunks.id"), nullable=False, comment="块ID")
     version_number = Column(Integer, nullable=False, comment="版本号")
     content = Column(Text, nullable=False, comment="版本内容")
-    metadata = Column(Text, comment="版本元数据")
+    # SQLAlchemy 保留名冲突：列名 metadata、属性名 meta
+    meta = Column('metadata', Text, comment="版本元数据")
     modified_by = Column(String(100), comment="修改者")
     version_comment = Column(Text, comment="版本注释")
     created_at = Column(DateTime, nullable=False, comment="创建时间")

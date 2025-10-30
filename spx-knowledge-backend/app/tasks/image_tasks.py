@@ -43,8 +43,8 @@ def process_image_task(self, image_id: int):
             meta={"current": 30, "total": 100, "status": "图片信息提取完成"}
         )
         
-        # OCR识别
-        ocr_text = await image_service.extract_ocr_text(image.image_path)
+        # OCR识别（同步调用）
+        ocr_text = image_service.extract_ocr_text(image.image_path)
         if ocr_text:
             image.ocr_text = ocr_text
             db.commit()
@@ -54,9 +54,9 @@ def process_image_task(self, image_id: int):
             meta={"current": 60, "total": 100, "status": "OCR识别完成"}
         )
         
-        # 生成图片向量
+        # 生成图片向量（同步调用）
         vector_service = VectorService(db)
-        image_vector = await vector_service.generate_image_embedding(image.image_path)
+        image_vector = vector_service.generate_image_embedding(image.image_path)
         
         # 这里应该将图片向量存储到OpenSearch
         # 暂时跳过具体实现
@@ -110,9 +110,9 @@ def extract_images_from_document_task(document_id: int):
         if not document:
             return {"status": "error", "message": "文档不存在"}
         
-        # 使用Unstructured提取图片
+        # 使用Unstructured提取图片（同步调用）
         unstructured_service = UnstructuredService(db)
-        images = await unstructured_service.extract_images(document.file_path)
+        images = unstructured_service.extract_images(document.file_path)
         
         # 创建图片记录
         for i, image_data in enumerate(images):

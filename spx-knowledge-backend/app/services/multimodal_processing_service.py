@@ -27,7 +27,7 @@ class MultimodalProcessingService:
     
     def __init__(self, db: Session):
         self.db = db
-        self.ollama_service = OllamaService()
+        self.ollama_service = OllamaService(db)
         self.image_vectorization_service = ImageVectorizationService()
         
         # 输入类型定义 - 根据设计文档

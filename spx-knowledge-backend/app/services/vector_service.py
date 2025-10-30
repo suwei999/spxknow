@@ -17,7 +17,8 @@ class VectorService:
     
     def __init__(self, db: Session):
         self.db = db
-        self.ollama_url = settings.OLLAMA_API_BASE_URL
+        # 统一使用 OLLAMA_BASE_URL
+        self.ollama_url = settings.OLLAMA_BASE_URL
         self.embedding_model = settings.OLLAMA_EMBEDDING_MODEL
         self.image_model = settings.OLLAMA_IMAGE_MODEL  # TODO: 添加图片模型配置
     

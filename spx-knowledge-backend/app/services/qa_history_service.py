@@ -22,7 +22,7 @@ class QAHistoryService:
     def __init__(self, db: Session):
         self.db = db
         self.opensearch_service = OpenSearchService()
-        self.ollama_service = OllamaService()
+        self.ollama_service = OllamaService(db)
         
         # OpenSearch索引配置 - 根据设计文档
         self.INDEX_NAME = settings.QA_HISTORY_INDEX_NAME

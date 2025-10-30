@@ -4,6 +4,7 @@ Celery App Configuration
 
 from celery import Celery
 from app.config.settings import settings
+from app.core.logging import logger
 
 # 创建Celery应用
 celery_app = Celery(
@@ -21,6 +22,12 @@ celery_app = Celery(
     ]
 )
 
+# 输出 Redis 连接信息
+try:
+    logger.info(f"Celery 配置: broker={settings.REDIS_URL}, backend={settings.REDIS_URL}")
+except Exception:
+    pass
+
 # Celery配置
 celery_app.conf.update(
     task_serializer="json",
@@ -33,6 +40,8 @@ celery_app.conf.update(
     task_soft_time_limit=25 * 60,  # 25分钟
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
+    # 启动阶段无法连接到 broker 时立即失败（不重试），便于显式暴露配置/网络错误
+    broker_connection_retry_on_startup=False,
     task_routes={
         "app.tasks.document_tasks.*": {"queue": "document"},
         "app.tasks.vector_tasks.*": {"queue": "vector"},

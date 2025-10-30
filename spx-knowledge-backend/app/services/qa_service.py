@@ -31,7 +31,7 @@ class QAService:
     def __init__(self, db: Session):
         self.db = db
         self.opensearch_service = OpenSearchService()
-        self.ollama_service = OllamaService()
+        self.ollama_service = OllamaService(db)
         self.multimodal_service = MultimodalProcessingService(db)
         self.fallback_service = FallbackStrategyService(db)
         self.history_service = QAHistoryService(db)

@@ -19,7 +19,7 @@ class FallbackStrategyService:
     
     def __init__(self, db: Session):
         self.db = db
-        self.ollama_service = OllamaService()
+        self.ollama_service = OllamaService(db)
         
         # 相关性阈值 - 根据设计文档
         self.RELEVANCE_THRESHOLDS = {

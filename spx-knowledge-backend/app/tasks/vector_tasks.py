@@ -20,9 +20,9 @@ def vectorize_chunk_task(self, chunk_id: int):
         if not chunk:
             raise Exception(f"分块 {chunk_id} 不存在")
         
-        # 生成向量
+        # 生成向量（同步调用，无需 await）
         vector_service = VectorService(db)
-        vector = await vector_service.generate_embedding(chunk.content)
+        vector = vector_service.generate_embedding(chunk.content)
         
         # 这里应该将向量存储到OpenSearch
         # 暂时跳过具体实现
@@ -52,8 +52,8 @@ def vectorize_document_task(self, document_id: int):
         vector_service = VectorService(db)
         
         for chunk in chunks:
-            # 生成向量
-            vector = await vector_service.generate_embedding(chunk.content)
+            # 生成向量（同步调用，无需 await）
+            vector = vector_service.generate_embedding(chunk.content)
             
             # 这里应该将向量存储到OpenSearch
             # 暂时跳过具体实现

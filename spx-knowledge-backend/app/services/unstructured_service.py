@@ -10,17 +10,40 @@ from fastapi import UploadFile
 import os
 import tempfile
 import json
+import zipfile
 from unstructured.partition.auto import partition
 from unstructured.staging.base import elements_to_json
 from app.core.logging import logger
 from app.config.settings import settings
+from app.services.office_converter import convert_docx_to_pdf
 from app.core.exceptions import CustomException, ErrorCode
+import xml.etree.ElementTree as ET
+import io
 
 class UnstructuredService:
     """Unstructured文档解析服务 - 严格按照设计文档实现"""
     
     def __init__(self, db: Session):
         self.db = db
+        # 注入 Poppler 到 PATH（Windows 常见问题）
+        try:
+            if settings.POPPLER_PATH:
+                poppler_bin = settings.POPPLER_PATH
+                if os.path.isdir(poppler_bin) and poppler_bin not in os.environ.get('PATH', ''):
+                    os.environ['PATH'] = poppler_bin + os.pathsep + os.environ.get('PATH', '')
+                    os.environ.setdefault('POPPLER_PATH', poppler_bin)
+                    logger.info(f"已注入 POPPLER_PATH 到环境: {poppler_bin}")
+            # 注入 Tesseract（可选）
+            if getattr(settings, 'TESSERACT_PATH', None):
+                tess_bin = settings.TESSERACT_PATH
+                if os.path.isdir(tess_bin) and tess_bin not in os.environ.get('PATH', ''):
+                    os.environ['PATH'] = tess_bin + os.pathsep + os.environ.get('PATH', '')
+                    logger.info(f"已注入 TESSERACT_PATH 到环境: {tess_bin}")
+            if getattr(settings, 'TESSDATA_PREFIX', None):
+                os.environ.setdefault('TESSDATA_PREFIX', settings.TESSDATA_PREFIX)
+                logger.info(f"设置 TESSDATA_PREFIX: {settings.TESSDATA_PREFIX}")
+        except Exception as e:
+            logger.warning(f"注入 POPPLER_PATH 失败: {e}")
         # 根据设计文档的解析策略配置 - 从settings读取
         self.parsing_strategies = {
             'pdf': {
@@ -46,6 +69,22 @@ class UnstructuredService:
                 'encoding': settings.UNSTRUCTURED_TXT_ENCODING
             }
         }
+        # 自动检测设备/框架能力
+        if settings.UNSTRUCTURED_AUTO_DEVICE:
+            try:
+                import torch  # type: ignore
+                torch_version = getattr(torch, '__version__', 'unknown')
+                use_cuda = torch.cuda.is_available()
+                os.environ.setdefault('UNSTRUCTURED_DEVICE', 'cuda' if use_cuda else 'cpu')
+                logger.info(f"Unstructured 设备: {'CUDA' if use_cuda else 'CPU'}, torch={torch_version}")
+                # 若配置了 hi_res 且 torch 版本过低，自动降级
+                from packaging import version
+                if torch_version != 'unknown' and version.parse(torch_version) < version.parse('2.1.0'):
+                    if self.parsing_strategies['pdf'].get('strategy') == 'hi_res':
+                        self.parsing_strategies['pdf']['strategy'] = 'fast'
+                        logger.warning("检测到 torch<2.1，PDF hi_res 自动降级为 fast")
+            except Exception as _e:
+                logger.warning(f"未检测到 torch 或自动设备配置失败: {_e}. 将使用 fast/CPU 流程。")
     
     def _select_parsing_strategy(self, file_type: str) -> str:
         """选择解析策略 - 根据设计文档实现"""
@@ -62,9 +101,119 @@ class UnstructuredService:
         }
         
         return strategy_map.get(file_type, 'auto')
+
+    def _validate_docx_integrity(self, file_path: str) -> None:
+        """DOCX 解析前的完整性校验：必须是合法 OOXML zip，且包含核心条目。
+        不通过直接抛业务异常（不降级）。"""
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                names = set(zf.namelist())
+        except Exception as e:
+            raise CustomException(
+                code=ErrorCode.DOCUMENT_PARSING_FAILED,
+                message=f"DOCX 文件不是有效的 ZIP（可能已损坏）: {e}"
+            )
+        required = {"[Content_Types].xml", "_rels/.rels", "word/document.xml"}
+        missing = [n for n in required if n not in names]
+        if missing:
+            raise CustomException(
+                code=ErrorCode.DOCUMENT_PARSING_FAILED,
+                message=f"DOCX 结构缺少核心条目: {', '.join(missing)}（文件可能由非标准工具导出或已损坏）"
+            )
+        # 深度校验：rels 中不应引用 NULL，且引用的部件必须存在
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                # 1) 禁止任何条目名为 'NULL'
+                upper_names = {name.upper() for name in zf.namelist()}
+                if 'NULL' in upper_names:
+                    raise CustomException(
+                        code=ErrorCode.DOCUMENT_PARSING_FAILED,
+                        message="DOCX 包含非法部件名 'NULL'，文件已损坏或导出不规范"
+                    )
+                # 2) 扫描所有 .rels，检查 Target
+                rels_files = [n for n in zf.namelist() if n.endswith('.rels')]
+                for rel_path in rels_files:
+                    with zf.open(rel_path) as fp:
+                        tree = ET.parse(fp)
+                        root = tree.getroot()
+                        # 关系命名空间常见为 http://schemas.openxmlformats.org/package/2006/relationships
+                        for rel in root.findall('.//{*}Relationship'):
+                            target = rel.get('Target') or ''
+                            if target.strip().upper() == 'NULL':
+                                raise CustomException(
+                                    code=ErrorCode.DOCUMENT_PARSING_FAILED,
+                                    message=f"DOCX 关系文件 {rel_path} 引用了非法 Target='NULL'（文件损坏/导出不规范）"
+                                )
+                            # 仅校验相对路径目标是否存在
+                            if not (target.startswith('http://') or target.startswith('https://')):
+                                # 归一化成 zip 内部路径
+                                base_dir = rel_path.rsplit('/', 1)[0] if '/' in rel_path else ''
+                                normalized = f"{base_dir}/{target}" if base_dir else target
+                                normalized = normalized.replace('\\', '/').lstrip('./')
+                                if normalized and normalized not in zf.namelist():
+                                    # 某些目标可能是上级目录，如 ../word/media/image1.png，做一次简单归一化
+                                    while normalized.startswith('../'):
+                                        normalized = normalized[3:]
+                                    if normalized not in zf.namelist():
+                                        raise CustomException(
+                                            code=ErrorCode.DOCUMENT_PARSING_FAILED,
+                                            message=f"DOCX 引用了缺失的部件: {target}（来源 {rel_path}）"
+                                        )
+        except CustomException:
+            raise
+        except Exception as e:
+            # 校验过程异常，按解析失败处理，给出明确提示
+            raise CustomException(
+                code=ErrorCode.DOCUMENT_PARSING_FAILED,
+                message=f"DOCX 结构校验失败: {e}"
+            )
     
+    def _attempt_docx_repair(self, file_path: str) -> Optional[str]:
+        """尝试自动修复常见 DOCX 关系错误（officeDocument 关系指向 NULL 或缺失）。
+        修复成功返回新 docx 临时路径，否则返回 None。"""
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                names = set(zf.namelist())
+                if "_rels/.rels" not in names:
+                    return None
+                candidates = [n for n in names if n.startswith('word/document') and n.endswith('.xml')]
+                if not candidates:
+                    return None
+                target_part = 'word/document.xml' if 'word/document.xml' in names else sorted(candidates)[0]
+                with zf.open('_rels/.rels') as fp:
+                    tree = ET.parse(fp)
+                root = tree.getroot()
+                modified = False
+                for rel in root.findall('.{*}Relationship'):
+                    pass
+                for rel in root.findall('.//{*}Relationship'):
+                    r_type = rel.get('Type') or ''
+                    if r_type.endswith('/officeDocument'):
+                        cur = (rel.get('Target') or '').strip()
+                        normalized = cur.replace('\\','/').lstrip('./')
+                        if cur.upper() == 'NULL' or normalized not in names:
+                            rel.set('Target', target_part)
+                            modified = True
+                if not modified:
+                    return None
+                fd, tmp_path = tempfile.mkstemp(suffix='.docx')
+                os.close(fd)
+                with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as out:
+                    for name in zf.namelist():
+                        if name == '_rels/.rels':
+                            buf = io.BytesIO()
+                            tree.write(buf, encoding='utf-8', xml_declaration=True)
+                            out.writestr(name, buf.getvalue())
+                        else:
+                            out.writestr(name, zf.read(name))
+                logger.warning(f"DOCX 已自动修复 officeDocument 关系 -> {target_part}，修复文件: {tmp_path}")
+                return tmp_path
+        except Exception as e:
+            logger.error(f"尝试修复 DOCX 失败: {e}")
+            return None
+
     def parse_document(self, file_path: str, strategy: Optional[str] = None) -> Dict[str, Any]:
-        """解析文档 - 严格按照设计文档实现"""
+        """解析文档 - 严格按照设计文档实现（Unstructured 失败将直接抛错，不做降级）"""
         try:
             logger.info(f"开始解析文档: {file_path}")
             
@@ -91,11 +240,39 @@ class UnstructuredService:
             
             logger.info(f"使用解析策略: {file_type}, 配置: {strategy_config}")
             
-            # 使用Unstructured解析文档
-            elements = partition(
-                filename=file_path,
-                **strategy_config
-            )
+            # DOCX：尝试修复/清洗；若仍失败可选转 PDF 再解析
+            path_for_parse = file_path
+            if file_type == 'docx':
+                if settings.ENABLE_DOCX_REPAIR:
+                    logger.info("[DOCX] 尝试自动修复主文档关系与无效引用…")
+                    repaired = self._attempt_docx_repair(file_path)
+                    if repaired:
+                        path_for_parse = repaired
+                        logger.info(f"[DOCX] 修复成功，使用修复后的临时文件: {path_for_parse}")
+                    else:
+                        logger.info("[DOCX] 未进行修复或无需修复，继续校验。")
+                try:
+                    logger.info(f"[DOCX] 开始完整性校验: {path_for_parse}")
+                    self._validate_docx_integrity(path_for_parse)
+                    logger.info("[DOCX] 完整性校验通过。")
+                except CustomException as e:
+                    logger.error(f"[DOCX] 完整性校验失败: {e}")
+                    if settings.ENABLE_OFFICE_TO_PDF:
+                        logger.info("[DOCX] 启用 LibreOffice 兜底：开始 DOCX→PDF 转换…")
+                        pdf_path = convert_docx_to_pdf(path_for_parse)
+                        if not pdf_path:
+                            logger.error("[DOCX] LibreOffice 转换失败，无法继续解析。")
+                            raise
+                        file_type = 'pdf'
+                        path_for_parse = pdf_path
+                        strategy_config = self.parsing_strategies.get(file_type, {})
+                        logger.info(f"[DOCX] 转换为 PDF 成功，改用 PDF 管线解析: {path_for_parse}")
+                    else:
+                        raise
+            
+            # 仅使用 Unstructured；任何异常将直接抛出
+            logger.info(f"调用 Unstructured.partition，文件={path_for_parse}，配置={strategy_config}")
+            elements = partition(filename=path_for_parse, **strategy_config)
             
             logger.info(f"Unstructured解析完成，提取到 {len(elements)} 个元素")
             
@@ -105,6 +282,8 @@ class UnstructuredService:
             logger.info(f"文档解析完成，提取到 {len(result.get('text_content', ''))} 字符")
             return result
             
+        except CustomException:
+            raise
         except Exception as e:
             logger.error(f"文档解析错误: {e}", exc_info=True)
             raise CustomException(
@@ -277,6 +456,26 @@ class UnstructuredService:
     def _process_parsed_elements(self, elements: List, file_path: str, file_size: int) -> Dict[str, Any]:
         """处理解析后的元素"""
         try:
+            def _meta_get(meta_obj: Any, key: str, default: Any = None):
+                if meta_obj is None:
+                    return default
+                # ElementMetadata 场景
+                val = getattr(meta_obj, key, None)
+                if val is not None:
+                    return val
+                # 兼容 dict
+                if isinstance(meta_obj, dict):
+                    return meta_obj.get(key, default)
+                # 兼容提供 to_dict()
+                to_dict = getattr(meta_obj, 'to_dict', None)
+                if callable(to_dict):
+                    try:
+                        d = to_dict()
+                        if isinstance(d, dict):
+                            return d.get(key, default)
+                    except Exception:
+                        pass
+                return default
             # 提取文本内容
             text_content = ""
             images = []
@@ -295,10 +494,11 @@ class UnstructuredService:
                 
                 # 提取图片信息
                 if element.category == 'Image':
+                    elem_id = getattr(element, 'element_id', getattr(element, 'id', None))
                     image_info = {
-                        'element_id': element.element_id,
+                        'element_id': elem_id,
                         'image_type': 'image',
-                        'page_number': getattr(element, 'metadata', {}).get('page_number', 1),
+                        'page_number': _meta_get(getattr(element, 'metadata', None), 'page_number', 1),
                         'coordinates': self._extract_coordinates(element),
                         'description': element_text,
                         'ocr_text': element_text
@@ -307,9 +507,10 @@ class UnstructuredService:
                 
                 # 提取表格信息
                 elif element.category == 'Table':
+                    elem_id = getattr(element, 'element_id', getattr(element, 'id', None))
                     table_info = {
-                        'element_id': element.element_id,
-                        'page_number': getattr(element, 'metadata', {}).get('page_number', 1),
+                        'element_id': elem_id,
+                        'page_number': _meta_get(getattr(element, 'metadata', None), 'page_number', 1),
                         'coordinates': self._extract_coordinates(element),
                         'table_data': self._extract_table_data(element),
                         'table_text': element_text
@@ -347,15 +548,28 @@ class UnstructuredService:
     def _extract_coordinates(self, element) -> Dict[str, Any]:
         """提取元素坐标信息"""
         try:
-            metadata = getattr(element, 'metadata', {})
-            coordinates = metadata.get('coordinates', {})
+            metadata = getattr(element, 'metadata', None)
+            coordinates = None
+            if metadata is not None:
+                coordinates = getattr(metadata, 'coordinates', None)
+                if coordinates is None and isinstance(metadata, dict):
+                    coordinates = metadata.get('coordinates')
             
             if coordinates:
+                # 兼容对象/字典两种结构
+                if isinstance(coordinates, dict):
+                    return {
+                        'x': coordinates.get('x', 0),
+                        'y': coordinates.get('y', 0),
+                        'width': coordinates.get('width', 0),
+                        'height': coordinates.get('height', 0)
+                    }
+                # 对象场景，尽量读取可用字段
                 return {
-                    'x': coordinates.get('x', 0),
-                    'y': coordinates.get('y', 0),
-                    'width': coordinates.get('width', 0),
-                    'height': coordinates.get('height', 0)
+                    'x': getattr(coordinates, 'x', 0),
+                    'y': getattr(coordinates, 'y', 0),
+                    'width': getattr(coordinates, 'width', 0),
+                    'height': getattr(coordinates, 'height', 0)
                 }
             else:
                 return {

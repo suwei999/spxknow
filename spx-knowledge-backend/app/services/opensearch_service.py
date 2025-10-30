@@ -6,6 +6,7 @@ OpenSearch Service
 from typing import List, Optional, Dict, Any
 import json
 from opensearchpy import OpenSearch, RequestsHttpConnection
+from opensearchpy.helpers import bulk as os_bulk
 from opensearchpy.exceptions import OpenSearchException
 from app.config.settings import settings
 from app.core.logging import logger
@@ -296,7 +297,8 @@ class OpenSearchService:
             response = self.client.index(
                 index=self.document_index,
                 id=f"chunk_{chunk_data['chunk_id']}",
-                body=doc
+                body=doc,
+                refresh="wait_for"
             )
             
             logger.info(f"文档分块索引成功: {chunk_data.get('chunk_id')}")
@@ -308,6 +310,55 @@ class OpenSearchService:
                 code=ErrorCode.OPENSEARCH_INDEX_FAILED,
                 message=f"文档分块索引失败: {str(e)}"
             )
+
+    # 同步封装，供 Celery 同步任务直接调用
+    def index_document_chunk_sync(self, chunk_data: Dict[str, Any]) -> bool:
+        return self.client.index(
+            index=self.document_index,
+            id=f"chunk_{chunk_data['chunk_id']}",
+            body={
+                "document_id": chunk_data["document_id"],
+                "knowledge_base_id": chunk_data["knowledge_base_id"],
+                "category_id": chunk_data.get("category_id"),
+                "chunk_id": chunk_data["chunk_id"],
+                "content": chunk_data["content"],
+                "chunk_type": chunk_data.get("chunk_type", "text"),
+                "tags": chunk_data.get("tags", []),
+                "metadata": json.dumps(chunk_data.get("metadata", {})),
+                "created_at": chunk_data.get("created_at"),
+                "content_vector": chunk_data["content_vector"],
+                **({"image_info": chunk_data["image_info"]} if chunk_data.get("image_info") else {}),
+            },
+            refresh="wait_for",
+        )
+        or True
+
+    def bulk_index_document_chunks_sync(self, docs: List[Dict[str, Any]]) -> int:
+        """批量索引分块，返回成功条数。"""
+        actions = []
+        for d in docs:
+            src = {
+                "document_id": d["document_id"],
+                "knowledge_base_id": d["knowledge_base_id"],
+                "category_id": d.get("category_id"),
+                "chunk_id": d["chunk_id"],
+                "content": d["content"],
+                "chunk_type": d.get("chunk_type", "text"),
+                "tags": d.get("tags", []),
+                "metadata": json.dumps(d.get("metadata", {})),
+                "created_at": d.get("created_at"),
+                "content_vector": d["content_vector"],
+            }
+            if d.get("image_info"):
+                src["image_info"] = d["image_info"]
+            actions.append({
+                "_index": self.document_index,
+                "_id": f"chunk_{d['chunk_id']}",
+                "_source": src,
+            })
+        success, _ = os_bulk(self.client, actions, refresh=True)
+        logger.info(f"批量索引分块完成: {success} 条")
+        return success
     
     async def index_image(self, image_data: Dict[str, Any]) -> bool:
         """索引图片 - 根据设计文档实现"""
@@ -341,7 +392,8 @@ class OpenSearchService:
             response = self.client.index(
                 index=self.image_index,
                 id=f"image_{image_data['image_id']}",
-                body=doc
+                body=doc,
+                refresh="wait_for"
             )
             
             logger.info(f"图片索引成功: {image_data.get('image_id')}")
@@ -353,6 +405,36 @@ class OpenSearchService:
                 code=ErrorCode.OPENSEARCH_INDEX_FAILED,
                 message=f"图片索引失败: {str(e)}"
             )
+
+    # 同步封装
+    def index_image_sync(self, image_data: Dict[str, Any]) -> bool:
+        return self.client.index(
+            index=self.image_index,
+            id=f"image_{image_data['image_id']}",
+            body={
+                "image_id": image_data["image_id"],
+                "document_id": image_data["document_id"],
+                "knowledge_base_id": image_data["knowledge_base_id"],
+                "category_id": image_data.get("category_id"),
+                "image_path": image_data["image_path"],
+                "page_number": image_data.get("page_number"),
+                "coordinates": image_data.get("coordinates"),
+                "width": image_data.get("width"),
+                "height": image_data.get("height"),
+                "image_type": image_data.get("image_type", "unknown"),
+                "ocr_text": image_data.get("ocr_text", ""),
+                "description": image_data.get("description", ""),
+                "feature_tags": image_data.get("feature_tags", []),
+                "image_vector": image_data["image_vector"],
+                "created_at": image_data.get("created_at"),
+                "updated_at": image_data.get("updated_at"),
+                "metadata": json.dumps(image_data.get("metadata", {})),
+                "processing_status": image_data.get("processing_status", "completed"),
+                "model_version": image_data.get("model_version", "1.0"),
+            },
+            refresh="wait_for",
+        )
+        or True
     
     async def search_document_vectors(
         self,

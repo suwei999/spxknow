@@ -22,7 +22,7 @@ celery>=5.3.0
 ollama>=0.1.0
 
 # Document Processing
-unstructured>=0.10.0
+unstructured[docx,pptx,xlsx,pdf]>=0.10.0
 
 # Data Validation
 pydantic>=2.0.0
@@ -47,8 +47,9 @@ easyocr>=1.7.0
 numpy<2.0,>=1.21.0
 
 # Computer Vision Models
-torch>=2.6.0
-torchvision>=0.21.0
+torch==2.1.2+cpu
+torchaudio==2.1.2+cpu
+torchvision==0.16.2+cpu
 open-clip-torch>=2.24.0
 
 # File Type Detection (使用 filetype，纯 Python，跨平台，无需依赖)
@@ -65,3 +66,4 @@ httpx>=0.24.0
 python-dotenv>=1.0.0
 pytz>=2023.3
 
+transformers==4.41.2

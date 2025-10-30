@@ -164,22 +164,27 @@ class MinioStorageService:
             )
     
     def upload_chunks(self, document_id: str, chunks: list) -> Dict[str, Any]:
-        """上传分块数据 - 根据设计文档实现"""
+        """上传分块数据 - JSONL.GZ 归档，便于回灌与降本"""
         try:
             logger.info(f"开始上传分块数据: {document_id}")
             
             import json
+            import gzip
             from io import BytesIO
             
             # 生成分块路径
             now = datetime.now()
             year = now.strftime("%Y")
             month = now.strftime("%m")
-            chunks_path = f"documents/{year}/{month}/{document_id}/parsed/chunks/chunks.json"
+            chunks_path = f"documents/{year}/{month}/{document_id}/parsed/chunks/chunks.jsonl.gz"
             
-            # 转换为JSON
-            chunks_json = json.dumps(chunks, ensure_ascii=False, indent=2)
-            chunks_bytes = chunks_json.encode('utf-8')
+            # 按行写 JSONL，并使用 gzip 压缩
+            buf = BytesIO()
+            with gzip.GzipFile(fileobj=buf, mode='wb') as gz:
+                for idx, c in enumerate(chunks):
+                    line = json.dumps({"index": idx, "content": c}, ensure_ascii=False).encode('utf-8')
+                    gz.write(line + b"\n")
+            chunks_bytes = buf.getvalue()
             
             # 上传分块数据
             self.client.put_object(
@@ -187,7 +192,7 @@ class MinioStorageService:
                 object_name=chunks_path,
                 data=BytesIO(chunks_bytes),
                 length=len(chunks_bytes),
-                content_type="application/json"
+                content_type="application/gzip"
             )
             
             result = {
@@ -197,7 +202,7 @@ class MinioStorageService:
                 "chunks_size": len(chunks_bytes)
             }
             
-            logger.info(f"分块数据上传成功: {chunks_path}, 共 {len(chunks)} 个分块")
+            logger.info(f"分块数据上传成功(JSONL.GZ): {chunks_path}, 共 {len(chunks)} 个分块")
             return result
             
         except Exception as e:
@@ -363,3 +368,24 @@ class MinioStorageService:
         except Exception as e:
             logger.error(f"文件列表获取错误: {e}", exc_info=True)
             return []
+
+    # =============== 通用字节上传（用于图片等二进制） ===============
+    def upload_bytes(self, object_name: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        """上传任意二进制到指定对象名，返回对象路径。"""
+        from io import BytesIO
+        try:
+            self.client.put_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name,
+                data=BytesIO(data),
+                length=len(data),
+                content_type=content_type,
+            )
+            logger.info(f"二进制上传成功: {object_name} ({len(data)} bytes)")
+            return object_name
+        except S3Error as e:
+            logger.error(f"MinIO上传错误: {e}")
+            raise CustomException(
+                code=ErrorCode.MINIO_UPLOAD_FAILED,
+                message=f"文件上传失败: {str(e)}",
+            )

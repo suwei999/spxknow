@@ -152,31 +152,32 @@ async def upload_document(
         
         logger.info(f"API响应: 文档上传成功，文档ID: {result['document_id']}, 任务ID: {result.get('task_id')}")
         return {
-            "document_id": result['document_id'],
-            "task_id": result.get('task_id'),
-            "file_info": {
-                "filename": file.filename,
-                "size": result.get('file_size'),
-                "type": result.get('file_type')
-            },
-            "knowledge_base_info": {
-                "knowledge_base_id": knowledge_base_id,
-                "category_id": category_id
-            },
-            "tag_info": {
-                "tags": parsed_tags
-            },
-            "upload_time": result.get('upload_timestamp')
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "document_id": result['document_id'],
+                "task_id": result.get('task_id'),
+                "file_info": {
+                    "filename": file.filename,
+                    "size": result.get('file_size'),
+                    "type": result.get('file_type')
+                },
+                "knowledge_base_info": {
+                    "knowledge_base_id": knowledge_base_id,
+                    "category_id": category_id
+                },
+                "tag_info": {
+                    "tags": parsed_tags
+                },
+                "upload_time": result.get('upload_timestamp')
+            }
         }
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"上传文档API错误: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"上传文档失败: {str(e)}"
-        )
+        return {"code": 1, "message": f"上传文档失败: {str(e)}"}
 
 @router.get("/{doc_id}")
 async def get_document(
@@ -380,20 +381,21 @@ async def batch_upload_documents(
         
         logger.info(f"API响应: 批量上传完成，成功: {success_count}, 失败: {fail_count}")
         return {
-            "success_count": success_count,
-            "fail_count": fail_count,
-            "total": len(files),
-            "results": results
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "success_count": success_count,
+                "fail_count": fail_count,
+                "total": len(files),
+                "results": results
+            }
         }
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"批量上传文档API错误: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"批量上传文档失败: {str(e)}"
-        )
+        return {"code": 1, "message": f"批量上传文档失败: {str(e)}"}
 
 @router.post("/{doc_id}/reprocess")
 def reprocess_document(
@@ -415,13 +417,10 @@ def reprocess_document(
             )
         
         logger.info(f"API响应: 文档重新处理已启动 {doc_id}")
-        return {"message": "文档重新处理已启动"}
+        return {"code": 0, "message": "ok"}
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"重新处理文档API错误: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"重新处理文档失败: {str(e)}"
-        )
+        return {"code": 1, "message": f"重新处理文档失败: {str(e)}"}

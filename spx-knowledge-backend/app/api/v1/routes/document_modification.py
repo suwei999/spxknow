@@ -1,4 +1,76 @@
 """
+文档块编辑 API（骨架版）
+PATCH /api/documents/{id}/chunks/{chunk_id}
+ - 写入 chunk_versions
+ - 切换当前块版本（可选）
+ - 重新生成向量并更新 OpenSearch
+"""
+
+from fastapi import APIRouter, Depends, Path
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+from app.dependencies.database import get_db
+from app.core.logging import logger
+from app.models.chunk import DocumentChunk
+from app.models.chunk_version import ChunkVersion
+from app.services.vector_service import VectorService
+from app.services.opensearch_service import OpenSearchService
+
+router = APIRouter()
+
+
+class ChunkEditPayload(BaseModel):
+    content: str = Field(..., description="新内容")
+    version_comment: str | None = Field(None, description="版本备注")
+
+
+@router.patch("/documents/{doc_id}/chunks/{chunk_id}")
+def edit_chunk(
+    payload: ChunkEditPayload,
+    doc_id: int = Path(...),
+    chunk_id: int = Path(...),
+    db: Session = Depends(get_db),
+):
+    chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id, DocumentChunk.document_id == doc_id).first()
+    if not chunk:
+        return {"code": 404, "message": "chunk not found", "data": None}
+
+    # 创建 chunk 版本记录
+    cv = ChunkVersion(
+        chunk_id=chunk.id,
+        content=payload.content,
+        version_comment=payload.version_comment or "",
+    )
+    db.add(cv)
+    db.commit()
+    db.refresh(cv)
+
+    # 将块内容切换为新版本（如果表保留 content 字段，则更新它）
+    if hasattr(chunk, "content"):
+        chunk.content = payload.content
+        db.commit()
+
+    # 重新生成向量并更新 OS
+    vs = VectorService(db)
+    osvc = OpenSearchService()
+    vector = vs.generate_embedding(payload.content)
+    os_doc = {
+        "document_id": doc_id,
+        "chunk_id": chunk.id,
+        "knowledge_base_id": getattr(chunk, "knowledge_base_id", None),
+        "category_id": getattr(chunk, "category_id", None),
+        "content": payload.content,
+        "chunk_type": getattr(chunk, "chunk_type", "text"),
+        "metadata": {"edited": True},
+        "content_vector": vector,
+        "created_at": chunk.created_at.isoformat() if getattr(chunk, "created_at", None) else None,
+    }
+    osvc.index_document_chunk_sync(os_doc)
+
+    logger.info(f"编辑并重索引完成: doc={doc_id} chunk={chunk_id} version={cv.id}")
+    return {"code": 0, "message": "ok", "data": {"chunk_id": chunk_id, "version_id": cv.id}}
+
+"""
 Document Modification API Routes
 根据文档修改功能设计实现
 """

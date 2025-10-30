@@ -1,3 +1,25 @@
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+from app.dependencies.database import get_db
+from app.services.search_service import SearchService
+
+router = APIRouter()
+
+
+@router.get("/mixed")
+def mixed_search(
+    q: str = Query(..., description="查询文本"),
+    top_k: int = Query(10, ge=1, le=100),
+    kb_id: int | None = Query(None),
+    alpha: float = Query(0.6, ge=0.0, le=1.0),
+    use_vector: bool = Query(True),
+    use_keywords: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    svc = SearchService(db)
+    items = svc.mixed_search(q, knowledge_base_id=kb_id, top_k=top_k, alpha=alpha, use_keywords=use_keywords, use_vector=use_vector)
+    return {"code": 0, "message": "ok", "data": {"list": items, "total": len(items)}}
+
 """
 Search API Routes
 """

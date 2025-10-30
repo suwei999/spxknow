@@ -6,6 +6,12 @@ from pydantic_settings import BaseSettings
 from typing import List, Optional
 import os
 
+# 计算项目根目录，确保无论从哪里运行都能找到根目录下的 .env
+_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+_APP_DIR = os.path.dirname(_CURRENT_DIR)
+_PROJECT_ROOT = os.path.dirname(_APP_DIR)
+_ENV_FILE = os.path.join(_PROJECT_ROOT, ".env")
+
 class Settings(BaseSettings):
     """应用配置"""
     
@@ -175,9 +181,25 @@ class Settings(BaseSettings):
     UNSTRUCTURED_HTML_STRATEGY: str = "fast"
     UNSTRUCTURED_HTML_EXTRACT_IMAGES: bool = True
     UNSTRUCTURED_TXT_ENCODING: str = "utf-8"
+
+    # 文档预处理/转换（参照 Dify 流程）
+    ENABLE_DOCX_REPAIR: bool = True  # 解析前修复主文档关系并清洗无效关系
+    ENABLE_OFFICE_TO_PDF: bool = True  # 修复仍失败时，尝试 LibreOffice 转 PDF 再解析
+    SOFFICE_PATH: str = "soffice"  # LibreOffice 可执行文件路径（可在 .env 中覆盖）
+
+    # 设备与性能（自动检测 CPU/GPU/版本）
+    UNSTRUCTURED_AUTO_DEVICE: bool = True  # 自动选择 cpu/cuda，并按需调整策略
+
+    # 外部可执行程序路径（可选覆盖）
+    POPPLER_PATH: Optional[str] = None  # 如 C:\tools\poppler\bin
+    TESSERACT_PATH: Optional[str] = None  # 如 C:\Program Files\Tesseract-OCR
+    TESSDATA_PREFIX: Optional[str] = None  # 如 C:\Program Files\Tesseract-OCR\tessdata
+    
+    # 分块存储策略
+    STORE_CHUNK_TEXT_IN_DB: bool = False  # 轻量模式：仅存元信息到 MySQL，全文分块归档到 MinIO
     
     class Config:
-        env_file = ".env"
+        env_file = _ENV_FILE
         env_file_encoding = "utf-8"
         case_sensitive = True
 

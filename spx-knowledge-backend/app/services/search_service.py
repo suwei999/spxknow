@@ -1,4 +1,103 @@
 """
+Mixed Search Service: 向量 + 关键词 融合检索
+"""
+
+from typing import List, Dict, Any, Optional
+from app.services.opensearch_service import OpenSearchService
+from app.services.vector_service import VectorService
+from sqlalchemy.orm import Session
+from app.core.logging import logger
+
+
+class SearchService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.os = OpenSearchService()
+        self.vs = VectorService(db)
+
+    def mixed_search(
+        self,
+        query_text: str,
+        knowledge_base_id: Optional[int] = None,
+        top_k: int = 10,
+        alpha: float = 0.6,
+        use_keywords: bool = True,
+        use_vector: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """向量 + 关键词 融合; 简单线性加权融合得分。"""
+        results: List[Dict[str, Any]] = []
+        vector_hits: List[Dict[str, Any]] = []
+        keyword_hits: List[Dict[str, Any]] = []
+
+        try:
+            if use_vector:
+                qv = self.vs.generate_embedding(query_text)
+                vector_hits = self.os.search_document_vectors(
+                    query_vector=qv, similarity_threshold=0.0, limit=top_k * 2, knowledge_base_id=knowledge_base_id
+                ) or []
+        except Exception as e:
+            logger.warning(f"向量检索失败: {e}")
+
+        try:
+            if use_keywords:
+                # 关键词检索：复用 OpenSearchService 的 client
+                must: List[Dict[str, Any]] = [
+                    {"match": {"content": {"query": query_text}}}
+                ]
+                if knowledge_base_id:
+                    must.append({"term": {"knowledge_base_id": knowledge_base_id}})
+                resp = self.os.client.search(
+                    index=self.os.document_index,
+                    body={
+                        "query": {"bool": {"must": must}},
+                        "size": top_k * 2,
+                    },
+                )
+                keyword_hits = [
+                    {
+                        "chunk_id": h["_source"].get("chunk_id"),
+                        "document_id": h["_source"].get("document_id"),
+                        "knowledge_base_id": h["_source"].get("knowledge_base_id"),
+                        "content": h["_source"].get("content"),
+                        "bm25_score": h.get("_score", 0.0),
+                    }
+                    for h in resp.get("hits", {}).get("hits", [])
+                ]
+        except Exception as e:
+            logger.warning(f"关键词检索失败: {e}")
+
+        # 融合
+        by_id: Dict[int, Dict[str, Any]] = {}
+        for h in vector_hits:
+            cid = h.get("chunk_id")
+            if cid is None:
+                continue
+            by_id[cid] = {
+                "chunk_id": cid,
+                "document_id": h.get("document_id"),
+                "knowledge_base_id": h.get("knowledge_base_id"),
+                "content": h.get("content"),
+                "knn_score": h.get("similarity_score", 0.0),
+                "bm25_score": 0.0,
+            }
+        for h in keyword_hits:
+            cid = h.get("chunk_id")
+            if cid is None:
+                continue
+            item = by_id.get(cid)
+            if item is None:
+                by_id[cid] = {**h, "knn_score": 0.0}
+            else:
+                item["bm25_score"] = h.get("bm25_score", 0.0)
+
+        for v in by_id.values():
+            v["score"] = alpha * v.get("knn_score", 0.0) + (1 - alpha) * v.get("bm25_score", 0.0)
+            results.append(v)
+
+        results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return results[:top_k]
+
+"""
 Search Service
 """
 

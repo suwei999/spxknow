@@ -50,11 +50,19 @@ class UnstructuredService:
                 'strategy': settings.UNSTRUCTURED_PDF_STRATEGY,
                 'ocr_languages': settings.UNSTRUCTURED_PDF_OCR_LANGUAGES,
                 'extract_images_in_pdf': settings.UNSTRUCTURED_PDF_EXTRACT_IMAGES,
-                'extract_image_block_types': settings.UNSTRUCTURED_PDF_IMAGE_TYPES
+                'extract_image_block_types': settings.UNSTRUCTURED_PDF_IMAGE_TYPES,
+                # 高保真解析增强：启用表格结构、元数据、中文识别
+                'infer_table_structure': True,
+                'include_metadata': True,
+                'languages': getattr(settings, 'UNSTRUCTURED_LANGUAGES', ['zh', 'en'])
             },
             'docx': {
                 'strategy': settings.UNSTRUCTURED_DOCX_STRATEGY,
-                'extract_images_in_pdf': settings.UNSTRUCTURED_DOCX_EXTRACT_IMAGES
+                'extract_images_in_pdf': settings.UNSTRUCTURED_DOCX_EXTRACT_IMAGES,
+                # 对 Office 文档同样启用结构与元数据提取（未被支持的参数将被忽略）
+                'infer_table_structure': True,
+                'include_metadata': True,
+                'languages': getattr(settings, 'UNSTRUCTURED_LANGUAGES', ['zh', 'en'])
             },
             'pptx': {
                 'strategy': settings.UNSTRUCTURED_PPTX_STRATEGY,
@@ -371,8 +379,12 @@ class UnstructuredService:
             logger.error(f"表格提取错误: {e}", exc_info=True)
             return []
     
-    def chunk_text(self, text: str, document_type: str = "auto", chunk_size: int = None, chunk_overlap: int = None) -> List[str]:
-        """文本分块 - 严格按照设计文档实现智能分块策略"""
+    def chunk_text(self, text: str, document_type: str = "auto", chunk_size: int = None, chunk_overlap: int = None, 
+                   text_element_index_map: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+        """
+        文本分块 - 严格按照设计文档实现智能分块策略
+        返回格式：List[Dict] 包含 {'content': str, 'element_index_start': int, 'element_index_end': int}
+        """
         try:
             # 根据设计文档的分块策略配置
             strategies = {
@@ -384,8 +396,11 @@ class UnstructuredService:
             # 选择策略
             strategy = strategies.get(document_type, strategies["semantic"])
             
-            # 使用提供的参数或默认策略
-            final_chunk_size = chunk_size or strategy["chunk_size"]
+            # 使用提供的参数或默认策略，并与模型上限对齐，避免后续向量化截断
+            from app.config.settings import settings as _settings
+            model_max = int(getattr(_settings, 'TEXT_EMBED_MAX_CHARS', 1024))
+            proposed = chunk_size or strategy["chunk_size"]
+            final_chunk_size = min(proposed, model_max)
             final_chunk_overlap = chunk_overlap or strategy["chunk_overlap"]
             min_size = strategy["min_size"]
             
@@ -393,10 +408,11 @@ class UnstructuredService:
             
             # 根据设计文档的智能分块策略
             chunks = []
+            current_chunk = ""
+            current_chunk_start_pos = 0  # 当前分块在 text_content 中的起始位置
             
             # 按段落分割
             paragraphs = text.split('\n\n')
-            current_chunk = ""
             
             for paragraph in paragraphs:
                 paragraph = paragraph.strip()
@@ -406,17 +422,46 @@ class UnstructuredService:
                 # 如果当前段落加上现有分块超过大小限制
                 if len(current_chunk) + len(paragraph) > final_chunk_size:
                     if current_chunk:
-                        chunks.append(current_chunk.strip())
+                        # 计算当前分块覆盖的 element_index 范围
+                        chunk_end_pos = current_chunk_start_pos + len(current_chunk)
+                        element_index_start, element_index_end = self._get_element_index_range(
+                            current_chunk_start_pos, chunk_end_pos, text_element_index_map
+                        )
+                        chunks.append({
+                            'content': current_chunk.strip(),
+                            'element_index_start': element_index_start,
+                            'element_index_end': element_index_end
+                        })
+                        
                         # 添加重叠部分
                         if final_chunk_overlap > 0 and len(chunks) > 0:
-                            current_chunk = chunks[-1][-final_chunk_overlap:] + "\n\n" + paragraph
+                            # 计算重叠部分的起始位置
+                            overlap_start_pos = chunk_end_pos - final_chunk_overlap
+                            overlap_element_start, _ = self._get_element_index_range(
+                                overlap_start_pos, chunk_end_pos, text_element_index_map
+                            )
+                            current_chunk = chunks[-1]['content'][-final_chunk_overlap:] + "\n\n" + paragraph
+                            current_chunk_start_pos = overlap_start_pos  # 重叠部分的起始位置
                         else:
                             current_chunk = paragraph
+                            current_chunk_start_pos = chunk_end_pos + 2  # +2 for \n\n
                     else:
                         # 段落本身太长，需要进一步分割
                         sub_chunks = self._split_long_paragraph(paragraph, final_chunk_size)
-                        chunks.extend(sub_chunks[:-1])  # 添加前面的完整分块
-                        current_chunk = sub_chunks[-1]  # 保留最后一个不完整的分块
+                        # 处理前面的完整分块
+                        for sub_chunk in sub_chunks[:-1]:
+                            chunk_end_pos = current_chunk_start_pos + len(sub_chunk)
+                            element_index_start, element_index_end = self._get_element_index_range(
+                                current_chunk_start_pos, chunk_end_pos, text_element_index_map
+                            )
+                            chunks.append({
+                                'content': sub_chunk.strip(),
+                                'element_index_start': element_index_start,
+                                'element_index_end': element_index_end
+                            })
+                            current_chunk_start_pos = chunk_end_pos + 2  # +2 for \n\n
+                        # 保留最后一个不完整的分块
+                        current_chunk = sub_chunks[-1]
                 else:
                     if current_chunk:
                         current_chunk += "\n\n" + paragraph
@@ -425,17 +470,57 @@ class UnstructuredService:
             
             # 添加最后一个分块
             if current_chunk:
-                chunks.append(current_chunk.strip())
+                chunk_end_pos = current_chunk_start_pos + len(current_chunk)
+                element_index_start, element_index_end = self._get_element_index_range(
+                    current_chunk_start_pos, chunk_end_pos, text_element_index_map
+                )
+                chunks.append({
+                    'content': current_chunk.strip(),
+                    'element_index_start': element_index_start,
+                    'element_index_end': element_index_end
+                })
             
             # 过滤空分块和小于最小尺寸的分块
-            chunks = [chunk for chunk in chunks if chunk.strip() and len(chunk) >= min_size]
+            chunks = [chunk for chunk in chunks if chunk.get('content', '').strip() and len(chunk.get('content', '')) >= min_size]
             
             logger.info(f"文本分块完成，共生成 {len(chunks)} 个分块")
+            
+            # 兼容旧接口：如果没有提供 text_element_index_map，返回纯字符串列表
+            if text_element_index_map is None:
+                return [chunk['content'] if isinstance(chunk, dict) else chunk for chunk in chunks]
+            
             return chunks
             
         except Exception as e:
             logger.error(f"文本分块错误: {e}", exc_info=True)
-            return [text]  # 返回原始文本作为单个分块
+            # 错误时返回原始文本作为单个分块
+            if text_element_index_map:
+                element_index_start = text_element_index_map[0]['element_index'] if text_element_index_map else 0
+                element_index_end = text_element_index_map[-1]['element_index'] if text_element_index_map else 0
+                return [{'content': text, 'element_index_start': element_index_start, 'element_index_end': element_index_end}]
+            return [text]
+    
+    def _get_element_index_range(self, start_pos: int, end_pos: int, 
+                                 text_element_index_map: Optional[List[Dict[str, Any]]]) -> tuple:
+        """
+        根据文本位置范围，计算对应的 element_index 范围
+        返回: (element_index_start, element_index_end)
+        """
+        if not text_element_index_map:
+            return (None, None)
+        
+        element_indices = []
+        for map_item in text_element_index_map:
+            map_start = map_item.get('start_pos', 0)
+            map_end = map_item.get('end_pos', 0)
+            # 如果文本段落的范围与分块范围有重叠
+            if not (map_end < start_pos or map_start > end_pos):
+                element_indices.append(map_item.get('element_index'))
+        
+        if not element_indices:
+            return (None, None)
+        
+        return (min(element_indices), max(element_indices))
     
     def _get_file_type(self, file_extension: str) -> str:
         """获取文件类型"""
@@ -476,10 +561,13 @@ class UnstructuredService:
                     except Exception:
                         pass
                 return default
-            # 提取文本内容
+            # 提取文本内容和元素索引映射（用于100%还原文档顺序）
             text_content = ""
             images = []
             tables = []
+            # 文本元素索引映射：记录每个文本段落在 text_content 中的位置范围对应的 element_index
+            text_element_index_map = []  # [(start_pos, end_pos, element_index), ...]
+            current_text_pos = 0
             metadata = {
                 'file_size': file_size,
                 'file_type': os.path.splitext(file_path)[1],
@@ -487,29 +575,113 @@ class UnstructuredService:
                 'parsing_timestamp': datetime.utcnow().isoformat() + "Z"
             }
             
-            for element in elements:
+            # 遍历所有元素，记录 element_index（用于100%还原文档顺序）
+            import re
+            for element_index, element in enumerate(elements):
                 element_text = getattr(element, 'text', '')
+                # 基础清洗：去除回车、合并多空格、修复被换行打断的行
                 if element_text:
-                    text_content += element_text + "\n"
+                    element_text = element_text.replace('\r', '')
+                    # 连续空格/制表符归一
+                    element_text = re.sub(r"[\t\f\v]+", " ", element_text)
+                    element_text = re.sub(r"[ ]{2,}", " ", element_text)
                 
-                # 提取图片信息
-                if element.category == 'Image':
+                # 处理文本元素（包括 Title, NarrativeText, ListItem 等）
+                if element_text and element.category not in ['Image', 'Table']:
+                    text_start_pos = current_text_pos
+                    text_end_pos = current_text_pos + len(element_text)
+                    text_content += element_text + "\n"
+                    # 记录文本段落的 element_index 映射
+                    text_element_index_map.append({
+                        'start_pos': text_start_pos,
+                        'end_pos': text_end_pos - 1,  # 减去换行符
+                        'element_index': element_index,
+                        'element_type': element.category,
+                        'page_number': _meta_get(getattr(element, 'metadata', None), 'page_number', None),
+                        'coordinates': self._extract_coordinates(element)
+                    })
+                    current_text_pos = text_end_pos + 1  # +1 for \n
+                
+                # 提取图片信息（记录 element_index）
+                elif element.category == 'Image':
                     elem_id = getattr(element, 'element_id', getattr(element, 'id', None))
+                    # 尝试从 Unstructured 元数据中取出图片二进制（base64）
+                    data_bytes = None
+                    image_ext = '.png'
+                    try:
+                        meta_obj = getattr(element, 'metadata', None)
+                        # 常见字段：image_base64 / image_bytes / binary / data 等
+                        b64 = None
+                        for key in ('image_base64', 'image_data', 'data', 'binary'):
+                            val = getattr(meta_obj, key, None)
+                            if val is None and isinstance(meta_obj, dict):
+                                val = meta_obj.get(key)
+                            if val:
+                                b64 = val
+                                break
+                        if not b64:
+                            # 某些实现可能把base64放在 element 自身
+                            for key in ('image_base64', 'image_data', 'data', 'binary'):
+                                val = getattr(element, key, None)
+                                if val:
+                                    b64 = val
+                                    break
+                        if b64:
+                            from app.utils.conversion_utils import base64_to_bytes
+                            data_bytes = base64_to_bytes(b64)
+                        else:
+                            # 尝试从 element.image (PIL) 导出
+                            pil_img = getattr(element, 'image', None)
+                            if pil_img is not None:
+                                try:
+                                    from io import BytesIO
+                                    buf = BytesIO()
+                                    pil_img.save(buf, format='PNG')
+                                    data_bytes = buf.getvalue()
+                                    image_ext = '.png'
+                                except Exception:
+                                    data_bytes = None
+                        # 进一步兜底：有些解析器仅给出磁盘临时文件路径
+                        if not data_bytes and meta_obj is not None:
+                            for path_key in ('image_path', 'file_path', 'filename', 'png_path', 'path'):
+                                p = getattr(meta_obj, path_key, None)
+                                if p is None and isinstance(meta_obj, dict):
+                                    p = meta_obj.get(path_key)
+                                if p and isinstance(p, str) and os.path.exists(p):
+                                    try:
+                                        with open(p, 'rb') as f:
+                                            data_bytes = f.read()
+                                        # 根据扩展名设置 ext
+                                        _, ext = os.path.splitext(p)
+                                        if ext:
+                                            image_ext = ext.lower()
+                                        break
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        data_bytes = None
+
                     image_info = {
                         'element_id': elem_id,
+                        'element_index': element_index,  # 关键：记录元素在原始elements中的索引
                         'image_type': 'image',
                         'page_number': _meta_get(getattr(element, 'metadata', None), 'page_number', 1),
                         'coordinates': self._extract_coordinates(element),
                         'description': element_text,
                         'ocr_text': element_text
                     }
+                    # 提供给后续流水线的二进制与扩展名（若可用）
+                    if data_bytes:
+                        image_info['data'] = data_bytes
+                        image_info['ext'] = image_ext
                     images.append(image_info)
                 
-                # 提取表格信息
+                # 提取表格信息（记录 element_index）
                 elif element.category == 'Table':
                     elem_id = getattr(element, 'element_id', getattr(element, 'id', None))
                     table_info = {
                         'element_id': elem_id,
+                        'element_index': element_index,  # 关键：记录元素在原始elements中的索引
                         'page_number': _meta_get(getattr(element, 'metadata', None), 'page_number', 1),
                         'coordinates': self._extract_coordinates(element),
                         'table_data': self._extract_table_data(element),
@@ -528,7 +700,9 @@ class UnstructuredService:
                 "metadata": metadata,
                 "char_count": len(text_content),
                 "word_count": len(text_content.split()),
-                "element_count": len(elements)
+                "element_count": len(elements),
+                # 新增：文本元素索引映射（用于100%还原文档顺序）
+                "text_element_index_map": text_element_index_map
             }
             
             return result
@@ -585,25 +759,44 @@ class UnstructuredService:
     def _extract_table_data(self, element) -> Dict[str, Any]:
         """提取表格数据"""
         try:
-            # TODO: 根据设计文档，这里应该提取表格的结构化数据
-            # 包括行列信息、单元格内容等
-            
-            table_data = {
+            # 优先从元数据中提取 HTML/结构化信息，兜底从文本拆分
+            table_data: Dict[str, Any] = {
                 'rows': 0,
                 'columns': 0,
                 'cells': [],
                 'structure': 'unknown'
             }
-            
-            # 临时实现 - 从文本中提取表格信息
-            text = getattr(element, 'text', '')
-            lines = text.split('\n')
-            table_data['rows'] = len(lines)
-            
-            if lines:
-                columns = len(lines[0].split('\t'))
-                table_data['columns'] = columns
-            
+
+            # 1) 尝试提取 HTML 片段（便于前端原样预览）
+            html = getattr(element, 'text_as_html', None)
+            if not html:
+                meta = getattr(element, 'metadata', None)
+                candidate_keys = ('text_as_html', 'table_html', 'html', 'text_html')
+                if meta is not None:
+                    for k in candidate_keys:
+                        val = getattr(meta, k, None)
+                        if val is None and isinstance(meta, dict):
+                            val = meta.get(k)
+                        if val:
+                            html = val
+                            break
+            if html:
+                table_data['html'] = html
+
+            # 2) 兜底：将表格文本按 \n / \t 拆分成二维数组
+            text = getattr(element, 'text', '') or ''
+            if text:
+                lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+                cells: List[List[str]] = []
+                for ln in lines:
+                    cols = [c.strip() for c in ln.split('\t')]
+                    cells.append(cols)
+                if cells:
+                    table_data['cells'] = cells
+                    table_data['rows'] = len(cells)
+                    table_data['columns'] = max((len(r) for r in cells), default=0)
+                    table_data['structure'] = 'tsv'
+
             return table_data
             
         except Exception as e:
@@ -625,21 +818,42 @@ class UnstructuredService:
             
             # 从元素中提取元数据
             for element in elements:
-                element_metadata = getattr(element, 'metadata', {})
+                element_metadata = getattr(element, 'metadata', None)
                 
                 # 提取标题（通常是第一个Title元素）
                 if element.category == 'Title' and not metadata['title']:
                     metadata['title'] = getattr(element, 'text', '')
                 
-                # 提取作者信息
-                if 'author' in element_metadata:
-                    metadata['author'] = element_metadata['author']
-                
-                # 提取创建和修改日期
-                if 'created_date' in element_metadata:
-                    metadata['created_date'] = element_metadata['created_date']
-                if 'modified_date' in element_metadata:
-                    metadata['modified_date'] = element_metadata['modified_date']
+                # 提取作者/时间信息（兼容 ElementMetadata/dict/None）
+                try:
+                    def _safe_get(obj, key, default=None):
+                        if obj is None:
+                            return default
+                        val = getattr(obj, key, None)
+                        if val is not None:
+                            return val
+                        if isinstance(obj, dict):
+                            return obj.get(key, default)
+                        to_dict = getattr(obj, 'to_dict', None)
+                        if callable(to_dict):
+                            try:
+                                d = to_dict()
+                                if isinstance(d, dict):
+                                    return d.get(key, default)
+                            except Exception:
+                                return default
+                        return default
+                    author = _safe_get(element_metadata, 'author', None)
+                    if author:
+                        metadata['author'] = author
+                    created_date = _safe_get(element_metadata, 'created_date', None)
+                    if created_date:
+                        metadata['created_date'] = created_date
+                    modified_date = _safe_get(element_metadata, 'modified_date', None)
+                    if modified_date:
+                        metadata['modified_date'] = modified_date
+                except Exception:
+                    pass
             
             return metadata
             

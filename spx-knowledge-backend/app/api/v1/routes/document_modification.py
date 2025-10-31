@@ -325,6 +325,170 @@ def get_document_chunks(
             detail=f"获取文档块失败: {str(e)}"
         )
 
+@router.get("/{document_id}/elements")
+def get_document_elements(
+    document_id: int,
+    db: Session = Depends(get_db),
+    include_content: bool = True
+):
+    """
+    获取文档所有元素（文本分块+图片）按 element_index 排序 - 用于100%还原原文档顺序
+    返回格式：按 element_index 排序的混合列表，包含文本分块和图片
+    """
+    try:
+        import json
+        from app.models.image import DocumentImage
+        from app.services.minio_storage_service import MinioStorageService
+        from app.config.settings import settings
+        
+        logger.info(f"API请求: 获取文档所有元素（100%还原） document_id={document_id}, include_content={include_content}")
+        
+        # 验证文档是否存在
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            logger.warning(f"文档不存在: {document_id}")
+            raise create_document_not_found_error(document_id)
+        
+        # 1. 获取所有文本分块
+        chunks = db.query(DocumentChunk).filter(
+            DocumentChunk.document_id == document_id,
+            DocumentChunk.is_deleted == False
+        ).order_by(DocumentChunk.chunk_index).all()
+        
+        # 解析每个分块的 element_index 范围
+        chunk_elements = []
+        for chunk in chunks:
+            chunk_meta = {}
+            if chunk.meta:
+                try:
+                    chunk_meta = json.loads(chunk.meta) if isinstance(chunk.meta, str) else chunk.meta
+                except Exception:
+                    pass
+            
+            element_index_start = chunk_meta.get('element_index_start')
+            element_index_end = chunk_meta.get('element_index_end')
+            
+            # 获取分块内容（从DB或MinIO）
+            chunk_content = chunk.content if chunk.content else ""
+            if not chunk_content and not getattr(settings, 'STORE_CHUNK_TEXT_IN_DB', False):
+                # 从 MinIO 读取
+                try:
+                    minio = MinioStorageService()
+                    files = minio.list_files("documents/")
+                    needle = f"/{document_id}/parsed/chunks/chunks.jsonl.gz"
+                    target = None
+                    for fobj in files:
+                        if fobj.get("object_name", "").endswith(needle):
+                            target = fobj["object_name"]
+                            break
+                    if target:
+                        import gzip
+                        response = minio.client.get_object(minio.bucket_name, target)
+                        try:
+                            with gzip.GzipFile(fileobj=response, mode='rb') as gz:
+                                for line in gz:
+                                    try:
+                                        item = json.loads(line)
+                                        if item.get('index') == chunk.chunk_index:
+                                            chunk_content = item.get('content', '')
+                                            break
+                                    except Exception:
+                                        pass
+                        finally:
+                            try:
+                                response.close()
+                                response.release_conn()
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.warning(f"从MinIO读取分块内容失败: {e}")
+            
+            chunk_elements.append({
+                'type': 'chunk',
+                'element_index_start': element_index_start,
+                'element_index_end': element_index_end,
+                'element_index': element_index_start,  # 用于排序（使用起始索引）
+                'chunk_id': chunk.id,
+                'chunk_index': chunk.chunk_index,
+                'content': chunk_content if include_content else None,
+                'content_length': len(chunk_content),
+                'chunk_type': chunk.chunk_type
+            })
+        
+        # 2. 获取所有图片
+        images = db.query(DocumentImage).filter(
+            DocumentImage.document_id == document_id,
+            DocumentImage.is_deleted == False
+        ).all()
+        
+        image_elements = []
+        for image in images:
+            image_meta = {}
+            if image.meta:
+                try:
+                    image_meta = json.loads(image.meta) if isinstance(image.meta, str) else image.meta
+                except Exception:
+                    pass
+            
+            element_index = image_meta.get('element_index')
+            
+            image_elements.append({
+                'type': 'image',
+                'element_index': element_index,
+                'image_id': image.id,
+                'image_path': image.image_path,
+                'image_type': image.image_type,
+                'width': image.width,
+                'height': image.height,
+                'page_number': image_meta.get('page_number'),
+                'coordinates': image_meta.get('coordinates'),
+                'ocr_text': image.ocr_text if include_content else None
+            })
+        
+        # 3. 合并并按 element_index 排序（实现100%还原）
+        all_elements = chunk_elements + image_elements
+        
+        # 过滤掉没有 element_index 的元素（向后兼容）
+        elements_with_index = [e for e in all_elements if e.get('element_index') is not None]
+        elements_without_index = [e for e in all_elements if e.get('element_index') is None]
+        
+        # 按 element_index 排序
+        elements_with_index.sort(key=lambda x: x.get('element_index', 999999))
+        
+        # 对于没有 element_index 的元素，按类型和原有顺序追加
+        # 文本分块按 chunk_index 排序，图片放在最后
+        chunk_without_index = [e for e in elements_without_index if e.get('type') == 'chunk']
+        chunk_without_index.sort(key=lambda x: x.get('chunk_index', 999999))
+        image_without_index = [e for e in elements_without_index if e.get('type') == 'image']
+        
+        # 最终排序结果：有索引的按索引排序，无索引的追加
+        final_elements = elements_with_index + chunk_without_index + image_without_index
+        
+        data = {
+            "document_id": str(document_id),
+            "total_elements": len(final_elements),
+            "elements_with_index": len(elements_with_index),
+            "elements_without_index": len(elements_without_index),
+            "elements": final_elements
+        }
+        
+        result = {
+            "status": "success",
+            "data": data
+        }
+        
+        logger.info(f"API响应: 返回 {len(final_elements)} 个元素（{len(chunk_elements)} 个分块 + {len(image_elements)} 个图片）")
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取文档元素API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取文档元素失败: {str(e)}"
+        )
+
 @router.put("/{document_id}/chunks/{chunk_id}")
 async def update_chunk_content(
     document_id: int,
@@ -414,23 +578,65 @@ async def update_chunk_content(
             
             # 更新操作进度
             status_service.update_operation_progress(operation_id, 50.0, "内容已保存，开始重新向量化")
+
+            # 文档版本递增：以文档为单位记录一次修改版本
+            try:
+                from sqlalchemy import func
+                from app.models.version import DocumentVersion
+                # 计算下一个版本号
+                max_ver = db.query(func.max(DocumentVersion.version_number)).filter(
+                    DocumentVersion.document_id == document_id,
+                    DocumentVersion.is_deleted == False
+                ).scalar() or 0
+                next_ver = int(max_ver) + 1
+                ver = DocumentVersion(
+                    document_id=document_id,
+                    version_number=next_ver,
+                    version_type="edit",
+                    description=f"编辑分块 {chunk_id}",
+                    file_path=document.file_path or "",
+                    file_size=document.file_size,
+                    file_hash=document.file_hash,
+                )
+                db.add(ver)
+                db.commit()
+            except Exception as ver_err:
+                logger.warning(f"记录文档版本失败（不影响修改流程）: {ver_err}")
             
             # WebSocket进度通知
             await websocket_notification_service.send_progress_notification(
                 operation_id, 50.0, "内容已保存，开始重新向量化", "user"
             )
             
-            # 触发全文档重新向量化任务
-            # 根据设计文档，修改后需要重新向量化整个文档的所有块
-            from app.tasks.document_tasks import reprocess_document_task
-            task = reprocess_document_task.delay(document_id)
+            # 增量向量化：仅对当前修改的块进行向量化并更新 OpenSearch
+            try:
+                from app.services.vector_service import VectorService
+                from app.services.opensearch_service import OpenSearchService
+                vector_service = VectorService(db)
+                osvc = OpenSearchService()
+                # 生成文本向量（允许为空向量继续索引）
+                content_vector = vector_service.generate_embedding(new_content or "") if (new_content or "").strip() else []
+                osvc.index_document_chunk_sync({
+                    "document_id": document_id,
+                    "knowledge_base_id": document.knowledge_base_id,
+                    "category_id": document.category_id,
+                    "chunk_id": chunk.id,
+                    "content": new_content,
+                    "chunk_type": getattr(chunk, 'chunk_type', 'text'),
+                    "tags": document.tags or [],
+                    "metadata": chunk.metadata or {},
+                    "created_at": chunk.created_at,
+                    "content_vector": content_vector,
+                })
+            except Exception as idx_err:
+                logger.warning(f"增量索引更新失败（不影响返回）: {idx_err}")
             
             # 更新操作进度
-            status_service.update_operation_progress(operation_id, 80.0, "向量化任务已启动")
+            status_service.update_operation_progress(operation_id, 80.0, "已更新索引")
             
             # WebSocket进度通知
             await websocket_notification_service.send_progress_notification(
-                operation_id, 80.0, "向量化任务已启动", "user"
+                operation_id, 80.0, "已更新索引", "user"
             )
             
             # 按照设计文档要求的响应格式
@@ -441,10 +647,7 @@ async def update_chunk_content(
                 "estimated_completion": "2024-01-01T11:02:00Z"  # TODO: 计算实际完成时间
             }
             
-            result = {
-                "status": "success",
-                "data": data
-            }
+            result = {"code": 0, "message": "ok", "data": data}
             
             # 完成操作状态
             status_service.complete_modification_operation(operation_id, True, "修改完成")
@@ -487,7 +690,7 @@ async def update_chunk_content(
 
 # 块版本管理API接口 - 根据设计文档实现
 
-@router.get("/{document_id}/chunks/{chunk_id}/versions", response_model=ChunkVersionListResponse)
+@router.get("/{document_id}/chunks/{chunk_id}/versions")
 def get_chunk_versions(
     document_id: int,
     chunk_id: int,
@@ -517,7 +720,7 @@ def get_chunk_versions(
         result = version_service.get_chunk_versions(chunk_id, skip, limit)
         
         logger.info(f"API响应: 获取块版本列表成功，版本数={result.total_versions}")
-        return result
+        return {"code": 0, "message": "ok", "data": result}
         
     except HTTPException:
         raise
@@ -528,7 +731,7 @@ def get_chunk_versions(
             detail=f"获取块版本列表失败: {str(e)}"
         )
 
-@router.get("/{document_id}/chunks/{chunk_id}/versions/{version_number}", response_model=ChunkVersionResponse)
+@router.get("/{document_id}/chunks/{chunk_id}/versions/{version_number}")
 def get_chunk_version(
     document_id: int,
     chunk_id: int,
@@ -560,7 +763,7 @@ def get_chunk_version(
             raise create_chunk_not_found_error(version_number)
         
         logger.info(f"API响应: 获取特定版本成功")
-        return version
+        return {"code": 0, "message": "ok", "data": version}
         
     except HTTPException:
         raise

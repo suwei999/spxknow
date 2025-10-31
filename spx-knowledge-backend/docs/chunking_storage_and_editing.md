@@ -98,10 +98,10 @@
    - **注意**：同一图片可能出现在多个文档中，索引会更新为最后一次索引时的文档关联
 
 **去重效果总结**：
-- ✅ **MySQL**：相同图片只有一条记录（通过SHA256去重）
-- ✅ **MinIO**：相同图片只存储一份（通过SHA256路径去重）
-- ✅ **向量生成**：相同图片复用已有向量（不重复生成）
-- ⚠️ **OpenSearch**：索引会更新为最新文档关联（支持多文档关联）
+- ✅ **MySQL**：相同图片只有一条记录（通过SHA256去重）- **已实现**
+- ✅ **MinIO**：相同图片只存储一份（通过SHA256路径去重）- **已实现**
+- ✅ **向量生成**：相同图片复用已有向量（不重复生成）- **已实现**
+- ✅ **OpenSearch**：索引会更新为最新文档关联（支持多文档关联）- **已实现**（每次索引时更新 document_id、page_number、coordinates）
 
 #### 4.0.1 位置信息保证机制
 **位置信息的存储策略**：
@@ -122,14 +122,20 @@
      - **MinIO**：`chunks.jsonl.gz` 中按 `index` 顺序存储（保持原始顺序）
    - **位置还原**：通过 `chunk_index` 排序，可以还原分块在文档中的原始顺序
 
-3. **元素间相对位置**：
-   - **文本与图片的关联**：
+3. **元素间相对位置（关键问题）**：
+   - **当前实现的问题**：
+     - 文本元素和图片元素在解析时被分离处理：
+       * 所有文本元素的文本内容被拼接成字符串（`text_content`）
+       * 图片被单独提取到 `images` 列表
+     - 分块时只对文本字符串进行分块，**丢失了图片与文本的相对位置关系**
+     - 无法精确确定图片应该插入到哪个文本分块之前/之后
+   - **现有位置信息**：
      - 图片的 `page_number` 和 `coordinates` 记录其在文档中的精确位置
      - 文本分块的 `chunk_index` 记录其在文档中的顺序
-     - 通过 `page_number` 和 `chunk_index` 的组合，可以确定图片相对于文本的位置关系
+     - **但两者之间没有直接的关联关系**（无法通过 `chunk_index` 和 `page_number` 精确确定图片应该插入的位置）
    - **上下文信息**：
      - 图片的 `description` 字段存储图片前后的文本内容（由 Unstructured 提取）
-     - 用于理解图片与周围文本的语义关联
+     - 可以用于语义关联，但无法精确确定插入位置
 
 **位置信息的还原机制**：
 
@@ -151,9 +157,147 @@
    - **MySQL 元数据**：通过 `chunk_index` 和位置信息（存储在 metadata JSON 中），可以还原文档的层次结构
 
 **注意事项**：
-- ⚠️ **去重时的位置信息**：图片去重（SHA256相同）时，虽然图片实体只有一个，但每个文档中的位置信息（`page_number`、`coordinates`）会独立存储和更新
-- ⚠️ **分块后的位置精度**：文本分块后，单个分块可能跨越多页，此时 `page_number` 需要从 metadata 中获取（可能需要存储起始页码和结束页码）
-- ✅ **设计原则**：位置信息遵循"数据去重，位置独立"的原则，确保每个文档中的位置信息准确无误
+- ✅ **去重时的位置信息**：图片去重（SHA256相同）时，虽然图片实体只有一个，但每个文档中的位置信息（`page_number`、`coordinates`）会独立存储和更新 - **已实现**（每次索引时更新位置信息）
+- ⚠️ **分块后的位置精度（已知限制）**：
+  - **当前状态**：文本分块后，单个分块可能跨越多页，但**当前实现中未存储分块的页码信息**
+  - **原因**：当前分块策略（`chunk_text`）只处理纯文本字符串，在文本提取阶段（`_process_parsed_elements`）已将元素拼接成字符串，丢失了原始元素的页码信息
+  - **影响范围**：无法精确查询"特定页码的所有分块"，只能通过 `chunk_index` 排序还原顺序
+  - **未来改进方向**：
+    - 改进分块策略：在分块时记录每个段落/句子来自哪个页码范围
+    - 存储 `page_number_start` 和 `page_number_end` 到 `metadata` JSON 中
+    - 或者在 MinIO 的 `chunks.jsonl.gz` 中记录每个分块的页码范围
+
+#### 4.0.2 前端文档还原能力评估
+**当前实现能否100%还原原文档？**
+
+说明：已在 4.0.3「方案1实现：记录元素顺序索引」落地，现已支持按 `element_index` 100% 还原原文档顺序。以下内容为“改造前”的评估，保留用于对比。
+
+❌ **不能100%还原**，存在以下限制：
+
+1. **图片与文本的相对位置丢失**：
+   - **问题**：在解析阶段，文本和图片被分离处理，分块时丢失了相对位置关系
+   - **影响**：无法精确确定图片应该插入到哪个文本分块之前/之后
+   - **当前可用方案**：
+     * 通过 `page_number` 和 `coordinates.y` 排序图片
+     * 通过 `chunk_index` 排序文本分块
+     * **近似还原**：可以按页码分组，在同一页码内按坐标排序，但无法精确到字符级别
+
+2. **文本分块没有页码信息**：
+   - **问题**：文本分块只保留了 `chunk_index`，没有页码范围
+   - **影响**：无法精确判断图片是在某个分块的开始还是结束位置
+
+3. **改进方案（需要修改代码）**：
+   - **方案1：记录元素顺序索引**（推荐）
+     * 在 `_process_parsed_elements` 中，为每个元素（文本/图片）记录其在原始 `elements` 列表中的索引（`element_index`）
+     * 图片保存 `element_index` 到 `metadata` JSON 中
+     * 分块时，记录每个文本分块覆盖的 `element_index` 范围
+     * 前端展示时：按 `element_index` 排序所有元素（文本分块+图片），实现100%还原
+   
+   - **方案2：建立图片与分块关联**
+     * 分块时，根据文本内容和图片的 `description` 字段，匹配图片所属的分块
+     * 在 `document_images` 表中添加 `chunk_id` 字段，关联到最近的文本分块
+     * 或者添加 `insert_after_chunk_index` 字段，记录图片应该插入到哪个分块之后
+   
+   - **方案3：保存完整的元素序列**
+     * 在 MinIO 中保存原始 `elements` 列表（带位置信息）
+     * 前端展示时，从 MinIO 读取原始元素序列，而不是从分块重构
+
+**当前可用方案（近似还原）**：
+- 按 `page_number` 分组
+- 在同一页码内，文本分块按 `chunk_index` 排序，图片按 `coordinates.y` 排序
+- 交叉合并文本和图片，**可以达到近似还原**，但不能保证100%准确
+
+**结论（改造前）**：要实现100%还原原文档顺序，需要修改代码，添加元素顺序索引或建立图片与分块的关联关系。
+
+当前状态：已实现✅（见 4.0.3 方案1实现）。
+
+#### 4.0.3 方案1实现：记录元素顺序索引（已实现✅）
+
+**实现细节**：
+
+1. **解析阶段记录 element_index**：
+   - 在 `_process_parsed_elements` 中，遍历 `elements` 时记录每个元素在原始列表中的索引（`element_index`）
+   - 文本元素：记录 `element_index` 和文本在 `text_content` 中的位置范围，生成 `text_element_index_map`
+   - 图片元素：在 `image_info` 中保存 `element_index`
+   - 表格元素：在 `table_info` 中保存 `element_index`
+
+2. **分块阶段保留 element_index 范围**：
+   - 改进 `chunk_text` 方法，接收 `text_element_index_map` 参数
+   - 根据分块在文本中的位置范围，通过 `_get_element_index_range` 计算每个分块覆盖的 `element_index_start` 和 `element_index_end`
+   - 返回格式：`List[Dict]` 包含 `{'content': str, 'element_index_start': int, 'element_index_end': int}`
+
+3. **存储阶段保存 element_index**：
+   - **文本分块**：
+     * MySQL：在 `document_chunks.metadata` JSON 中保存 `element_index_start` 和 `element_index_end`
+     * MinIO：在 `chunks.jsonl.gz` 中保存 `element_index_start` 和 `element_index_end`
+     * OpenSearch：在 `metadata` 中保存（用于检索）
+   - **图片**：
+     * MySQL：在 `document_images.metadata` JSON 中保存 `element_index`
+     * OpenSearch：在 `images` 索引中保存 `element_index` 字段（用于排序和还原）
+
+4. **API接口提供100%还原**：
+   - 新增 `GET /documents/{document_id}/elements` 接口
+   * 获取所有文本分块和图片，按 `element_index` 排序
+   * 返回格式：混合列表，包含 `type: 'chunk'|'image'` 和对应的 `element_index`
+   * 支持 `include_content` 参数控制是否返回完整内容
+   * **实现100%还原原文档顺序**
+
+**使用示例**：
+```python
+# 前端调用API
+GET /api/v1/documents/123/elements?include_content=true
+
+# 响应示例
+{
+  "status": "success",
+  "data": {
+    "document_id": "123",
+    "total_elements": 15,
+    "elements_with_index": 15,  # 所有元素都有element_index
+    "elements_without_index": 0,
+    "elements": [
+      {
+        "type": "chunk",
+        "element_index": 0,
+        "element_index_start": 0,
+        "element_index_end": 2,
+        "chunk_id": 1001,
+        "chunk_index": 0,
+        "content": "第一段文本..."
+      },
+      {
+        "type": "image",
+        "element_index": 3,
+        "image_id": 2001,
+        "image_path": "documents/.../image.png",
+        ...
+      },
+      {
+        "type": "chunk",
+        "element_index": 4,
+        "element_index_start": 4,
+        "element_index_end": 6,
+        "chunk_id": 1002,
+        "chunk_index": 1,
+        "content": "第二段文本..."
+      }
+    ]
+  }
+}
+
+# 前端按 elements 数组顺序渲染，即可100%还原原文档
+```
+
+**优势**：
+- ✅ 100%还原原文档顺序（按 `element_index` 排序）
+- ✅ 向后兼容（没有 `element_index` 的元素仍可正常处理）
+- ✅ 支持文档部分内容修改（通过 `element_index` 精确定位）
+- ✅ 最小改动（只增加字段，不改变现有逻辑）
+
+**注意事项**：
+- `element_index` 从 0 开始，对应 Unstructured 解析返回的 `elements` 列表索引
+- 文本分块的 `element_index_start` 和 `element_index_end` 可能相同（单个元素）或不同（多个元素合并）
+- 如果图片或分块没有 `element_index`（旧数据），仍可按原有逻辑排序（向后兼容）
 
 #### 4.1 图片向量模型选择
 **推荐方案：CLIP模型（ViT-B/32）**

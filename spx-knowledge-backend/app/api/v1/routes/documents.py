@@ -11,6 +11,14 @@ from app.dependencies.database import get_db
 from sqlalchemy.orm import Session
 from app.core.logging import logger
 from app.config.settings import settings
+from app.services.chunk_service import ChunkService
+from app.services.image_service import ImageService
+from app.services.minio_storage_service import MinioStorageService
+from app.models.document import Document
+import gzip, json, io, datetime
+import os, tempfile
+from app.services.office_converter import convert_docx_to_pdf, compress_pdf
+from app.services.opensearch_service import OpenSearchService
 
 router = APIRouter()
 
@@ -240,6 +248,298 @@ async def get_document(
             detail=f"获取文档详情失败: {str(e)}"
         )
 
+@router.get("/{doc_id}/chunks")
+async def get_document_chunks(
+    doc_id: int,
+    page: int = 1,
+    size: int = settings.QA_DEFAULT_PAGE_SIZE,
+    include_content: bool = False,
+    db: Session = Depends(get_db)
+):
+    """获取指定文档的分块列表（兼容前端 /documents/{id}/chunks）"""
+    try:
+        skip = max(page - 1, 0) * max(size, 1)
+        service = ChunkService(db)
+        rows = await service.get_chunks(skip=skip, limit=size, document_id=doc_id)
+        items = []
+
+        # 若数据库未存文本，尝试从 MinIO 的 chunks.jsonl.gz 读取对应范围
+        content_map = {}
+        try:
+            doc = db.query(Document).filter(Document.id == doc_id).first()
+            if doc:
+                created: datetime.datetime = getattr(doc, 'created_at', None) or datetime.datetime.utcnow()
+                year = created.strftime('%Y')
+                month = created.strftime('%m')
+                object_name = f"documents/{year}/{month}/{doc_id}/parsed/chunks/chunks.jsonl.gz"
+                minio = MinioStorageService()
+                obj = minio.client.get_object(minio.bucket_name, object_name)
+                gz_bytes = obj.read()
+                obj.close(); obj.release_conn()
+                with gzip.GzipFile(fileobj=io.BytesIO(gz_bytes), mode='rb') as gz:
+                    idx_start = skip
+                    idx_end = skip + size
+                    current_index = 0
+                    for line in gz:
+                        try:
+                            d = json.loads(line.decode('utf-8'))
+                        except Exception:
+                            continue
+                        idx = d.get('index') or d.get('chunk_index')
+                        if idx is None:
+                            idx = current_index
+                        current_index += 1
+                        if idx < idx_start or idx >= idx_end:
+                            continue
+                        content_map[int(idx)] = d.get('content') or ''
+        except Exception:
+            content_map = {}
+
+        for c in rows:
+            idx = getattr(c, 'chunk_index', None)
+            content = getattr(c, 'content', None)
+            if (not content) and (idx is not None) and (idx in content_map):
+                content = content_map[idx]
+            items.append({
+                "id": c.id,
+                "document_id": c.document_id,
+                "chunk_index": idx,
+                **({"content": content} if include_content else {}),
+                "chunk_type": getattr(c, "chunk_type", "text"),
+                "char_count": len(content or getattr(c, "content", "") or ""),
+                "created_at": getattr(c, "created_at", None),
+            })
+        return {"code": 0, "message": "ok", "data": {"list": items, "total": len(items), "page": page, "size": size}}
+    except Exception as e:
+        logger.error(f"获取文档分块失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取文档分块失败: {str(e)}")
+
+@router.get("/{doc_id}/chunks/{chunk_id}")
+async def get_document_chunk_detail(
+    doc_id: int,
+    chunk_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取单个分块详情（含内容）。当数据库未存文本时，从 MinIO 读取对应文本。"""
+    try:
+        from app.models.chunk import DocumentChunk
+        chunk = db.query(DocumentChunk).filter(
+            DocumentChunk.id == chunk_id,
+            DocumentChunk.document_id == doc_id
+        ).first()
+        if not chunk:
+            raise HTTPException(status_code=404, detail="分块不存在")
+
+        # 读取内容：优先 DB；否则从 MinIO 归档映射定位
+        content = chunk.content or ""
+        if not content:
+            try:
+                created = getattr(chunk, 'created_at', None)
+                doc = db.query(Document).filter(Document.id == doc_id).first()
+                if doc:
+                    created = getattr(doc, 'created_at', created) or datetime.datetime.utcnow()
+                year = created.strftime('%Y')
+                month = created.strftime('%m')
+                object_name = f"documents/{year}/{month}/{doc_id}/parsed/chunks/chunks.jsonl.gz"
+                minio = MinioStorageService()
+                obj = minio.client.get_object(minio.bucket_name, object_name)
+                import gzip, json
+                try:
+                    with gzip.GzipFile(fileobj=obj, mode='rb') as gz:
+                        for line in gz:
+                            try:
+                                item = json.loads(line)
+                                # 归档里使用的是 index（chunk_index），兼容旧字段 chunk_id
+                                item_index = item.get("index")
+                                if item_index is None:
+                                    item_index = item.get("chunk_id")
+                                if item_index is not None and int(item_index) == int(getattr(chunk, 'chunk_index', 0)):
+                                    content = item.get("content", "")
+                                    break
+                            except Exception:
+                                continue
+                finally:
+                    try:
+                        obj.close(); obj.release_conn()
+                    except Exception:
+                        pass
+            except Exception:
+                content = ""
+
+        data = {
+            "chunk_id": chunk.id,
+            "document_id": chunk.document_id,
+            "chunk_index": getattr(chunk, 'chunk_index', None),
+            "chunk_type": getattr(chunk, 'chunk_type', 'text'),
+            "content": content,
+            "char_count": len(content or getattr(chunk, 'content', '') or ''),
+            "version": getattr(chunk, 'version', 1),
+            "created_at": getattr(chunk, 'created_at', None),
+            "last_modified_at": getattr(chunk, 'last_modified_at', None),
+        }
+        return {"code": 0, "message": "ok", "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取分块详情失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取分块详情失败: {str(e)}")
+
+@router.get("/{doc_id}/images")
+async def get_document_images(
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取指定文档的图片列表（兼容前端 /documents/{id}/images）"""
+    try:
+        service = ImageService(db)
+        imgs = db.query(service.model).filter(service.model.document_id == doc_id, service.model.is_deleted == False).all()
+        items = []
+        minio = MinioStorageService()
+        for im in imgs:
+            # 为前端 <img> 生成可访问 URL（签名）
+            url = None
+            try:
+                from datetime import timedelta
+                url = minio.client.presigned_get_object(minio.bucket_name, im.image_path, expires=timedelta(hours=1))
+            except Exception:
+                url = f"/{im.image_path}"
+            items.append({
+                "id": im.id,
+                "document_id": im.document_id,
+                "image_path": im.image_path,
+                "thumbnail_path": getattr(im, "thumbnail_path", None),
+                "url": url,
+                "width": getattr(im, "width", None),
+                "height": getattr(im, "height", None),
+                "description": getattr(im, "description", ""),
+                "ocr_text": getattr(im, "ocr_text", ""),
+                "created_at": getattr(im, "created_at", None),
+            })
+        return {"code": 0, "message": "ok", "data": items}
+    except Exception as e:
+        logger.error(f"获取文档图片失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取文档图片失败: {str(e)}")
+
+@router.get("/{doc_id}/preview")
+async def get_document_preview(
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """返回原始文档的直链；若为 Office 文档则自动生成 PDF 预览并返回其直链。"""
+    try:
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="文档不存在")
+        if not doc.file_path:
+            raise HTTPException(status_code=404, detail="缺少原始文件路径")
+
+        minio = MinioStorageService()
+        # 原始直链
+        from datetime import timedelta
+        original_url = minio.client.presigned_get_object(minio.bucket_name, doc.file_path, expires=timedelta(hours=1))
+
+        # 推断类型
+        content_type = "application/octet-stream"
+        try:
+            stat = minio.client.stat_object(minio.bucket_name, doc.file_path)
+            if getattr(stat, 'content_type', None):
+                content_type = stat.content_type
+        except Exception:
+            pass
+
+        # 如果是 Office 文档，尝试生成并返回 PDF 预览
+        ext = os.path.splitext(doc.file_path)[1].lower()
+        is_office = ext in {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
+        if is_office:
+            try:
+                # 预览目标对象键
+                created: datetime.datetime = getattr(doc, 'created_at', None) or datetime.datetime.utcnow()
+                year = created.strftime('%Y')
+                month = created.strftime('%m')
+                preview_base = f"documents/{year}/{month}/{doc.id}/preview"
+                preview_object = f"{preview_base}/preview.pdf"
+                preview_object_screen = f"{preview_base}/preview_screen.pdf"
+
+                # 若已存在，直接返回
+                try:
+                    stat_prev = minio.client.stat_object(minio.bucket_name, preview_object)
+                    if stat_prev:
+                        preview_url = minio.client.presigned_get_object(minio.bucket_name, preview_object, expires=timedelta(hours=1))
+                        return {"code": 0, "message": "ok", "data": {"preview_url": preview_url, "content_type": "application/pdf", "original_url": original_url}}
+                except Exception:
+                    pass
+
+                # 下载原件到临时目录
+                obj = minio.client.get_object(minio.bucket_name, doc.file_path)
+                data = obj.read(); obj.close(); obj.release_conn()
+                with tempfile.TemporaryDirectory() as td:
+                    src_path = os.path.join(td, f"origin{ext}")
+                    with open(src_path, 'wb') as f:
+                        f.write(data)
+                    pdf_path = convert_docx_to_pdf(src_path)
+                    if pdf_path and os.path.exists(pdf_path):
+                        # 若 PDF 较大，尝试生成轻量版本
+                        try:
+                            size_bytes = os.path.getsize(pdf_path)
+                        except Exception:
+                            size_bytes = 0
+                        threshold_mb = 10  # 10MB 阈值
+                        use_screen = size_bytes > threshold_mb * 1024 * 1024
+
+                        if use_screen:
+                            screen_pdf = os.path.join(td, 'preview_screen.pdf')
+                            if compress_pdf(pdf_path, screen_pdf, quality='screen') and os.path.exists(screen_pdf):
+                                with open(screen_pdf, 'rb') as pf:
+                                    minio.client.put_object(
+                                        minio.bucket_name,
+                                        preview_object_screen,
+                                        data=pf,
+                                        length=os.path.getsize(screen_pdf),
+                                        content_type='application/pdf'
+                                    )
+                                preview_url = minio.client.presigned_get_object(minio.bucket_name, preview_object_screen, expires=timedelta(hours=1))
+                                return {"code": 0, "message": "ok", "data": {"preview_url": preview_url, "content_type": "application/pdf", "original_url": original_url}}
+
+                        # 上传 PDF 到 MinIO
+                        with open(pdf_path, 'rb') as pf:
+                            minio.client.put_object(
+                                minio.bucket_name,
+                                preview_object,
+                                data=pf,
+                                length=os.path.getsize(pdf_path),
+                                content_type='application/pdf'
+                            )
+                        preview_url = minio.client.presigned_get_object(minio.bucket_name, preview_object, expires=timedelta(hours=1))
+                        return {"code": 0, "message": "ok", "data": {"preview_url": preview_url, "content_type": "application/pdf", "original_url": original_url}}
+            except Exception as conv_e:
+                logger.warning(f"生成 Office 预览失败，将返回原件直链: {conv_e}")
+
+        # 默认返回原始直链
+        return {"code": 0, "message": "ok", "data": {"preview_url": original_url, "content_type": content_type, "original_url": original_url}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取原文直链失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取原文直链失败: {str(e)}")
+
+@router.get("/{doc_id}/chunks/{chunk_id}/content-opensearch")
+async def get_chunk_content_from_opensearch(
+    doc_id: int,
+    chunk_id: int,
+):
+    """从 OpenSearch 读取指定块内容（不走数据库/MinIO）。"""
+    try:
+        osvc = OpenSearchService()
+        # OpenSearch 文档 id 规则为 chunk_{chunk_id}
+        res = osvc.client.get(index=osvc.document_index, id=f"chunk_{chunk_id}")
+        source = res.get("_source", {}) if isinstance(res, dict) else {}
+        if not source or int(source.get("document_id", 0)) != int(doc_id):
+            return {"code": 1, "message": "未找到该块或文档不匹配", "data": None}
+        return {"code": 0, "message": "ok", "data": {"chunk_id": chunk_id, "content": source.get("content", ""), "chunk_type": source.get("chunk_type", "text"), "char_count": len(source.get("content", "") or "")}}
+    except Exception as e:
+        logger.error(f"读取OpenSearch块内容失败: {e}")
+        return {"code": 1, "message": f"读取失败: {str(e)}"}
+
 @router.put("/{doc_id}", response_model=DocumentResponse)
 async def update_document(
     doc_id: int,
@@ -292,7 +592,11 @@ async def delete_document(
             )
         
         logger.info(f"API响应: 文档删除成功 {doc_id}")
-        return {"message": "文档删除成功"}
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"document_id": doc_id, "deleted": True}
+        }
         
     except HTTPException:
         raise

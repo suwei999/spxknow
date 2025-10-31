@@ -23,52 +23,32 @@ class VectorService:
         self.image_model = settings.OLLAMA_IMAGE_MODEL  # TODO: 添加图片模型配置
     
     def generate_embedding(self, text: str) -> List[float]:
-        """生成文本嵌入向量 - 严格按照设计文档实现"""
+        """生成文本嵌入向量。
+        如果 Ollama 不可用或返回空，降级为返回空列表，让上游继续索引文本（无向量）。
+        """
         try:
             logger.debug(f"开始生成文本向量，文本长度: {len(text)}")
-            
-            # 根据设计文档，使用Ollama进行向量化
-            # 支持多种模型：nomic-embed-text（中文优化）、mxbai-embed-large（多语言支持）、all-minilm（轻量级）
-            
-            # 文本预处理
             processed_text = self._preprocess_text(text)
-            
-            # 调用Ollama API
+
             response = requests.post(
                 f"{self.ollama_url}/api/embeddings",
-                json={
-                    "model": self.embedding_model,
-                    "prompt": processed_text
-                },
-                timeout=30
+                json={"model": self.embedding_model, "prompt": processed_text},
+                timeout=15,
             )
             response.raise_for_status()
-            
             result = response.json()
             embedding = result.get("embedding", [])
-            
             if not embedding:
-                logger.error("Ollama返回空向量")
-                raise CustomException(
-                    code=ErrorCode.VECTOR_GENERATION_FAILED,
-                    message="Ollama返回空向量"
-                )
-            
+                logger.warning("Ollama返回空向量，降级为无向量索引")
+                return []
             logger.debug(f"文本向量生成完成，向量维度: {len(embedding)}")
             return embedding
-            
         except requests.exceptions.RequestException as e:
-            logger.error(f"Ollama API调用失败: {e}")
-            raise CustomException(
-                code=ErrorCode.OLLAMA_API_FAILED,
-                message=f"Ollama API调用失败: {str(e)}"
-            )
+            logger.warning(f"Ollama 不可用，降级为无向量索引: {e}")
+            return []
         except Exception as e:
-            logger.error(f"向量生成错误: {e}", exc_info=True)
-            raise CustomException(
-                code=ErrorCode.VECTOR_GENERATION_FAILED,
-                message=f"向量生成失败: {str(e)}"
-            )
+            logger.warning(f"文本向量生成异常，降级为无向量索引: {e}")
+            return []
     
     def generate_image_embedding(self, image_path: str) -> List[float]:
         """生成图片嵌入向量 - 使用本地CLIP模型
@@ -108,6 +88,57 @@ class VectorService:
                 code=ErrorCode.VECTOR_GENERATION_FAILED,
                 message=f"图片向量生成失败: {str(e)}"
             )
+
+    def generate_image_embedding_prefer_memory(self, image_bytes: bytes) -> List[float]:
+        """
+        优先使用内存管道生成图片向量；如不支持或失败，自动回退到临时文件。
+        """
+        from app.config.settings import settings
+        prefer_memory = (getattr(settings, 'IMAGE_PIPELINE_MODE', 'memory') == 'memory')
+
+        # 1) 优先走内存：如果底层服务支持 from-bytes 接口
+        if prefer_memory:
+            try:
+                from app.services.image_vectorization_service import ImageVectorizationService
+                image_vectorizer = ImageVectorizationService()
+
+                # 优先尝试 bytes 能力：generate_clip_embedding_from_bytes 或 generate_clip_embedding_bytes
+                if hasattr(image_vectorizer, 'generate_clip_embedding_from_bytes'):
+                    embedding = image_vectorizer.generate_clip_embedding_from_bytes(image_bytes)
+                elif hasattr(image_vectorizer, 'generate_clip_embedding_bytes'):
+                    embedding = image_vectorizer.generate_clip_embedding_bytes(image_bytes)
+                else:
+                    embedding = None  # 将触发回退
+
+                if embedding and len(embedding) == 512:
+                    return embedding
+            except Exception as e:
+                logger.debug(f"内存管道生成图片向量失败，将回退到临时文件: {e}")
+
+        # 2) 回退：写入临时文件，复用现有基于路径的实现
+        import tempfile, os
+        tmp_path = None
+        try:
+            tmp_dir = tempfile.mkdtemp()
+            tmp_path = os.path.join(tmp_dir, 'clip_input.png')
+            with open(tmp_path, 'wb') as f:
+                f.write(image_bytes)
+
+            embedding = self.generate_image_embedding(tmp_path)
+            return embedding
+        finally:
+            try:
+                # 按配置清理临时文件
+                from app.config.settings import settings as _settings
+                keep = getattr(_settings, 'DEBUG_KEEP_TEMP_FILES', False)
+                if not keep:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                    tmp_dir_local = os.path.dirname(tmp_path) if tmp_path else None
+                    if tmp_dir_local and os.path.isdir(tmp_dir_local):
+                        os.rmdir(tmp_dir_local)
+            except Exception:
+                pass
     
     def calculate_similarity(
         self, 
@@ -207,8 +238,9 @@ class VectorService:
             # 基本清洗
             processed_text = text.strip()
             
-            # 长度限制（根据模型要求）
-            max_length = 512  # TODO: 根据实际模型调整
+            # 长度限制（根据模型要求，与分块上限保持一致）
+            from app.config.settings import settings as _settings
+            max_length = int(getattr(_settings, 'TEXT_EMBED_MAX_CHARS', 1024))
             if len(processed_text) > max_length:
                 processed_text = processed_text[:max_length]
                 logger.debug(f"文本长度超限，截断到 {max_length} 字符")

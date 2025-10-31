@@ -1,6 +1,5 @@
 <template>
   <div class="tag-selector">
-    <el-form-item label="标签" prop="tags">
       <!-- 已选择的标签 -->
       <div v-if="selectedTags.length > 0" class="selected-tags">
         <el-tag
@@ -35,13 +34,12 @@
         v-model="customTag"
         placeholder="输入自定义标签并按回车"
         @keydown.enter="addCustomTag"
-        style="margin-top: 10px;"
+        class="tag-input"
       >
         <template #append>
           <el-button @click="addCustomTag">添加</el-button>
         </template>
       </el-input>
-    </el-form-item>
   </div>
 </template>
 
@@ -123,7 +121,7 @@ onMounted(() => {
   .selected-tags {
     min-height: 32px;
     padding: 8px;
-    border: 1px solid #dcdfe6;
+    border: 1px solid var(--el-border-color);
     border-radius: 4px;
     margin-bottom: 12px;
   }
@@ -136,7 +134,10 @@ onMounted(() => {
       
       .tags-title {
         font-size: 14px;
-        color: #606266;
+        color: #e9eef5;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        text-shadow: 0 1px 2px rgba(0,0,0,.35);
       }
     }
 
@@ -144,12 +145,21 @@ onMounted(() => {
       margin-right: 8px;
       margin-bottom: 8px;
       cursor: pointer;
-      transition: all 0.3s;
+      transition: all 0.2s ease;
+      border: 1px solid #60a5fa !important;
+      background: rgba(59, 130, 246, 0.12) !important;
+      color: #eaf2ff !important;
+      box-shadow: 0 0 0 rgba(96,165,250,0);
 
       &:hover {
-        transform: scale(1.05);
+        transform: translateY(-1px) scale(1.04);
+        box-shadow: 0 0 12px rgba(96,165,250,0.45);
       }
     }
+  }
+
+  .tag-input :deep(.el-input__inner) {
+    color: var(--el-text-color-primary);
   }
 }
 </style>

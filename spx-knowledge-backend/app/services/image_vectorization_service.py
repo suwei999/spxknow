@@ -28,11 +28,22 @@ class ImageVectorizationService:
         """初始化视觉模型 - 根据设计文档实现"""
         try:
             logger.info("开始初始化视觉模型")
-            
-            # 1. CLIP模型初始化（open-clip）
+            from app.config.settings import settings as _settings
+            # 仅初始化CLIP，避免下载其他模型
             logger.info("初始化CLIP模型")
+            # 准备本地目录（首次运行自动创建）
+            try:
+                os.makedirs(_settings.CLIP_MODELS_DIR, exist_ok=True)
+                os.makedirs(_settings.CLIP_CACHE_DIR, exist_ok=True)
+            except Exception:
+                pass
+            os.environ.setdefault('OPENCLIP_CACHE', _settings.CLIP_CACHE_DIR)
+
+            # 若本地权重存在则优先使用；否则允许在线下载到缓存目录
+            pretrained_arg = _settings.CLIP_PRETRAINED_PATH if os.path.exists(_settings.CLIP_PRETRAINED_PATH) else "laion2b_s34b_b79k"
+            model_name = getattr(_settings, 'CLIP_MODEL_NAME', 'ViT-B-32')
             clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
-                "ViT-B-32", pretrained="laion2b_s34b_b79k", device=self.device
+                model_name, pretrained=pretrained_arg, device=self.device
             )
             clip_model.eval()
             clip_model.to(self.device)
@@ -40,39 +51,7 @@ class ImageVectorizationService:
             self.transforms['clip'] = clip_preprocess
             logger.info("CLIP模型初始化完成")
             
-            # 2. ResNet模型初始化
-            logger.info("初始化ResNet模型")
-            resnet_model = resnet50(pretrained=True)
-            resnet_model.eval()
-            resnet_model.to(self.device)
-            self.models['resnet'] = resnet_model
-            
-            # ResNet预处理
-            resnet_transform = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-            self.transforms['resnet'] = resnet_transform
-            logger.info("ResNet模型初始化完成")
-            
-            # 3. ViT模型初始化
-            logger.info("初始化ViT模型")
-            vit_model = vit_b_16(pretrained=True)
-            vit_model.eval()
-            vit_model.to(self.device)
-            self.models['vit'] = vit_model
-            
-            # ViT预处理
-            vit_transform = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-            self.transforms['vit'] = vit_transform
-            logger.info("ViT模型初始化完成")
+            # 关闭 ResNet/ViT 以避免联网下载
             
             logger.info("所有视觉模型初始化完成")
             

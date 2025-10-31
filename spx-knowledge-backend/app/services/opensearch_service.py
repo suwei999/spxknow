@@ -53,9 +53,26 @@ class OpenSearchService:
         try:
             logger.info("检查并创建OpenSearch索引")
             
-            # 创建文档内容索引
+            # 创建/校验文档内容索引（校验向量维度，若不一致则重建）
             if not self.client.indices.exists(index=self.document_index):
                 self._create_document_index()
+            else:
+                try:
+                    mapping = self.client.indices.get_mapping(index=self.document_index)
+                    props = mapping[self.document_index]["mappings"].get("properties", {})
+                    content_vector = props.get("content_vector", {})
+                    current_dim = content_vector.get("dimension")
+                    from app.config.settings import settings as _settings
+                    want_dim = int(getattr(_settings, "TEXT_EMBEDDING_DIMENSION", 768))
+                    if current_dim and current_dim != want_dim:
+                        logger.warning(
+                            f"检测到 content_vector 维度不一致，当前={current_dim} 期望={want_dim}，将删除并重建索引 {self.document_index}"
+                        )
+                        self.client.indices.delete(index=self.document_index, ignore=[400, 404])
+                        self._create_document_index()
+                except Exception:
+                    # 若映射读取失败，尽量继续
+                    pass
             
             # 创建图片专用索引
             if not self.client.indices.exists(index=self.image_index):
@@ -113,10 +130,10 @@ class OpenSearchService:
                         # 时间字段
                         "created_at": {"type": "date"},
                         
-                        # 向量字段 - 768维文本向量，HNSW算法
+                        # 向量字段 - 文本向量（维度来自配置），HNSW算法
                         "content_vector": {
                             "type": "knn_vector",
-                            "dimension": 768,
+                            "dimension": settings.TEXT_EMBEDDING_DIMENSION,
                             "method": {
                                 "name": "hnsw",
                                 "space_type": "cosinesimil",
@@ -173,6 +190,8 @@ class OpenSearchService:
                         "document_id": {"type": "integer"},
                         "knowledge_base_id": {"type": "integer"},
                         "category_id": {"type": "integer"},
+                        # 元素顺序索引（用于前端100%还原）
+                        "element_index": {"type": "integer"},
                         
                         # 图片字段
                         "image_path": {"type": "keyword"},
@@ -286,8 +305,10 @@ class OpenSearchService:
                 "tags": chunk_data.get("tags", []),
                 "metadata": json.dumps(chunk_data.get("metadata", {})),
                 "created_at": chunk_data.get("created_at"),
-                "content_vector": chunk_data["content_vector"]
             }
+            # 可选写入向量
+            if isinstance(chunk_data.get("content_vector"), list) and chunk_data["content_vector"]:
+                doc["content_vector"] = chunk_data["content_vector"]
             
             # 如果有图片信息，添加图片字段
             if chunk_data.get("image_info"):
@@ -313,22 +334,25 @@ class OpenSearchService:
 
     # 同步封装，供 Celery 同步任务直接调用
     def index_document_chunk_sync(self, chunk_data: Dict[str, Any]) -> bool:
+        body = {
+            "document_id": chunk_data["document_id"],
+            "knowledge_base_id": chunk_data["knowledge_base_id"],
+            "category_id": chunk_data.get("category_id"),
+            "chunk_id": chunk_data["chunk_id"],
+            "content": chunk_data["content"],
+            "chunk_type": chunk_data.get("chunk_type", "text"),
+            "tags": chunk_data.get("tags", []),
+            "metadata": json.dumps(chunk_data.get("metadata", {})),
+            "created_at": chunk_data.get("created_at"),
+        }
+        if isinstance(chunk_data.get("content_vector"), list) and chunk_data["content_vector"]:
+            body["content_vector"] = chunk_data["content_vector"]
+        if chunk_data.get("image_info"):
+            body["image_info"] = chunk_data["image_info"]
         self.client.index(
             index=self.document_index,
             id=f"chunk_{chunk_data['chunk_id']}",
-            body={
-                "document_id": chunk_data["document_id"],
-                "knowledge_base_id": chunk_data["knowledge_base_id"],
-                "category_id": chunk_data.get("category_id"),
-                "chunk_id": chunk_data["chunk_id"],
-                "content": chunk_data["content"],
-                "chunk_type": chunk_data.get("chunk_type", "text"),
-                "tags": chunk_data.get("tags", []),
-                "metadata": json.dumps(chunk_data.get("metadata", {})),
-                "created_at": chunk_data.get("created_at"),
-                "content_vector": chunk_data["content_vector"],
-                **({"image_info": chunk_data["image_info"]} if chunk_data.get("image_info") else {}),
-            },
+            body=body,
             refresh="wait_for",
         )
         return True
@@ -347,8 +371,9 @@ class OpenSearchService:
                 "tags": d.get("tags", []),
                 "metadata": json.dumps(d.get("metadata", {})),
                 "created_at": d.get("created_at"),
-                "content_vector": d["content_vector"],
             }
+            if isinstance(d.get("content_vector"), list) and d["content_vector"]:
+                src["content_vector"] = d["content_vector"]
             if d.get("image_info"):
                 src["image_info"] = d["image_info"]
             actions.append({
@@ -383,7 +408,8 @@ class OpenSearchService:
                 "image_vector": image_data["image_vector"],
                 "created_at": image_data.get("created_at"),
                 "updated_at": image_data.get("updated_at"),
-                "metadata": json.dumps(image_data.get("metadata", {})),
+                # 映射中 metadata 是 object，必须传 dict 而不是字符串
+                "metadata": image_data.get("metadata", {}),
                 "processing_status": image_data.get("processing_status", "completed"),
                 "model_version": image_data.get("model_version", "1.0")
             }
@@ -428,7 +454,8 @@ class OpenSearchService:
                 "image_vector": image_data["image_vector"],
                 "created_at": image_data.get("created_at"),
                 "updated_at": image_data.get("updated_at"),
-                "metadata": json.dumps(image_data.get("metadata", {})),
+                # 传递 dict 类型，符合 OpenSearch 映射中的 object
+                "metadata": image_data.get("metadata", {}),
                 "processing_status": image_data.get("processing_status", "completed"),
                 "model_version": image_data.get("model_version", "1.0"),
             },
@@ -707,3 +734,24 @@ class OpenSearchService:
         except Exception as e:
             logger.error(f"删除图片索引失败: {e}")
             return False
+
+    def delete_by_document(self, document_id: int) -> None:
+        """删除与文档相关的所有索引（文档分块与图片）。"""
+        try:
+            # 分块索引
+            self.client.delete_by_query(
+                index=self.document_index,
+                body={"query": {"term": {"document_id": document_id}}},
+                refresh=True,
+            )
+        except Exception as e:
+            logger.warning(f"删除文档分块索引失败: {e}")
+        try:
+            # 图片索引
+            self.client.delete_by_query(
+                index=self.image_index,
+                body={"query": {"term": {"document_id": document_id}}},
+                refresh=True,
+            )
+        except Exception as e:
+            logger.warning(f"删除图片索引失败: {e}")

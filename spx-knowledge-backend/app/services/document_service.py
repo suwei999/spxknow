@@ -228,26 +228,83 @@ class DocumentService(BaseService[Document]):
             logger.error(f"更新文档错误: {e}", exc_info=True)
             raise e
     
-    def delete_document(self, doc_id: int) -> bool:
-        """删除文档 - 根据文档处理流程设计实现"""
+    async def delete_document(self, doc_id: int, hard: bool = True) -> bool:
+        """删除文档：
+        - hard=True：物理删除 MySQL 行，并清理 MinIO 前缀与 OpenSearch 索引
+        - hard=False：仅软删除（保留行，仅标记 is_deleted）
+        """
         try:
             logger.info(f"删除文档: {doc_id}")
-            
-            # 根据设计文档，删除文档需要：
-            # 1. 停止正在进行的处理任务
-            # 2. 从MinIO删除文件
-            # 3. 从MySQL删除元数据
-            # 4. 从OpenSearch删除索引
-            # 5. 软删除或硬删除
-            
-            success = self.delete(doc_id)
-            if success:
-                logger.info(f"文档删除完成: {doc_id}")
-            else:
+            # 读取文档
+            doc = await self.get(doc_id)
+            if not doc:
                 logger.warning(f"文档不存在: {doc_id}")
-            
-            return success
-            
+                return False
+
+            # 预先计算 MinIO 前缀（兼容两种存储布局：doc_hash 与 数字ID）
+            prefixes = []
+            if doc.file_path:
+                parts = doc.file_path.split("/")  # documents/{year}/{month}/{doc_hash}/original.ext
+                if len(parts) >= 4:
+                    year = parts[1] if parts[0] == 'documents' else parts[2]
+                    # 标准 hash 前缀
+                    prefixes.append("/".join(parts[:4]) + "/")
+                    try:
+                        # 同一 year/month 下的 数字ID 目录（chunks.jsonl.gz 归档使用）
+                        prefixes.append(f"documents/{parts[1]}/{parts[2]}/{doc_id}/")
+                    except Exception:
+                        pass
+            # 数字ID下的 images 目录（不带年月）
+            prefixes.append(f"documents/{doc_id}/")
+
+            # 1) MinIO 严格删除（逐个前缀校验，失败直接抛错）
+            for pfx in list(dict.fromkeys(prefixes)):
+                try:
+                    deleted = self.minio_storage.delete_prefix(pfx)
+                    remaining = len(self.minio_storage.list_files(pfx))
+                    if remaining > 0:
+                        raise Exception(f"前缀未清空，剩余 {remaining} 个对象")
+                    logger.info(f"MinIO前缀删除完成: {pfx} (删除 {deleted} 个对象)")
+                except Exception as e:
+                    logger.error(f"MinIO前缀删除失败(严格模式): {pfx} - {e}")
+                    raise
+
+            from app.models.chunk import DocumentChunk
+            from app.models.image import DocumentImage
+            from app.models.chunk_version import ChunkVersion
+            from app.models.version import DocumentVersion
+
+            if hard:
+                # 物理删除顺序：文档版本 -> 分块版本 -> 分块 -> 图片 -> 文档
+                chunk_ids = [rid for (rid,) in self.db.query(DocumentChunk.id).filter(DocumentChunk.document_id == doc_id).all()]
+                if chunk_ids:
+                    self.db.query(ChunkVersion).filter(ChunkVersion.chunk_id.in_(chunk_ids)).delete(synchronize_session=False)
+                    self.db.query(DocumentChunk).filter(DocumentChunk.id.in_(chunk_ids)).delete(synchronize_session=False)
+                # 删除文档级版本记录
+                self.db.query(DocumentVersion).filter(DocumentVersion.document_id == doc_id).delete(synchronize_session=False)
+                self.db.query(DocumentImage).filter(DocumentImage.document_id == doc_id).delete(synchronize_session=False)
+                self.db.query(Document).filter(Document.id == doc_id).delete(synchronize_session=False)
+                self.db.commit()
+            else:
+                # 软删除
+                self.db.query(DocumentChunk).filter(DocumentChunk.document_id == doc_id).update({"is_deleted": True})
+                self.db.query(DocumentImage).filter(DocumentImage.document_id == doc_id).update({"is_deleted": True})
+                # 软删除文档版本
+                self.db.query(DocumentVersion).filter(DocumentVersion.document_id == doc_id).update({"is_deleted": True})
+                doc.is_deleted = True
+                self.db.commit()
+
+            # 3) OpenSearch 删除索引
+            try:
+                from app.services.opensearch_service import OpenSearchService
+                osvc = OpenSearchService()
+                osvc.delete_by_document(doc_id)
+            except Exception as e:
+                logger.warning(f"OpenSearch 索引删除失败: {e}")
+
+            logger.info(f"文档删除完成（{'硬删除' if hard else '软删除'}）: {doc_id}")
+            return True
+
         except Exception as e:
             logger.error(f"删除文档错误: {e}", exc_info=True)
             raise e

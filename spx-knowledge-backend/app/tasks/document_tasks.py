@@ -111,7 +111,11 @@ def process_document_task(self, document_id: int):
             parse_result = unstructured_service.parse_document(temp_file_path, strategy=strategy)
             parse_time = time.time() - parse_start
             text_content = parse_result.get('text_content', '')
-            elements_count = len(parse_result.get('elements', []))
+            # 优先从解析阶段给出的统计读取，避免因未返回 elements 列表而显示为 0
+            try:
+                elements_count = int(parse_result.get('metadata', {}).get('element_count'))
+            except Exception:
+                elements_count = 0
             text_length = len(text_content)
             
             logger.info(f"[任务ID: {task_id}] Unstructured解析完成: 耗时={parse_time:.2f}秒, "
@@ -145,13 +149,26 @@ def process_document_task(self, document_id: int):
         document.processing_progress = 40.0
         db.commit()
         
-        # 创建文档分块
+        # 创建文档分块（支持100%还原：记录element_index范围）
         chunk_start = time.time()
         text_content = parse_result.get("text_content", "")
-        logger.debug(f"[任务ID: {task_id}] 分块输入: 文本长度={len(text_content)} 字符")
+        text_element_index_map = parse_result.get("text_element_index_map", [])  # 文本元素索引映射
+        logger.debug(f"[任务ID: {task_id}] 分块输入: 文本长度={len(text_content)} 字符, 文本元素映射数={len(text_element_index_map)}")
         
-        chunks = unstructured_service.chunk_text(text_content)
+        # 调用改进后的分块方法，传入 text_element_index_map
+        chunks_with_index = unstructured_service.chunk_text(
+            text_content, 
+            text_element_index_map=text_element_index_map
+        )
         chunk_time = time.time() - chunk_start
+        
+        # 兼容处理：如果是旧格式（纯字符串列表），转换为新格式
+        if chunks_with_index and isinstance(chunks_with_index[0], str):
+            chunks = chunks_with_index
+            chunks_metadata = []
+        else:
+            chunks = [chunk.get('content', '') for chunk in chunks_with_index]
+            chunks_metadata = chunks_with_index
         
         logger.info(f"[任务ID: {task_id}] 文档分块完成: 耗时={chunk_time:.2f}秒, 共生成 {len(chunks)} 个分块")
         
@@ -162,28 +179,93 @@ def process_document_task(self, document_id: int):
             avg_chunk_length = total_chunk_length / len(chunks)
             logger.debug(f"[任务ID: {task_id}] 分块统计: 总字符数={total_chunk_length}, 平均分块长度={avg_chunk_length:.0f} 字符")
         
-        # 保存分块到数据库（按配置决定是否存正文）
-        logger.debug(f"[任务ID: {task_id}] 步骤5.1/7: 保存分块到数据库")
-        store_text = getattr(settings, 'STORE_CHUNK_TEXT_IN_DB', False)
+        # 合并“表格块”：将 tables 融入分块序列，按 element_index 顺序排序
+        logger.debug(f"[任务ID: {task_id}] 步骤5.1/7: 合并表格块并保存到数据库（含element_index）")
+        tables_meta = parse_result.get('tables', [])
+        merged_items = []
+        # 收集文本块
         for i, chunk_content in enumerate(chunks):
+            element_index_start = None
+            element_index_end = None
+            if chunks_metadata and i < len(chunks_metadata):
+                element_index_start = chunks_metadata[i].get('element_index_start')
+                element_index_end = chunks_metadata[i].get('element_index_end')
+            # 定位排序用的 pos：优先使用 element_index_start；缺失则使用一个递增的偏移
+            pos = element_index_start if element_index_start is not None else (10_000_000 + i)
+            merged_items.append({
+                'type': 'text',
+                'content': chunk_content,
+                'pos': pos,
+                'meta': {
+                    'chunk_index': i,
+                    'element_index_start': element_index_start,
+                    'element_index_end': element_index_end
+                }
+            })
+
+        # 收集表格块
+        for tbl in tables_meta:
+            try:
+                tbl_index = tbl.get('element_index')
+                tbl_text = tbl.get('table_text') or ''
+                tbl_data = tbl.get('table_data')
+                merged_items.append({
+                    'type': 'table',
+                    'content': tbl_text,
+                    'pos': tbl_index if tbl_index is not None else 9_000_000,
+                    'meta': {
+                        'element_index': tbl_index,
+                        'table_data': tbl_data
+                    }
+                })
+            except Exception:
+                continue
+
+        # 重新按 pos 排序并重建 chunk_index
+        merged_items.sort(key=lambda x: (x.get('pos') is None, x.get('pos')))
+
+        # 保存分块到数据库（按配置决定是否存正文，同时保存 element_index 范围/表格数据）
+        store_text = getattr(settings, 'STORE_CHUNK_TEXT_IN_DB', False)
+        import json
+
+        for new_index, item in enumerate(merged_items):
+            chunk_metadata = item['meta'] or {}
+            chunk_metadata['chunk_index'] = new_index
             chunk = DocumentChunk(
                 document_id=document_id,
-                content=chunk_content if store_text else "",
-                chunk_index=i,
-                chunk_type="text"
+                content=item['content'] if store_text else "",
+                chunk_index=new_index,
+                chunk_type=item['type'],
+                meta=json.dumps(chunk_metadata, ensure_ascii=False)
             )
             db.add(chunk)
-            if (i + 1) % 50 == 0:  # 每50个分块记录一次
-                logger.debug(f"[任务ID: {task_id}] 已保存 {i + 1}/{len(chunks)} 个分块到数据库")
+            if (new_index + 1) % 50 == 0:
+                logger.debug(f"[任务ID: {task_id}] 已保存 {new_index + 1}/{len(merged_items)} 个分块到数据库")
         
         db.commit()
-        logger.info(f"[任务ID: {task_id}] 分块数据已保存到数据库: 共 {len(chunks)} 条记录")
+        logger.info(f"[任务ID: {task_id}] 分块数据已保存到数据库: 共 {len(merged_items)} 条记录（含element_index范围/表格）")
 
-        # 将全文分块归档到 MinIO
+        # 将全文分块归档到 MinIO（同时保存 element_index 信息）
         try:
             minio = MinioStorageService()
-            minio.upload_chunks(str(document_id), chunks)
-            logger.info(f"[任务ID: {task_id}] 分块JSON已归档到 MinIO")
+            # 保存带索引信息的分块数据
+            chunks_for_storage = []
+            for i, item in enumerate(merged_items):
+                chunk_data = {
+                    'index': i,
+                    'content': item['content'],
+                    'chunk_type': item['type']
+                }
+                meta = item.get('meta') or {}
+                if 'element_index_start' in meta:
+                    chunk_data['element_index_start'] = meta.get('element_index_start')
+                if 'element_index_end' in meta:
+                    chunk_data['element_index_end'] = meta.get('element_index_end')
+                if 'element_index' in meta:
+                    chunk_data['element_index'] = meta.get('element_index')
+                chunks_for_storage.append(chunk_data)
+            minio.upload_chunks(str(document_id), chunks_for_storage)
+            logger.info(f"[任务ID: {task_id}] 分块JSON已归档到 MinIO（含element_index）")
         except Exception as e:
             logger.warning(f"[任务ID: {task_id}] 分块归档到 MinIO 失败: {e}")
 
@@ -191,6 +273,14 @@ def process_document_task(self, document_id: int):
         try:
             images_meta = parse_result.get('images', [])
             if images_meta:
+                try:
+                    total_images = len(images_meta)
+                    with_data = sum(1 for _img in images_meta if (_img.get('data') or _img.get('bytes')))
+                    logger.info(f"[任务ID: {task_id}] 解析到图片: {total_images} 张，其中含二进制数据: {with_data}/{total_images}")
+                    if with_data == 0:
+                        logger.warning(f"[任务ID: {task_id}] 警告：所有图片均缺少二进制数据(data/bytes)，将无法持久化。")
+                except Exception:
+                    pass
                 img_service = ImageService(db)
                 vector_service = VectorService(db)
                 os_service = OpenSearchService()
@@ -204,6 +294,9 @@ def process_document_task(self, document_id: int):
                     # 注意：如果图片已存在（SHA256相同），会直接返回已存在的记录，不会重复上传到MinIO
                     image_sha256 = hashlib.sha256(data).hexdigest()
                     
+                    # 获取图片的 element_index（用于100%还原文档顺序）
+                    element_index = img.get('element_index')  # 从解析结果中获取
+                    
                     # 先检查图片是否已存在（用于判断是否需要生成向量）
                     existing_image = db.query(DocumentImage).filter(
                         DocumentImage.sha256_hash == image_sha256,
@@ -213,6 +306,21 @@ def process_document_task(self, document_id: int):
                     
                     # 创建或获取图片记录
                     image_row = img_service.create_image_from_bytes(document_id, data, image_ext=img.get('ext', '.png'), image_type=img.get('image_type'))
+                    
+                    # 保存 element_index 到图片的 metadata JSON 中（关键：用于100%还原）
+                    if element_index is not None:
+                        import json
+                        try:
+                            existing_meta = {}
+                            if image_row.meta:
+                                existing_meta = json.loads(image_row.meta) if isinstance(image_row.meta, str) else image_row.meta
+                            existing_meta['element_index'] = element_index
+                            image_row.meta = json.dumps(existing_meta, ensure_ascii=False)
+                            db.commit()
+                            logger.debug(f"[任务ID: {task_id}] 图片 {image_row.id} 已保存 element_index={element_index}")
+                        except Exception as e:
+                            logger.warning(f"[任务ID: {task_id}] 保存图片 element_index 失败: {e}")
+                            db.rollback()
                     
                     # 步骤2：检查图片是否已有向量（避免重复生成）
                     # 注意：相同图片（SHA256相同）复用向量，不重复生成
@@ -233,27 +341,19 @@ def process_document_task(self, document_id: int):
                             # 索引不存在或图片未索引，需要生成向量
                             logger.debug(f"[任务ID: {task_id}] 图片 {image_row.id} 未在OpenSearch中找到向量，将生成新向量")
                     
-                    # 步骤3：如果是新图片或没有向量，生成向量
-                    tmp_path = None
+                    # 步骤3：如果是新图片或没有向量，生成向量（优先内存，失败回退临时文件）
                     if not image_vector:
-                        try:
-                            tmp_dir = tempfile.mkdtemp()
-                            tmp_path = os.path.join(tmp_dir, f"img_{image_row.id}.png")
-                            with open(tmp_path, 'wb') as f:
-                                f.write(data)
-                            image_vector = vector_service.generate_image_embedding(tmp_path)
-                            logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} 向量生成完成，维度: {len(image_vector)}")
-                        finally:
-                            try:
-                                if tmp_path and os.path.exists(tmp_path):
-                                    os.remove(tmp_path)
-                                    os.rmdir(os.path.dirname(tmp_path))
-                            except Exception:
-                                pass
+                        image_vector = vector_service.generate_image_embedding_prefer_memory(data)
+                        logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} 向量生成完成，维度: {len(image_vector)}")
                     
                     # 步骤4：索引到 OpenSearch（更新索引，记录图片与当前文档的关联）
                     # 注意：即使图片已存在，也需要更新索引以反映图片与当前文档的关联关系
                     try:
+                        # 构建 metadata（包含 element_index，用于100%还原）
+                        image_metadata = img.get('metadata', {})
+                        if element_index is not None:
+                            image_metadata['element_index'] = element_index
+                        
                         os_service.index_image_sync({
                             "image_id": image_row.id,
                             "document_id": document.id,  # 更新为当前文档ID
@@ -269,13 +369,14 @@ def process_document_task(self, document_id: int):
                             "description": img.get('description', ''),
                             "feature_tags": img.get('feature_tags', []),
                             "image_vector": image_vector,
+                            "element_index": element_index,  # 关键：记录 element_index 用于100%还原
                             "created_at": getattr(image_row, 'created_at', None).isoformat() if getattr(image_row, 'created_at', None) else None,
                             "updated_at": getattr(image_row, 'updated_at', None).isoformat() if getattr(image_row, 'updated_at', None) else None,
-                            "metadata": img.get('metadata', {}),
+                            "metadata": image_metadata,
                             "processing_status": getattr(image_row, 'status', 'completed'),
                             "model_version": "1.0",
                         })
-                        logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} 索引完成")
+                        logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} 索引完成（element_index={element_index}）")
                     except Exception as idxe:
                         logger.warning(f"[任务ID: {task_id}] 图片索引失败 image_id={image_row.id}: {idxe}")
                     saved += 1
@@ -376,7 +477,7 @@ def process_document_task(self, document_id: int):
                 if not (chunk_text or "").strip():
                     logger.warning(f"[任务ID: {task_id}] 分块 {chunk.id} 内容为空，跳过向量化与索引")
                     continue
-                # 生成向量
+                # 生成向量（Ollama不可用时将返回空列表，允许继续索引文本）
                 vector = vector_service.generate_embedding(chunk_text)
                 vectorize_time = time.time() - chunk_start
                 
@@ -389,9 +490,11 @@ def process_document_task(self, document_id: int):
                     "content": chunk_text,
                     "chunk_type": chunk.chunk_type if hasattr(chunk, 'chunk_type') else "text",
                     "metadata": {"chunk_index": i},
-                    "content_vector": vector,
                     "created_at": chunk.created_at.isoformat() if chunk.created_at else None
                 }
+                # 仅当有有效向量时写入
+                if isinstance(vector, list) and len(vector) > 0:
+                    chunk_doc["content_vector"] = vector
                 docs_to_index.append(chunk_doc)
                 
                 index_time = 0.0
@@ -428,7 +531,7 @@ def process_document_task(self, document_id: int):
             logger.error(f"[任务ID: {task_id}] 批量索引失败: {e}", exc_info=True)
             # 批量索引失败不再抛出，避免任务整体失败
             pass
-
+        
         vectorize_total_time = time.time() - vectorize_start
         avg_time = (vectorize_total_time / len(chunks)) if len(chunks) else 0.0
         logger.info(f"[任务ID: {task_id}] 向量化完成: 成功={success_count}, 失败={error_count}, 总耗时={vectorize_total_time:.2f}秒, 平均耗时={avg_time:.2f}秒/分块")
@@ -450,6 +553,29 @@ def process_document_task(self, document_id: int):
         document.status = DOC_STATUS_COMPLETED
         document.processing_progress = 100.0
         db.commit()
+
+        # 若不存在任何文档版本，则创建初始版本 v1（以原始文件为基准）
+        try:
+            from app.models.version import DocumentVersion
+            existing_count = db.query(DocumentVersion).filter(
+                DocumentVersion.document_id == document_id,
+                DocumentVersion.is_deleted == False
+            ).count()
+            if existing_count == 0:
+                initial_version = DocumentVersion(
+                    document_id=document_id,
+                    version_number=1,
+                    version_type="auto",
+                    description="初始版本",
+                    file_path=document.file_path or "",
+                    file_size=document.file_size,
+                    file_hash=document.file_hash,
+                )
+                db.add(initial_version)
+                db.commit()
+                logger.info(f"[任务ID: {task_id}] 已创建文档初始版本 v1 (document_id={document_id})")
+        except Exception as ver_err:
+            logger.warning(f"[任务ID: {task_id}] 创建初始版本失败（不影响主流程）: {ver_err}")
         
         total_time = time.time() - download_start
         logger.info(f"[任务ID: {task_id}] ========== 文档 {document_id} 处理完成 ==========")
@@ -584,16 +710,19 @@ def reprocess_document_task(self, document_id: int):
                 vector = vector_service.generate_embedding(chunk_text)
                 
                 # 构建索引文档
+                import json as _json
+                meta_raw = getattr(chunk, 'meta', getattr(chunk, 'metadata', {}))
+                meta_text = meta_raw if isinstance(meta_raw, str) else _json.dumps(meta_raw, ensure_ascii=False)
                 chunk_doc = {
                     "document_id": document_id,
                     "chunk_id": chunk.id,
                     "knowledge_base_id": document.knowledge_base_id,
                     "category_id": document.category_id if hasattr(document, 'category_id') else None,
                     "content": chunk_text,
-                    "chunk_type": chunk.chunk_type if hasattr(chunk, 'chunk_type') else "text",
-                    "metadata": getattr(chunk, 'meta', getattr(chunk, 'metadata', {})),
+                    "chunk_type": getattr(chunk, 'chunk_type', "text"),
+                    "metadata": meta_text,
                     "content_vector": vector,
-                    "version": chunk.version if hasattr(chunk, 'version') else 1,
+                    "version": getattr(chunk, 'version', 1),
                     "created_at": chunk.created_at.isoformat() if chunk.created_at else None
                 }
                 

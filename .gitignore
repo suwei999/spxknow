@@ -9,8 +9,7 @@ __pycache__/
 .eggs/
 .venv/
 venv/
-.env
-.env.*
+
 
 # IDE / OS
 .vscode/

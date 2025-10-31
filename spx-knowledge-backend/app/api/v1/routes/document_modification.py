@@ -15,6 +15,7 @@ from app.models.chunk import DocumentChunk
 from app.models.chunk_version import ChunkVersion
 from app.services.vector_service import VectorService
 from app.services.opensearch_service import OpenSearchService
+from datetime import datetime
 
 router = APIRouter()
 
@@ -35,20 +36,30 @@ def edit_chunk(
     if not chunk:
         return {"code": 404, "message": "chunk not found", "data": None}
 
-    # 创建 chunk 版本记录
+    # 创建 chunk 版本记录（递增版本号，记录操作者与创建时间）
+    new_version_number = (getattr(chunk, "version", 0) or 0) + 1
     cv = ChunkVersion(
         chunk_id=chunk.id,
+        version_number=new_version_number,
         content=payload.content,
         version_comment=payload.version_comment or "",
+        modified_by="user",
+        created_at=datetime.utcnow(),
     )
     db.add(cv)
     db.commit()
     db.refresh(cv)
 
-    # 将块内容切换为新版本（如果表保留 content 字段，则更新它）
+    # 将块内容切换为新版本（更新指针与版本号，按需更新正文）
     if hasattr(chunk, "content"):
         chunk.content = payload.content
-        db.commit()
+    chunk.version = new_version_number
+    if hasattr(chunk, "chunk_version_id"):
+        chunk.chunk_version_id = cv.id
+    chunk.last_modified_at = datetime.utcnow()
+    chunk.modification_count = (getattr(chunk, "modification_count", 0) or 0) + 1
+    chunk.last_modified_by = "user"
+    db.commit()
 
     # 重新生成向量并更新 OS
     vs = VectorService(db)

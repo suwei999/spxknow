@@ -12,7 +12,7 @@ class ChunkVersion(BaseModel):
     __tablename__ = "chunk_versions"
     
     chunk_id = Column(Integer, ForeignKey("document_chunks.id"), nullable=False, comment="块ID")
-    version_number = Column(Integer, nullable=False, comment="版本号")
+    version_number = Column(Integer, nullable=False, comment="版本号（递增）")
     content = Column(Text, nullable=False, comment="版本内容")
     # SQLAlchemy 保留名冲突：列名 metadata、属性名 meta
     meta = Column('metadata', Text, comment="版本元数据")
@@ -20,8 +20,13 @@ class ChunkVersion(BaseModel):
     version_comment = Column(Text, comment="版本注释")
     created_at = Column(DateTime, nullable=False, comment="创建时间")
     
-    # 关系
-    chunk = relationship("DocumentChunk", back_populates="versions")
+    # 关系（指定外键，避免与 DocumentChunk.chunk_version_id 产生歧义）
+    chunk = relationship(
+        "DocumentChunk",
+        back_populates="versions",
+        primaryjoin="ChunkVersion.chunk_id==DocumentChunk.id",
+        foreign_keys="ChunkVersion.chunk_id",
+    )
     
     # 索引优化 - 根据设计文档要求
     __table_args__ = (

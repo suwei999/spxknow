@@ -84,11 +84,12 @@ CREATE TABLE IF NOT EXISTS `documents` (
 CREATE TABLE IF NOT EXISTS `document_chunks` (
     `id` INT NOT NULL AUTO_INCREMENT COMMENT '分块ID',
     `document_id` INT NOT NULL COMMENT '文档ID',
-    `content` TEXT NOT NULL COMMENT '分块内容',
+    `content` TEXT NULL COMMENT '分块内容',
     `chunk_index` INT NOT NULL COMMENT '分块索引',
     `chunk_type` VARCHAR(50) DEFAULT 'text' COMMENT '分块类型',
     `metadata` TEXT COMMENT '元数据JSON',
     `version` INT DEFAULT 1 COMMENT '版本号',
+    `chunk_version_id` INT NULL COMMENT '当前块版本ID',
     `last_modified_at` DATETIME COMMENT '最后修改时间',
     `modification_count` INT DEFAULT 0 COMMENT '修改次数',
     `last_modified_by` VARCHAR(100) COMMENT '最后修改者',
@@ -98,6 +99,7 @@ CREATE TABLE IF NOT EXISTS `document_chunks` (
     PRIMARY KEY (`id`),
     INDEX `idx_chunk_document_id` (`document_id`),
     INDEX `idx_chunk_index` (`document_id`, `chunk_index`),
+    INDEX `idx_chunk_version_id` (`chunk_version_id`),
     CONSTRAINT `fk_chunk_doc` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档分块表';
 

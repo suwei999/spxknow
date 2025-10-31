@@ -67,6 +67,7 @@ def main(document_id: int, kb_id: int | None, category_id: int | None):
                 "metadata": {"reindex": True},
                 "content_vector": vec,
             })
+        # 批量索引（默认不立即 refresh，提高吞吐；需要可在外部调用刷新）
         osvc.bulk_index_document_chunks_sync(docs)
         logger.info("回灌完成")
     finally:

@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     OLLAMA_API_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama2"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
-    OLLAMA_IMAGE_MODEL: str = "clip"
+    # 图片向量模型：使用本地CLIP模型（ViT-B/32，512维）
+    # 注意：已移除Ollama支持，直接使用本地CLIP模型
+    OLLAMA_IMAGE_MODEL: str = "local"
     
     # QA系统配置
     QA_DEFAULT_PAGE_SIZE: int = 20

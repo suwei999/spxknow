@@ -10,23 +10,49 @@
 
 ### 2. 存储分层与职责
 - OpenSearch（检索层）
-  - 存可检索内容：`content`、`content_vector`、少量元字段（`document_id/chunk_id/...`）。
-  - 图片索引单独存入 `images` 索引，字段含 OCR 文本与图片向量等。
+  - 存可检索内容：`content`（完整文本内容，用于快速文本/BL25检索）、`content_vector`（向量，用于KNN语义检索）、少量元字段（`document_id/chunk_id/knowledge_base_id/category_id/chunk_type/tags/created_at`）。
+  - 图片索引单独存入 `images` 索引，字段含 `ocr_text`（用于文本检索）、`image_vector`（图片向量）等。
   - 写入策略：bulk + 默认 `refresh=false`，阶段完成或调试时 `refresh=wait_for`。
+  - **重要**：`content` 字段必须完整存储到 OpenSearch，以支持快速关键词/BM25检索；仅存储向量会导致文本检索性能差。
 
 - MinIO（真源/归档层）
   - 存原始文件与“分块全文”归档：每文档一个 `chunks.jsonl.gz`（一行一个分块）。
   - 作为重建索引、版本对比、审计的真实来源。
 
 - MySQL（元数据/控制层）
-  - 仅存最小元信息：`document_chunks(id, document_id, chunk_index, chunk_type, version, created_at, 状态/错误)`；不强制存大段 `content`。
-  - 版本表：`document_versions`、`chunk_versions` 记录变更、注释、操作者；`documents.current_version_id` 指向当前版本。
+  - 仅存最小元信息：`document_chunks(id, document_id, chunk_index, chunk_type, version, chunk_version_id, created_at, 状态/错误)`；默认不强制存大段 `content`（见配置）。
+  - 版本表：`document_versions`、`chunk_versions` 记录变更、注释、操作者；`documents.current_version_id` 指向当前版本；`document_chunks.chunk_version_id` 指向块的当前版本。
 
 > 结论：检索靠 OpenSearch，真源放 MinIO，控制与审计在 MySQL。
 
 ---
 
-### 3. 向量化策略（不必对所有分块）
+### 3. 智能分块策略（当前实现）
+
+#### 3.1 分块算法
+当前实现采用**基于段落边界 + 固定大小限制**的分块策略：
+
+**分块流程**：
+1. **段落分割**：按双换行符（`\n\n`）将文本分割为段落
+2. **累积合并**：逐个段落累积，直到接近 `chunk_size` 上限
+3. **智能切分**：
+   - 超过大小限制时，保存当前累积块，开始新块
+   - 保留 `chunk_overlap` 重叠（取前一块末尾的 overlap 字符）
+   - 超长段落（单段超过 chunk_size）：按句号（`。`）进一步分割
+   - 超长句子：强制按字符切分（最后手段）
+4. **过滤优化**：移除空块和小于 `min_size` 的碎片块
+
+**三种策略配置**（仅参数不同，算法一致）：
+- **semantic（语义策略）**：`chunk_size=1000`，`overlap=200`，`min_size=100`
+- **structure（结构策略）**：`chunk_size=1500`，`overlap=150`，`min_size=200`
+- **fixed（固定策略）**：`chunk_size=512`，`overlap=50`，`min_size=100`
+
+#### 3.2 未来增强方向（可选）
+- **真正的语义分块**：基于句子向量相似度，在语义边界处切分
+- **结构感知分块**：识别标题层级（H1/H2/H3），按章节/小节边界分块
+- **递归分块**：Markdown/HTML等结构化文档，按文档树结构递归分块
+
+#### 3.3 向量化策略（不必对所有分块）
 - 过滤与限额
   - 长度阈值：过短/过长跳过或二次切分；
   - 类型/噪声过滤：页眉页脚、目录、代码、版权页等可跳过；
@@ -47,17 +73,140 @@
 - MySQL `document_images` 落库（`image_type/width/height/ocr_text/status/...`）；
 - OpenSearch `images` 索引存图片向量与 OCR 文本，支持图/文检索。
 
+#### 4.0 图片去重处理逻辑
+**相同图片（SHA256相同）的处理策略**：
+1. **MySQL存储去重**：
+   - `create_image_from_bytes` 方法首先计算图片的SHA256哈希
+   - 查询数据库，如果已存在相同SHA256的图片记录，直接返回已有记录
+   - 如果不存在，才执行上传MinIO、生成缩略图、OCR识别、创建数据库记录等操作
+   - **结果**：相同图片在MySQL中只有一条记录，不重复存储
+
+2. **向量生成优化**：
+   - 对于已存在的图片（通过SHA256判断），从OpenSearch获取已有向量
+   - 如果OpenSearch中已有512维向量，直接复用，**不重复生成向量**
+   - 如果向量不存在或维度不正确，才调用CLIP模型生成新向量
+   - **结果**：相同图片不重复生成向量，节省计算资源
+
+3. **MinIO存储去重**：
+   - 图片路径使用SHA256哈希作为文件名：`documents/{doc_id}/images/{sha256}{ext}`
+   - 相同SHA256的图片会覆盖已存在的文件（实际是同一文件）
+   - **结果**：MinIO中相同图片只存储一份，节省存储空间
+
+4. **OpenSearch索引更新**：
+   - 即使图片已存在，仍需要更新OpenSearch索引
+   - 更新索引中的 `document_id`、`knowledge_base_id` 等字段，反映图片与当前文档的关联关系
+   - **注意**：同一图片可能出现在多个文档中，索引会更新为最后一次索引时的文档关联
+
+**去重效果总结**：
+- ✅ **MySQL**：相同图片只有一条记录（通过SHA256去重）
+- ✅ **MinIO**：相同图片只存储一份（通过SHA256路径去重）
+- ✅ **向量生成**：相同图片复用已有向量（不重复生成）
+- ⚠️ **OpenSearch**：索引会更新为最新文档关联（支持多文档关联）
+
+#### 4.0.1 位置信息保证机制
+**位置信息的存储策略**：
+
+1. **图片/表格位置信息**：
+   - **提取来源**：从 Unstructured 解析结果中提取 `page_number` 和 `coordinates`（x, y, width, height）
+   - **存储位置**：
+     - **OpenSearch**：存储在 `images` 索引的 `page_number` 和 `coordinates` 字段（用于检索和定位）
+     - **MySQL**：存储在 `document_images.metadata` JSON 字段中（用于持久化）
+   - **索引更新**：每次索引时，即使图片已存在（SHA256相同），也会更新位置信息（`page_number`、`coordinates`），确保位置信息与当前文档一致
+   - **多文档支持**：同一图片（SHA256相同）在不同文档中的位置信息独立存储和更新
+
+2. **文本分块位置信息**：
+   - **顺序保证**：`chunk_index` 字段保存分块在文档中的顺序（从0开始递增）
+   - **存储位置**：
+     - **MySQL**：`document_chunks.chunk_index` 字段（用于排序和查询）
+     - **OpenSearch**：`metadata` 中包含 `chunk_index`（用于检索结果排序）
+     - **MinIO**：`chunks.jsonl.gz` 中按 `index` 顺序存储（保持原始顺序）
+   - **位置还原**：通过 `chunk_index` 排序，可以还原分块在文档中的原始顺序
+
+3. **元素间相对位置**：
+   - **文本与图片的关联**：
+     - 图片的 `page_number` 和 `coordinates` 记录其在文档中的精确位置
+     - 文本分块的 `chunk_index` 记录其在文档中的顺序
+     - 通过 `page_number` 和 `chunk_index` 的组合，可以确定图片相对于文本的位置关系
+   - **上下文信息**：
+     - 图片的 `description` 字段存储图片前后的文本内容（由 Unstructured 提取）
+     - 用于理解图片与周围文本的语义关联
+
+**位置信息的还原机制**：
+
+1. **按页码还原**：
+   - 查询特定页码的所有图片：`page_number = X`
+   - 查询特定页码的所有分块：通过 `page_number` 在 metadata 中查询
+
+2. **按坐标还原**：
+   - 图片的 `coordinates` 字段（x, y, width, height）精确记录其在页面中的位置
+   - 可以用于在文档渲染时精确定位图片
+
+3. **按顺序还原**：
+   - 文本分块通过 `chunk_index` 排序，还原文档中的原始顺序
+   - 图片通过 `page_number` + `coordinates.y` 排序，还原在页面中的垂直位置
+
+4. **文档结构还原**：
+   - **MinIO 真源**：`chunks.jsonl.gz` 按 `index` 顺序存储，保证可以完全还原文档结构
+   - **OpenSearch 检索**：检索结果按 `chunk_index` 或 `page_number` 排序，保证结果顺序与原文一致
+   - **MySQL 元数据**：通过 `chunk_index` 和位置信息（存储在 metadata JSON 中），可以还原文档的层次结构
+
+**注意事项**：
+- ⚠️ **去重时的位置信息**：图片去重（SHA256相同）时，虽然图片实体只有一个，但每个文档中的位置信息（`page_number`、`coordinates`）会独立存储和更新
+- ⚠️ **分块后的位置精度**：文本分块后，单个分块可能跨越多页，此时 `page_number` 需要从 metadata 中获取（可能需要存储起始页码和结束页码）
+- ✅ **设计原则**：位置信息遵循"数据去重，位置独立"的原则，确保每个文档中的位置信息准确无误
+
+#### 4.1 图片向量模型选择
+**推荐方案：CLIP模型（ViT-B/32）**
+- **向量维度**：512维（与OpenSearch索引配置一致）
+- **优势**：
+  - 支持图像-文本对齐，适合图文联合检索
+  - 多模态理解能力强，语义检索效果好
+  - 性能稳定，推理速度快
+  - 开源模型，无需额外API费用
+- **实现方式**：使用本地CLIP模型（`open-clip`，ViT-B/32，512维）
+
+#### 4.2 向量维度说明
+**什么是向量维度？**
+- 向量维度表示用多少个数值（浮点数）来描述一张图片或一段文本的特征
+- 例如：512维向量 = `[0.123, -0.456, 0.789, ..., 0.234]`（共512个数字）
+- 每个数值代表图片在某个特征维度上的"强度"或"特征值"
+
+**维度是否越高越好？**
+- **不是！** 维度需要平衡多个因素：
+  1. **表达能力**：维度越高，理论上能表达更细微的特征差异
+  2. **存储成本**：维度越高，存储空间越大（512维 × 4字节 = 2KB/图片）
+  3. **计算成本**：维度越高，向量相似度计算越慢（KNN搜索复杂度增加）
+  4. **检索精度**：维度过高可能导致"维度灾难"，检索效果反而下降
+  5. **模型训练**：需要更多数据训练高维模型，过拟合风险增加
+
+**为什么选择512维？**
+- **经过验证的平衡点**：CLIP模型在512维下已达到很好的检索精度
+- **性能最优**：512维的向量计算速度快，内存占用合理
+- **广泛支持**：大多数向量数据库和检索系统都优化了512维向量
+- **实际效果**：对于图像检索任务，512维已经足够表达图片的语义特征
+
+**维度对比示例**：
+| 维度 | 表达能力 | 存储成本 | 计算速度 | 推荐度 |
+|------|---------|---------|---------|--------|
+| 128维 | 一般 | 低 | 快 | ⭐⭐⭐ |
+| **512维** | **优秀** | **中等** | **快** | **⭐⭐⭐⭐⭐** |
+| 768维 | 很好 | 中等 | 中等 | ⭐⭐⭐⭐ |
+| 1024维 | 优秀 | 高 | 慢 | ⭐⭐⭐ |
+| 2048维 | 优秀 | 很高 | 很慢 | ⭐⭐ |
+
+**结论**：512维是图像向量检索的最佳平衡点，既能保证检索精度，又能控制计算和存储成本。
+
 ---
 
 ### 5. 版本管理与编辑
 - 块级微改（PATCH）
   1) 生成新 `chunk_version`（记录 old_hash、新文本、`modified_by`、备注）；
-  2) 切换 `document_chunks.chunk_version_id` 到新版本；
+  2) 分配递增的 `version_number`（基于当前块版本+1），切换 `document_chunks.chunk_version_id` 到新版本；
   3) 触发该块向量重算与 OS 单条更新；
   4) 记录 `operation_logs`。
 
 - 重切分（Re-chunk）
-  - 生成新 `document_version`；结构性变更仅重建变化块的向量与索引；
+  - 生成新 `document_version`；通过对比新旧分块（基于内容 hash 或文本相似度）识别“变化块清单”，仅重建变化块的向量与索引；
   - `documents.current_version_id` 切换；
   - 历史版本可回滚与对比。
 
@@ -86,6 +235,7 @@
 
 ### 8. 配置建议
 - `STORE_CHUNK_TEXT_IN_DB=false`（轻量模式）
+  - 含义：当为 false 时，`document_chunks.content` 不持久化正文（可为空/空串）；展示与编辑按需回退从 MinIO 读取对应块文本；版本内容保存在 `chunk_versions.content`。
 - `ENABLE_DOCX_REPAIR=true`、`ENABLE_OFFICE_TO_PDF=true`、`SOFFICE_PATH`（解析稳健）
 - `POPPLER_PATH`、`TESSERACT_PATH`、`TESSDATA_PREFIX`（PDF hi_res 依赖）
 - `OLLAMA_BASE_URL`、`OLLAMA_MODEL`、`OLLAMA_EMBEDDING_MODEL`（向量/生成）
@@ -100,22 +250,28 @@
 
 ### 10. 取舍结论
 - 超大文档不把分块正文长期存 MySQL，避免体量膨胀；
-- 可检索内容进 OpenSearch，真源/归档进 MinIO；
+- **可检索内容（文本+向量）完整存储到 OpenSearch**，实现快速检索；真源/归档进 MinIO；
 - 块级版本与编辑保证可追溯、可回滚；
 - 向量化按“必要且足够”执行，成本与延迟可控。
+
+**存储策略总结**：
+- MySQL：仅元数据（不存正文，除非配置 `STORE_CHUNK_TEXT_IN_DB=true`）
+- MinIO：真源归档（`chunks.jsonl.gz`，用于回灌与审计）
+- OpenSearch：完整检索内容（`content` 文本 + `content_vector` 向量，用于快速检索）
 
 
 ---
 
 ### 11. 检索策略（混合检索与精确匹配）
-- 向量检索：基于 `documents.content_vector` 和 `images.image_vector` 的 KNN。
-- 关键词检索：`documents.content` 与 `images.ocr_text/description` 的 text 字段；精确匹配走 keyword/term 过滤（如 `document_id`/`chunk_type`）。
-- 混合检索：服务层融合接口并行跑 KNN 与 match，再做简单加权或 Reranker 排序；返回统一结果。
+- **向量检索（语义检索）**：基于 `documents.content_vector` 和 `images.image_vector` 的 KNN。
+- **关键词检索（文本检索）**：基于 `documents.content` 字段使用 BM25 算法（`match`/`multi_match`），`images` 索引基于 `ocr_text`/`description` 字段；精确匹配使用 `term`/`keyword` 过滤（如 `document_id`/`chunk_type`）。
+- **混合检索**：服务层并行执行 KNN 向量检索与 BM25 关键词检索，按权重融合得分，返回统一结果。
 
 实现要点：
 - 查询向量由 `VectorService.generate_embedding(query_text)` 生成；
-- 关键词查询使用 `match`/`bool` 组合；
-- 融合规则：`score = α * knn_score + (1-α) * bm25_score`，或接入 `bge-reranker`。
+- 关键词查询使用 OpenSearch 的 `match`/`bool` 组合，直接检索 `content` 字段（已完整存储）；
+- 融合规则：`score = α * knn_score + (1-α) * bm25_score`，或接入 `bge-reranker`；
+- **性能优化**：文本内容存储在 OpenSearch 中，避免每次检索都回查 MinIO，大幅提升检索速度。
 
 ---
 

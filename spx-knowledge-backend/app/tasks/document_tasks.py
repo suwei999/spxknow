@@ -5,6 +5,7 @@ Document Processing Tasks
 import os
 import tempfile
 import time
+import hashlib
 from celery import current_task
 from app.tasks.celery_app import celery_app
 from app.services.unstructured_service import UnstructuredService
@@ -16,6 +17,7 @@ from app.services.image_service import ImageService
 from app.config.settings import settings
 from app.models.document import Document
 from app.models.chunk import DocumentChunk
+from app.models.image import DocumentImage
 from sqlalchemy.orm import Session
 from app.config.database import SessionLocal
 from app.core.logging import logger
@@ -197,36 +199,64 @@ def process_document_task(self, document_id: int):
                     data = img.get('data') or img.get('bytes')
                     if not data:
                         continue
+                    
+                    # 步骤1：创建或获取图片记录（基于SHA256去重）
+                    # 注意：如果图片已存在（SHA256相同），会直接返回已存在的记录，不会重复上传到MinIO
+                    image_sha256 = hashlib.sha256(data).hexdigest()
+                    
+                    # 先检查图片是否已存在（用于判断是否需要生成向量）
+                    existing_image = db.query(DocumentImage).filter(
+                        DocumentImage.sha256_hash == image_sha256,
+                        DocumentImage.is_deleted == False
+                    ).first()
+                    is_new_image = existing_image is None
+                    
+                    # 创建或获取图片记录
                     image_row = img_service.create_image_from_bytes(document_id, data, image_ext=img.get('ext', '.png'), image_type=img.get('image_type'))
-                    # 生成图片向量
-                    tmp_path = None
-                    try:
-                        tmp_dir = tempfile.mkdtemp()
-                        tmp_path = os.path.join(tmp_dir, f"img_{image_row.id}.png")
-                        with open(tmp_path, 'wb') as f:
-                            f.write(data)
-                        image_vector = vector_service.generate_image_embedding(tmp_path)
-                    finally:
+                    
+                    # 步骤2：检查图片是否已有向量（避免重复生成）
+                    # 注意：相同图片（SHA256相同）复用向量，不重复生成
+                    image_vector = None
+                    if not is_new_image:
+                        # 图片已存在，尝试从OpenSearch获取已有向量（使用同步方法）
                         try:
-                            if tmp_path and os.path.exists(tmp_path):
-                                os.remove(tmp_path)
-                                os.rmdir(os.path.dirname(tmp_path))
+                            response = os_service.client.get(
+                                index=os_service.image_index,
+                                id=f"image_{image_row.id}"
+                            )
+                            existing_vector = response.get("_source", {}).get("image_vector")
+                            if existing_vector and len(existing_vector) == 512:
+                                # 图片已存在且有向量，复用向量（跳过向量生成）
+                                image_vector = existing_vector
+                                logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} (SHA256: {image_sha256[:8]}...) 已存在，复用向量（跳过向量生成和重复上传）")
                         except Exception:
-                            pass
-                    # 更新 MySQL 向量维度/模型（若表有对应列）
-                    try:
-                        if hasattr(image_row, 'vector_model'):
-                            image_row.vector_model = settings.OLLAMA_IMAGE_MODEL
-                        if hasattr(image_row, 'vector_dim') and isinstance(image_vector, list):
-                            image_row.vector_dim = len(image_vector)
-                        db.commit()
-                    except Exception:
-                        db.rollback()
-                    # 索引到 OpenSearch images 索引
+                            # 索引不存在或图片未索引，需要生成向量
+                            logger.debug(f"[任务ID: {task_id}] 图片 {image_row.id} 未在OpenSearch中找到向量，将生成新向量")
+                    
+                    # 步骤3：如果是新图片或没有向量，生成向量
+                    tmp_path = None
+                    if not image_vector:
+                        try:
+                            tmp_dir = tempfile.mkdtemp()
+                            tmp_path = os.path.join(tmp_dir, f"img_{image_row.id}.png")
+                            with open(tmp_path, 'wb') as f:
+                                f.write(data)
+                            image_vector = vector_service.generate_image_embedding(tmp_path)
+                            logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} 向量生成完成，维度: {len(image_vector)}")
+                        finally:
+                            try:
+                                if tmp_path and os.path.exists(tmp_path):
+                                    os.remove(tmp_path)
+                                    os.rmdir(os.path.dirname(tmp_path))
+                            except Exception:
+                                pass
+                    
+                    # 步骤4：索引到 OpenSearch（更新索引，记录图片与当前文档的关联）
+                    # 注意：即使图片已存在，也需要更新索引以反映图片与当前文档的关联关系
                     try:
                         os_service.index_image_sync({
                             "image_id": image_row.id,
-                            "document_id": document.id,
+                            "document_id": document.id,  # 更新为当前文档ID
                             "knowledge_base_id": document.knowledge_base_id,
                             "category_id": getattr(document, 'category_id', None),
                             "image_path": image_row.image_path,
@@ -245,6 +275,7 @@ def process_document_task(self, document_id: int):
                             "processing_status": getattr(image_row, 'status', 'completed'),
                             "model_version": "1.0",
                         })
+                        logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} 索引完成")
                     except Exception as idxe:
                         logger.warning(f"[任务ID: {task_id}] 图片索引失败 image_id={image_row.id}: {idxe}")
                     saved += 1
@@ -265,10 +296,10 @@ def process_document_task(self, document_id: int):
         
         # 向量化处理
         vector_service = VectorService(db)
-        chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).all()
+        db_chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).order_by(DocumentChunk.chunk_index).all()
         
-        logger.info(f"[任务ID: {task_id}] 开始向量化: 共 {len(chunks)} 个分块需要处理")
-        if len(chunks) == 0:
+        logger.info(f"[任务ID: {task_id}] 开始向量化: 共 {len(db_chunks)} 个分块需要处理")
+        if len(db_chunks) == 0:
             logger.warning(f"[任务ID: {task_id}] 无分块可向量化，跳过向量化与索引阶段")
             document.status = DOC_STATUS_COMPLETED
             document.processing_progress = 100.0
@@ -292,12 +323,61 @@ def process_document_task(self, document_id: int):
         success_count = 0
         error_count = 0
         
-        for i, chunk in enumerate(chunks):
+        # 准备文本迭代器：当不在DB存正文时，从 MinIO 的 chunks.jsonl.gz 流式读取
+        def _stream_chunk_texts_from_minio(doc_id: int):
+            try:
+                minio = MinioStorageService()
+                files = minio.list_files("documents/")
+                needle = f"/{doc_id}/parsed/chunks/chunks.jsonl.gz"
+                target = None
+                for fobj in files:
+                    if fobj.get("object_name", "").endswith(needle):
+                        target = fobj["object_name"]
+                        break
+                if not target:
+                    logger.warning(f"[任务ID: {task_id}] 未找到 MinIO 分块归档，回退使用内存分块")
+                    for t in chunks:
+                        yield t
+                    return
+                import gzip, json
+                response = minio.client.get_object(minio.bucket_name, target)
+                try:
+                    with gzip.GzipFile(fileobj=response, mode='rb') as gz:
+                        for line in gz:
+                            try:
+                                item = json.loads(line)
+                                yield item.get("content", "")
+                            except Exception:
+                                yield ""
+                finally:
+                    try:
+                        response.close(); response.release_conn()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"[任务ID: {task_id}] 从 MinIO 流式读取分块失败: {e}，回退内存分块")
+                for t in chunks:
+                    yield t
+
+        store_text = getattr(settings, 'STORE_CHUNK_TEXT_IN_DB', False)
+        text_iter = iter([c if isinstance(c, str) else str(c) for c in chunks]) if store_text else _stream_chunk_texts_from_minio(document_id)
+
+        docs_to_index = []
+        for i, chunk in enumerate(db_chunks):
             chunk_start = time.time()
             
             try:
+                # 获取对应文本，StopIteration 时置空
+                try:
+                    chunk_text = next(text_iter)
+                except StopIteration:
+                    chunk_text = ""
+                # 跳过空内容分块
+                if not (chunk_text or "").strip():
+                    logger.warning(f"[任务ID: {task_id}] 分块 {chunk.id} 内容为空，跳过向量化与索引")
+                    continue
                 # 生成向量
-                vector = vector_service.generate_embedding(chunk.content)
+                vector = vector_service.generate_embedding(chunk_text)
                 vectorize_time = time.time() - chunk_start
                 
                 # 构建索引文档
@@ -306,25 +386,19 @@ def process_document_task(self, document_id: int):
                     "chunk_id": chunk.id,
                     "knowledge_base_id": document.knowledge_base_id,
                     "category_id": document.category_id if hasattr(document, 'category_id') else None,
-                    "content": chunk.content,
+                    "content": chunk_text,
                     "chunk_type": chunk.chunk_type if hasattr(chunk, 'chunk_type') else "text",
                     "metadata": {"chunk_index": i},
-                    "vector": vector,
+                    "content_vector": vector,
                     "created_at": chunk.created_at.isoformat() if chunk.created_at else None
                 }
+                docs_to_index.append(chunk_doc)
                 
-                # 存储到OpenSearch
-                index_start = time.time()
-                # 同步索引到 OpenSearch（使用同步封装）
-                try:
-                    opensearch_service.index_document_chunk_sync(chunk_doc)
-                except Exception as idx_err:
-                    logger.error(f"[任务ID: {task_id}] OpenSearch 索引分块失败: {idx_err}")
-                index_time = time.time() - index_start
+                index_time = 0.0
                 
                 success_count += 1
                 
-                if (i + 1) % 10 == 0 or i == len(chunks) - 1:  # 每10个或最后一个记录日志
+                if (i + 1) % 10 == 0 or i == len(db_chunks) - 1:  # 每10个或最后一个记录日志
                     logger.info(f"[任务ID: {task_id}] 向量化进度: {i+1}/{len(chunks)} "
                                f"(分块ID={chunk.id}, 向量维度={len(vector)}, "
                                f"向量化耗时={vectorize_time:.2f}秒, 索引耗时={index_time:.2f}秒)")
@@ -335,15 +409,26 @@ def process_document_task(self, document_id: int):
             except Exception as e:
                 error_count += 1
                 logger.error(f"[任务ID: {task_id}] 分块 {chunk.id} (索引 {i+1}/{len(chunks)}) 处理失败: {e}", exc_info=True)
-                raise e
+                continue
             
             # 更新任务进度
-            progress = 60 + (i / len(chunks)) * 30
+            progress = 60 + (i / max(1, len(db_chunks))) * 30
             current_task.update_state(
                 state="PROGRESS",
                 meta={"current": int(progress), "total": 100, "status": f"向量化中 ({i+1}/{len(chunks)})"}
             )
         
+        # 批量索引到 OpenSearch（默认不刷新，提升吞吐）
+        try:
+            bulk_index_start = time.time()
+            opensearch_service.bulk_index_document_chunks_sync(docs_to_index)
+            bulk_index_time = time.time() - bulk_index_start
+            logger.info(f"[任务ID: {task_id}] 批量索引完成，耗时={bulk_index_time:.2f}秒，总文档={len(docs_to_index)}")
+        except Exception as e:
+            logger.error(f"[任务ID: {task_id}] 批量索引失败: {e}", exc_info=True)
+            # 批量索引失败不再抛出，避免任务整体失败
+            pass
+
         vectorize_total_time = time.time() - vectorize_start
         avg_time = (vectorize_total_time / len(chunks)) if len(chunks) else 0.0
         logger.info(f"[任务ID: {task_id}] 向量化完成: 成功={success_count}, 失败={error_count}, 总耗时={vectorize_total_time:.2f}秒, 平均耗时={avg_time:.2f}秒/分块")
@@ -434,51 +519,107 @@ def reprocess_document_task(self, document_id: int):
         document.processing_progress = 50.0
         db.commit()
         
-        # 获取所有块（不重新解析文件）
-        chunks = db.query(DocumentChunk).filter(
+        # 获取所有块（不重新解析文件），按 chunk_index 排序
+        db_chunks = db.query(DocumentChunk).filter(
             DocumentChunk.document_id == document_id
-        ).all()
+        ).order_by(DocumentChunk.chunk_index).all()
         
-        logger.info(f"文档 {document_id} 共有 {len(chunks)} 个块需要重新向量化")
+        logger.info(f"文档 {document_id} 共有 {len(db_chunks)} 个块需要重新向量化")
         
-        # 向量化处理
+        # 向量化处理：从 MinIO 流式读取文本（避免内存占用）
+        def _stream_chunk_texts_from_minio(doc_id: int):
+            try:
+                minio = MinioStorageService()
+                files = minio.list_files("documents/")
+                needle = f"/{doc_id}/parsed/chunks/chunks.jsonl.gz"
+                target = None
+                for fobj in files:
+                    if fobj.get("object_name", "").endswith(needle):
+                        target = fobj["object_name"]
+                        break
+                if not target:
+                    logger.warning(f"重新向量化：未找到 MinIO 分块归档，文档ID={doc_id}")
+                    return
+                import gzip, json
+                response = minio.client.get_object(minio.bucket_name, target)
+                try:
+                    with gzip.GzipFile(fileobj=response, mode='rb') as gz:
+                        for line in gz:
+                            try:
+                                item = json.loads(line)
+                                yield item.get("content", "")
+                            except Exception:
+                                yield ""
+                finally:
+                    try:
+                        response.close(); response.release_conn()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error(f"重新向量化：从 MinIO 流式读取分块失败: {e}", exc_info=True)
+                return
+
         vector_service = VectorService(db)
         opensearch_service = OpenSearchService()
+        store_text = getattr(settings, 'STORE_CHUNK_TEXT_IN_DB', False)
+        text_iter = _stream_chunk_texts_from_minio(document_id) if not store_text else None
+        success_count = 0
+        error_count = 0
         
-        for i, chunk in enumerate(chunks):
-            # 生成向量
-            vector = vector_service.generate_embedding(chunk.content)
-            
-            # 构建索引文档
-            chunk_doc = {
-                "document_id": document_id,
-                "chunk_id": chunk.id,
-                "knowledge_base_id": document.knowledge_base_id,
-                "category_id": document.category_id if hasattr(document, 'category_id') else None,
-                "content": chunk.content,
-                "chunk_type": chunk.chunk_type if hasattr(chunk, 'chunk_type') else "text",
-                "metadata": getattr(chunk, 'meta', getattr(chunk, 'metadata', {})),
-                "vector": vector,
-                "version": chunk.version if hasattr(chunk, 'version') else 1,
-                "created_at": chunk.created_at.isoformat() if chunk.created_at else None
-            }
-            
-            # 更新OpenSearch索引
+        for i, chunk in enumerate(db_chunks):
+            # 获取文本：优先从 MinIO 流式读取，否则从 DB
+            if store_text:
+                chunk_text = chunk.content or ""
+            else:
+                try:
+                    chunk_text = next(text_iter) if text_iter else ""
+                except (StopIteration, TypeError):
+                    chunk_text = ""
+            # 跳过空内容分块
+            if not (chunk_text or "").strip():
+                logger.warning(f"分块 {chunk.id} 内容为空，跳过重新向量化")
+                continue
             try:
-                opensearch_service.index_document_chunk(chunk_doc)
+                # 生成向量
+                vector = vector_service.generate_embedding(chunk_text)
+                
+                # 构建索引文档
+                chunk_doc = {
+                    "document_id": document_id,
+                    "chunk_id": chunk.id,
+                    "knowledge_base_id": document.knowledge_base_id,
+                    "category_id": document.category_id if hasattr(document, 'category_id') else None,
+                    "content": chunk_text,
+                    "chunk_type": chunk.chunk_type if hasattr(chunk, 'chunk_type') else "text",
+                    "metadata": getattr(chunk, 'meta', getattr(chunk, 'metadata', {})),
+                    "content_vector": vector,
+                    "version": chunk.version if hasattr(chunk, 'version') else 1,
+                    "created_at": chunk.created_at.isoformat() if chunk.created_at else None
+                }
+                
+                # 更新OpenSearch索引
+                opensearch_service.index_document_chunk_sync(chunk_doc)
                 logger.debug(f"分块 {chunk.id} 重新向量化完成")
+                success_count += 1
             except Exception as e:
-                logger.error(f"存储分块 {chunk.id} 到OpenSearch失败: {e}", exc_info=True)
-                raise e
+                error_count += 1
+                logger.error(f"分块 {chunk.id} 重新向量化失败: {e}", exc_info=True)
+                continue
         
-        logger.info(f"文档 {document_id} 重新向量化完成")
+        logger.info(f"文档 {document_id} 重新向量化完成: 成功={success_count}, 失败={error_count}, 总块数={len(db_chunks)}")
         
         # 更新文档状态为完成
         document.status = DOC_STATUS_COMPLETED
         document.processing_progress = 100.0
         db.commit()
         
-        return {"status": "success", "message": "重新向量化完成", "chunks_count": len(chunks)}
+        return {
+            "status": "success",
+            "message": "重新向量化完成",
+            "chunks_count": len(db_chunks),
+            "success_count": success_count,
+            "error_count": error_count
+        }
         
     except Exception as e:
         logger.error(f"重新向量化文档 {document_id} 失败: {str(e)}", exc_info=True)

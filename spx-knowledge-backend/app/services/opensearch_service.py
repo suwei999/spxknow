@@ -313,7 +313,7 @@ class OpenSearchService:
 
     # 同步封装，供 Celery 同步任务直接调用
     def index_document_chunk_sync(self, chunk_data: Dict[str, Any]) -> bool:
-        return self.client.index(
+        self.client.index(
             index=self.document_index,
             id=f"chunk_{chunk_data['chunk_id']}",
             body={
@@ -331,7 +331,7 @@ class OpenSearchService:
             },
             refresh="wait_for",
         )
-        or True
+        return True
 
     def bulk_index_document_chunks_sync(self, docs: List[Dict[str, Any]]) -> int:
         """批量索引分块，返回成功条数。"""
@@ -356,7 +356,7 @@ class OpenSearchService:
                 "_id": f"chunk_{d['chunk_id']}",
                 "_source": src,
             })
-        success, _ = os_bulk(self.client, actions, refresh=True)
+        success, _ = os_bulk(self.client, actions, refresh=False)
         logger.info(f"批量索引分块完成: {success} 条")
         return success
     
@@ -408,7 +408,7 @@ class OpenSearchService:
 
     # 同步封装
     def index_image_sync(self, image_data: Dict[str, Any]) -> bool:
-        return self.client.index(
+        self.client.index(
             index=self.image_index,
             id=f"image_{image_data['image_id']}",
             body={
@@ -434,7 +434,7 @@ class OpenSearchService:
             },
             refresh="wait_for",
         )
-        or True
+        return True
     
     async def search_document_vectors(
         self,

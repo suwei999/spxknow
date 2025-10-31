@@ -71,27 +71,35 @@ class VectorService:
             )
     
     def generate_image_embedding(self, image_path: str) -> List[float]:
-        """生成图片嵌入向量 - 严格按照设计文档实现"""
+        """生成图片嵌入向量 - 使用本地CLIP模型
+        
+        使用CLIP模型（ViT-B/32）生成512维图片向量：
+        - CLIP（ViT-B/32）：512维，支持图文联合检索，适合图像搜索
+        - 向量维度说明：
+          * 向量维度表示用多少个数值来描述一张图片的特征
+          * 维度不是越高越好，需要平衡表达能力和计算成本
+          * 512维是经过验证的最佳平衡点，兼顾检索精度和性能
+        """
         try:
             logger.info(f"开始生成图片向量: {image_path}")
             
-            # 根据设计文档，使用CLIP、ResNet、ViT等模型生成图片向量
+            # 使用本地CLIP模型（推荐方案）
             from app.services.image_vectorization_service import ImageVectorizationService
             
             # 初始化图片向量化服务
             image_vectorizer = ImageVectorizationService()
             
-            # 使用混合模型生成向量（CLIP + ResNet + ViT）
-            embedding = image_vectorizer.generate_hybrid_embedding(image_path)
+            # 使用CLIP模型生成向量（512维）
+            embedding = image_vectorizer.generate_clip_embedding(image_path)
             
-            if not embedding:
-                logger.error("图片向量生成失败")
+            if not embedding or len(embedding) != 512:
+                logger.error(f"图片向量生成失败或维度不正确: {len(embedding) if embedding else 0}")
                 raise CustomException(
                     code=ErrorCode.VECTOR_GENERATION_FAILED,
-                    message="图片向量生成失败"
+                    message=f"图片向量生成失败或维度不正确: 期望512维，实际{len(embedding) if embedding else 0}维"
                 )
             
-            logger.info(f"图片向量生成完成，向量维度: {len(embedding)}")
+            logger.info(f"图片向量生成完成（本地CLIP），向量维度: {len(embedding)}")
             return embedding
             
         except Exception as e:

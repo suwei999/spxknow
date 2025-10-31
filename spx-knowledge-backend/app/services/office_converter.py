@@ -48,3 +48,33 @@ def convert_docx_to_pdf(input_path: str) -> Optional[str]:
         return None
 
 
+def compress_pdf(input_pdf: str, output_pdf: str, quality: str = "screen") -> bool:
+    """使用 Ghostscript 压缩 PDF。quality 可选: screen, ebook, printer, prepress.
+    返回 True 表示成功，False 表示失败或未安装 gs。
+    """
+    try:
+        gs = getattr(settings, 'GS_PATH', 'gs')
+        cmd = [
+            gs,
+            '-sDEVICE=pdfwrite',
+            '-dCompatibilityLevel=1.4',
+            f'-dPDFSETTINGS=/{quality}',
+            '-dNOPAUSE',
+            '-dBATCH',
+            '-dQUIET',
+            f'-sOutputFile={output_pdf}',
+            input_pdf,
+        ]
+        logger.info(f"[Ghostscript] 压缩PDF: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            logger.warning(f"[Ghostscript] 压缩失败 rc={result.returncode} stderr={result.stderr[:200] if result.stderr else ''}")
+            return False
+        return True
+    except FileNotFoundError:
+        logger.warning("[Ghostscript] 未安装或GS_PATH无效，跳过PDF压缩")
+        return False
+    except Exception as e:
+        logger.warning(f"[Ghostscript] 压缩异常: {e}")
+        return False
+

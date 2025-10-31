@@ -164,7 +164,12 @@ class MinioStorageService:
             )
     
     def upload_chunks(self, document_id: str, chunks: list) -> Dict[str, Any]:
-        """上传分块数据 - JSONL.GZ 归档，便于回灌与降本"""
+        """
+        上传分块数据 - JSONL.GZ 归档，便于回灌与降本
+        支持两种格式：
+        1. 旧格式：List[str] - 纯字符串列表
+        2. 新格式：List[Dict] - 包含 content、element_index_start、element_index_end 的字典列表
+        """
         try:
             logger.info(f"开始上传分块数据: {document_id}")
             
@@ -181,8 +186,21 @@ class MinioStorageService:
             # 按行写 JSONL，并使用 gzip 压缩
             buf = BytesIO()
             with gzip.GzipFile(fileobj=buf, mode='wb') as gz:
-                for idx, c in enumerate(chunks):
-                    line = json.dumps({"index": idx, "content": c}, ensure_ascii=False).encode('utf-8')
+                for idx, chunk_data in enumerate(chunks):
+                    # 兼容处理：如果是字典格式（新格式），直接使用；如果是字符串（旧格式），转换为字典
+                    if isinstance(chunk_data, dict):
+                        # 新格式：已包含 index、content、element_index_start、element_index_end
+                        chunk_dict = chunk_data.copy()
+                        if 'index' not in chunk_dict:
+                            chunk_dict['index'] = idx
+                    else:
+                        # 旧格式：纯字符串，转换为字典格式
+                        chunk_dict = {
+                            "index": idx,
+                            "content": chunk_data
+                        }
+                    
+                    line = json.dumps(chunk_dict, ensure_ascii=False).encode('utf-8')
                     gz.write(line + b"\n")
             chunks_bytes = buf.getvalue()
             
@@ -338,6 +356,29 @@ class MinioStorageService:
         except S3Error as e:
             logger.error(f"MinIO删除错误: {e}")
             return False
+
+    def delete_prefix(self, prefix: str) -> int:
+        """按前缀删除整个目录（递归）。返回删除对象数量。"""
+        try:
+            logger.info(f"开始按前缀删除MinIO对象: {prefix}")
+            to_delete = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=True))
+            if not to_delete:
+                logger.info("前缀下无对象可删")
+                return 0
+            from minio.deleteobjects import DeleteObject
+            errors = []
+            for err in self.client.remove_objects(
+                self.bucket_name,
+                (DeleteObject(obj.object_name) for obj in to_delete),
+            ):
+                errors.append(err)
+            if errors:
+                logger.warning(f"部分对象删除失败，共 {len(errors)} 条")
+            logger.info(f"前缀删除完成: 删除 {len(to_delete)} 个对象")
+            return len(to_delete)
+        except Exception as e:
+            logger.error(f"按前缀删除失败: {e}")
+            return 0
         except Exception as e:
             logger.error(f"文件删除错误: {e}", exc_info=True)
             return False

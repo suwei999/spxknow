@@ -59,9 +59,24 @@ class Settings(BaseSettings):
     OLLAMA_API_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama2"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
-    # 图片向量模型：使用本地CLIP模型（ViT-B/32，512维）
-    # 注意：已移除Ollama支持，直接使用本地CLIP模型
-    OLLAMA_IMAGE_MODEL: str = "local"
+    # 图片向量配置（默认本地CLIP ViT-B/32，512维）
+    OLLAMA_IMAGE_MODEL: str = "local"  # 兼容旧字段，不通过Ollama
+    IMAGE_EMBEDDING_MODEL: str = "clip_vit_b32"
+    CLIP_MODEL_NAME: str = "ViT-B-32"
+    # 本地权重与缓存默认目录（位于项目根目录 models/clip/ 下）
+    CLIP_MODELS_DIR: str = os.path.join(_PROJECT_ROOT, "models", "clip")
+    # 本地权重路径（若不存在将自动创建目录并允许首轮下载到该路径所在目录）
+    CLIP_PRETRAINED_PATH: str = os.path.join(CLIP_MODELS_DIR, "ViT-B-32-openclip.pt")
+    # 模型本地缓存目录（OpenCLIP/HF 缓存）
+    CLIP_CACHE_DIR: str = os.path.join(CLIP_MODELS_DIR, "cache")
+
+    # 图片处理流水线模式：memory | temp
+    # memory：优先走内存管道（BytesIO/数组），失败自动回退到临时文件
+    # temp：始终使用临时文件
+    IMAGE_PIPELINE_MODE: str = "memory"
+
+    # 调试时是否保留临时文件（仅当使用临时文件路径时有效）
+    DEBUG_KEEP_TEMP_FILES: bool = False
     
     # QA系统配置
     QA_DEFAULT_PAGE_SIZE: int = 20
@@ -99,6 +114,8 @@ class Settings(BaseSettings):
     # 向量维度配置
     TEXT_EMBEDDING_DIMENSION: int = 768
     IMAGE_EMBEDDING_DIMENSION: int = 512
+    # 文本向量模型可接受的最大字符数（用于分块与预处理上限对齐）
+    TEXT_EMBED_MAX_CHARS: int = 1024
     
     # 实体识别配置
     ENTITY_PERSON_CONFIDENCE: float = 0.8
@@ -183,6 +200,8 @@ class Settings(BaseSettings):
     UNSTRUCTURED_HTML_STRATEGY: str = "fast"
     UNSTRUCTURED_HTML_EXTRACT_IMAGES: bool = True
     UNSTRUCTURED_TXT_ENCODING: str = "utf-8"
+    # 统一的语言优先级配置（供 Unstructured 解析使用）
+    UNSTRUCTURED_LANGUAGES: List[str] = ["zh", "en"]
 
     # 文档预处理/转换（参照 Dify 流程）
     ENABLE_DOCX_REPAIR: bool = True  # 解析前修复主文档关系并清洗无效关系

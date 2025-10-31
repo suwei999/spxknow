@@ -174,6 +174,31 @@ export const repairConsistency = (documentId: number, data?: any) => {
   })
 }
 
+// 文档版本列表（文档级）
+export const getDocumentVersions = (documentId: number, params?: { page?: number; size?: number }) => {
+  return request({
+    url: `/versions`,
+    method: 'get',
+    params: { document_id: documentId, ...(params || {}) }
+  })
+}
+
+// 文档原文预览（PDF优先，失败则原文件直链）
+export const getDocumentPreview = (documentId: number) => {
+  return request({
+    url: `/documents/${documentId}/preview`,
+    method: 'get'
+  })
+}
+
+// 从 OpenSearch 获取指定块内容
+export const getChunkContentFromOS = (documentId: number, chunkId: number) => {
+  return request({
+    url: `/documents/${documentId}/chunks/${chunkId}/content-opensearch`,
+    method: 'get'
+  })
+}
+
 // ============ 版本管理接口 ============
 
 // 获取块的版本列表

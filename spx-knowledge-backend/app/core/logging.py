@@ -4,10 +4,81 @@ Logging Configuration
 
 import logging
 import sys
+import json
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Mapping
 
 from app.config.settings import settings
+
+
+class VectorFieldFilter(logging.Filter):
+    """
+    屏蔽日志中的向量大字段，避免输出巨型数组导致刷屏。
+    会将以下键名的值替换为占位符：content_vector, image_vector, embedding, vector。
+    """
+
+    SENSITIVE_KEYS = {"content_vector", "image_vector", "embedding", "vector"}
+
+    def _redact_obj(self, obj: Any):
+        try:
+            if isinstance(obj, Mapping):
+                redacted = {}
+                for k, v in obj.items():
+                    if k in self.SENSITIVE_KEYS:
+                        dim = None
+                        if isinstance(v, (list, tuple)):
+                            dim = len(v)
+                        elif isinstance(v, Mapping):
+                            dim = v.get("dimension")
+                        redacted[k] = f"<vector dim={dim if dim is not None else '?'}>"
+                    else:
+                        redacted[k] = self._redact_obj(v)
+                return redacted
+            if isinstance(obj, (list, tuple)) and len(obj) > 16 and all(
+                isinstance(x, (int, float)) for x in obj[:16]
+            ):
+                return f"<vector dim={len(obj)}>"
+            return obj
+        except Exception:
+            return obj
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.msg, Mapping):
+                record.msg = self._redact_obj(record.msg)
+            if isinstance(record.args, tuple) and record.args:
+                record.args = tuple(self._redact_obj(a) for a in record.args)
+            if isinstance(record.msg, str):
+                msg = record.msg
+                # 尝试 JSON 方式脱敏
+                if ("content_vector" in msg) or ("image_vector" in msg) or ("embedding" in msg) or (" vector" in msg):
+                    try:
+                        data = json.loads(msg)
+                        data = self._redact_obj(data)
+                        record.msg = json.dumps(data, ensure_ascii=False)
+                    except Exception:
+                        # 非严格JSON：使用正则替换大数组
+                        pattern = re.compile(r'"(content_vector|image_vector|embedding|vector)"\s*:\s*\[(?:[^\]]|\n)*\]')
+                        record.msg = pattern.sub(r'"\1": "<vector>"', msg)
+        except Exception:
+            pass
+        return True
+
+
+def _tune_external_loggers():
+    # 降低第三方库噪音，防止请求/响应体（含向量）被打印
+    for name in (
+        "opensearchpy",
+        "opensearch",
+        "urllib3",
+        "httpx",
+        "elastic_transport",
+    ):
+        try:
+            logging.getLogger(name).setLevel(logging.WARNING)
+        except Exception:
+            pass
 
 
 def setup_logging(
@@ -66,6 +137,9 @@ def setup_logging(
         except Exception as e:
             root_logger.warning(f"无法创建日志文件 {log_path}: {e}")
     
+    # 屏蔽向量字段日志
+    root_logger.addFilter(VectorFieldFilter())
+
     # 配置第三方库的日志级别
     logging.getLogger('uvicorn').setLevel(logging.INFO)
     logging.getLogger('uvicorn.access').setLevel(logging.WARNING)
@@ -74,6 +148,9 @@ def setup_logging(
     logging.getLogger('opensearch').setLevel(logging.WARNING)
     logging.getLogger('minio').setLevel(logging.WARNING)
     logging.getLogger('celery').setLevel(logging.INFO)
+
+    # 进一步降低底层依赖的详细日志
+    _tune_external_loggers()
 
 
 # 初始化日志

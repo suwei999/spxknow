@@ -653,18 +653,61 @@ class QAService:
                 knowledge_base_id=kb_id
             )
             
-            # 转换结果格式
+            # 转换结果格式，并查找关联图片
             formatted_results = []
+            from app.services.document_service import DocumentService
+            from app.models.chunk import DocumentChunk
+            import json
+            
             for hit in results:
+                document_id = hit.get("_source", {}).get("document_id")
+                chunk_id = hit.get("_source", {}).get("chunk_id")
+                
+                # 查找关联图片
+                associated_images = []
+                if document_id and chunk_id:
+                    try:
+                        # 获取 chunk 对象
+                        chunk = self.db.query(DocumentChunk).filter(
+                            DocumentChunk.id == chunk_id
+                        ).first()
+                        
+                        if chunk:
+                            doc_service = DocumentService(self.db)
+                            images = doc_service.get_images_for_chunk(document_id, chunk)
+                            
+                            # 格式化图片信息
+                            for img in images:
+                                img_meta = {}
+                                if img.meta:
+                                    try:
+                                        img_meta = json.loads(img.meta) if isinstance(img.meta, str) else img.meta
+                                    except:
+                                        pass
+                                
+                                associated_images.append({
+                                    "image_id": img.id,
+                                    "image_path": img.image_path,
+                                    "thumbnail_path": img.thumbnail_path,
+                                    "image_type": img.image_type,
+                                    "ocr_text": img.ocr_text or "",
+                                    "page_number": img_meta.get('page_number'),
+                                    "metadata": img_meta
+                                })
+                    except Exception as e:
+                        logger.warning(f"查找文本块关联图片失败: {e}")
+                
                 formatted_results.append({
                     "content": hit.get("_source", {}).get("content", ""),
                     "similarity_score": hit.get("_score", 0),
-                    "document_id": hit.get("_source", {}).get("document_id", ""),
+                    "document_id": document_id,
                     "document_title": hit.get("_source", {}).get("document_title", ""),
                     "knowledge_base_name": hit.get("_source", {}).get("knowledge_base_name", ""),
                     "chunk_index": hit.get("_source", {}).get("chunk_index", 0),
                     "page_number": hit.get("_source", {}).get("page_number", 0),
-                    "url_link": hit.get("_source", {}).get("url_link", "")
+                    "url_link": hit.get("_source", {}).get("url_link", ""),
+                    # ✅ 新增：关联图片信息
+                    "associated_images": associated_images
                 })
             
             return formatted_results
@@ -707,9 +750,11 @@ class QAService:
                 "document_id": citation.get("document_id", f"doc{i+1}"),
                 "document_title": citation.get("document_title", f"文档{i+1}"),
                 "knowledge_base_name": citation.get("knowledge_base_name", "知识库"),
-                "content_snippet": citation.get("content_snippet", ""),
+                "content_snippet": citation.get("content_snippet", "") or citation.get("content", ""),
                 "similarity_score": citation.get("similarity_score", 0.0),
-                "position_info": citation.get("position_info", {})
+                "position_info": citation.get("position_info", {}),
+                # ✅ 新增：关联图片信息（从检索结果中提取）
+                "associated_images": citation.get("associated_images", [])
             })
         return source_info
     
@@ -742,16 +787,102 @@ class QAService:
                 knowledge_base_id=knowledge_base_id
             )
             
-            # 转换结果格式
+            # 转换结果格式，并查找上下文文本块
             formatted_results = []
+            from app.services.document_service import DocumentService
+            from app.services.minio_storage_service import MinioStorageService
+            from app.models.image import DocumentImage
+            import json
+            
             for hit in results:
+                image_id = hit.get("image_id") or hit.get("_source", {}).get("image_id")
+                document_id = hit.get("document_id") or hit.get("_source", {}).get("document_id")
+                
+                # 查找上下文文本块
+                context_chunks = []
+                context_info = {}
+                
+                if document_id and image_id:
+                    try:
+                        # 获取图片对象
+                        image = self.db.query(DocumentImage).filter(
+                            DocumentImage.id == image_id
+                        ).first()
+                        
+                        if image:
+                            doc_service = DocumentService(self.db)
+                            chunks = doc_service.get_chunks_for_image(document_id, image)
+                            
+                            # 格式化上下文文本块信息
+                            minio = MinioStorageService()
+                            for chunk in chunks:
+                                chunk_meta = {}
+                                if chunk.meta:
+                                    try:
+                                        chunk_meta = json.loads(chunk.meta) if isinstance(chunk.meta, str) else chunk.meta
+                                    except:
+                                        pass
+                                
+                                # 获取 chunk 内容（可能需要从 MinIO 读取）
+                                chunk_content = chunk.content or ""
+                                if not chunk_content:
+                                    # 尝试从 MinIO 读取
+                                    try:
+                                        from app.models.document import Document
+                                        import datetime
+                                        import gzip
+                                        doc = self.db.query(Document).filter(Document.id == document_id).first()
+                                        if doc:
+                                            created = getattr(doc, 'created_at', None) or datetime.datetime.utcnow()
+                                            year = created.strftime('%Y')
+                                            month = created.strftime('%m')
+                                            object_name = f"documents/{year}/{month}/{document_id}/parsed/chunks/chunks.jsonl.gz"
+                                            obj = minio.client.get_object(minio.bucket_name, object_name)
+                                            try:
+                                                with gzip.GzipFile(fileobj=obj, mode='rb') as gz:
+                                                    for line in gz:
+                                                        try:
+                                                            item = json.loads(line.decode('utf-8'))
+                                                            if item.get('index') == chunk.chunk_index or item.get('chunk_index') == chunk.chunk_index:
+                                                                chunk_content = item.get('content', '')
+                                                                break
+                                                        except:
+                                                            continue
+                                            finally:
+                                                try:
+                                                    obj.close()
+                                                    obj.release_conn()
+                                                except:
+                                                    pass
+                                    except Exception as e:
+                                        logger.debug(f"从MinIO读取chunk内容失败: {e}")
+                                
+                                context_chunks.append({
+                                    "chunk_id": chunk.id,
+                                    "chunk_index": chunk.chunk_index,
+                                    "content": chunk_content[:500] if chunk_content else "",  # 限制长度
+                                    "chunk_type": chunk.chunk_type or "text",
+                                    "page_number": chunk_meta.get('page_number'),
+                                    "metadata": chunk_meta
+                                })
+                            
+                            # 构建上下文信息
+                            context_info = {
+                                "chunks": context_chunks,
+                                "chunk_count": len(context_chunks),
+                                "document_id": document_id
+                            }
+                    except Exception as e:
+                        logger.warning(f"查找图片上下文文本块失败: {e}")
+                
                 formatted_results.append({
-                    "image_id": hit.get("_source", {}).get("image_id", ""),
-                    "image_path": hit.get("_source", {}).get("image_path", ""),
-                    "similarity_score": hit.get("_score", 0),
+                    "image_id": str(image_id) if image_id else "",
+                    "image_path": hit.get("image_path") or hit.get("_source", {}).get("image_path", ""),
+                    "similarity_score": hit.get("_score", 0) or hit.get("similarity_score", 0),
                     "image_info": hit.get("_source", {}).get("image_info", {}),
                     "source_document": hit.get("_source", {}).get("source_document", {}),
-                    "context_info": hit.get("_source", {}).get("context_info", {})
+                    # ✅ 新增：上下文文本块信息
+                    "context_info": context_info
                 })
             
             return formatted_results
@@ -816,16 +947,102 @@ class QAService:
                 knowledge_base_id=knowledge_base_id
             )
             
-            # 4. 转换结果格式
+            # 4. 转换结果格式，并查找上下文文本块（复用 _search_similar_images 的逻辑）
             formatted_results = []
+            from app.services.document_service import DocumentService
+            from app.services.minio_storage_service import MinioStorageService
+            from app.models.image import DocumentImage
+            import json
+            
             for hit in results:
+                image_id = hit.get("image_id") or hit.get("_source", {}).get("image_id")
+                document_id = hit.get("document_id") or hit.get("_source", {}).get("document_id")
+                
+                # 查找上下文文本块（与 _search_similar_images 相同的逻辑）
+                context_chunks = []
+                context_info = {}
+                
+                if document_id and image_id:
+                    try:
+                        # 获取图片对象
+                        image = self.db.query(DocumentImage).filter(
+                            DocumentImage.id == image_id
+                        ).first()
+                        
+                        if image:
+                            doc_service = DocumentService(self.db)
+                            chunks = doc_service.get_chunks_for_image(document_id, image)
+                            
+                            # 格式化上下文文本块信息
+                            minio = MinioStorageService()
+                            for chunk in chunks:
+                                chunk_meta = {}
+                                if chunk.meta:
+                                    try:
+                                        chunk_meta = json.loads(chunk.meta) if isinstance(chunk.meta, str) else chunk.meta
+                                    except:
+                                        pass
+                                
+                                # 获取 chunk 内容（可能需要从 MinIO 读取）
+                                chunk_content = chunk.content or ""
+                                if not chunk_content:
+                                    # 尝试从 MinIO 读取
+                                    try:
+                                        from app.models.document import Document
+                                        import datetime
+                                        import gzip
+                                        doc = self.db.query(Document).filter(Document.id == document_id).first()
+                                        if doc:
+                                            created = getattr(doc, 'created_at', None) or datetime.datetime.utcnow()
+                                            year = created.strftime('%Y')
+                                            month = created.strftime('%m')
+                                            object_name = f"documents/{year}/{month}/{document_id}/parsed/chunks/chunks.jsonl.gz"
+                                            obj = minio.client.get_object(minio.bucket_name, object_name)
+                                            try:
+                                                with gzip.GzipFile(fileobj=obj, mode='rb') as gz:
+                                                    for line in gz:
+                                                        try:
+                                                            item = json.loads(line.decode('utf-8'))
+                                                            if item.get('index') == chunk.chunk_index or item.get('chunk_index') == chunk.chunk_index:
+                                                                chunk_content = item.get('content', '')
+                                                                break
+                                                        except:
+                                                            continue
+                                            finally:
+                                                try:
+                                                    obj.close()
+                                                    obj.release_conn()
+                                                except:
+                                                    pass
+                                    except Exception as e:
+                                        logger.debug(f"从MinIO读取chunk内容失败: {e}")
+                                
+                                context_chunks.append({
+                                    "chunk_id": chunk.id,
+                                    "chunk_index": chunk.chunk_index,
+                                    "content": chunk_content[:500] if chunk_content else "",
+                                    "chunk_type": chunk.chunk_type or "text",
+                                    "page_number": chunk_meta.get('page_number'),
+                                    "metadata": chunk_meta
+                                })
+                            
+                            # 构建上下文信息
+                            context_info = {
+                                "chunks": context_chunks,
+                                "chunk_count": len(context_chunks),
+                                "document_id": document_id
+                            }
+                    except Exception as e:
+                        logger.warning(f"查找图片上下文文本块失败: {e}")
+                
                 formatted_results.append({
-                    "image_id": hit.get("_source", {}).get("image_id", ""),
-                    "image_path": hit.get("_source", {}).get("image_path", ""),
-                    "similarity_score": hit.get("_score", 0),
+                    "image_id": str(image_id) if image_id else "",
+                    "image_path": hit.get("image_path") or hit.get("_source", {}).get("image_path", ""),
+                    "similarity_score": hit.get("_score", 0) or hit.get("similarity_score", 0),
                     "image_info": hit.get("_source", {}).get("image_info", {}),
                     "source_document": hit.get("_source", {}).get("source_document", {}),
-                    "context_info": hit.get("_source", {}).get("context_info", {})
+                    # ✅ 新增：上下文文本块信息
+                    "context_info": context_info
                 })
             
             return formatted_results

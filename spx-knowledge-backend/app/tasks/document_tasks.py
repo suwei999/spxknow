@@ -125,15 +125,87 @@ def process_document_task(self, document_id: int):
                 logger.warning(f"[任务ID: {task_id}] 警告: 解析结果为空，可能文档无文本内容或解析失败")
             else:
                 logger.debug(f"[任务ID: {task_id}] 解析结果预览 (前200字符): {text_content[:200]}...")
+            
+            # 如果DOCX转换为了PDF，保存PDF到MinIO并更新数据库
+            # 注意：必须在清理临时文件之前完成，否则PDF会被删除
+            converted_pdf_path = None
+            converted_pdf_dir = None
+            if parse_result.get('is_converted_pdf') and parse_result.get('converted_pdf_path'):
+                converted_pdf_path = parse_result.get('converted_pdf_path')
+                converted_pdf_dir = os.path.dirname(converted_pdf_path) if converted_pdf_path else None
+                
+                if converted_pdf_path and os.path.exists(converted_pdf_path):
+                    logger.info(f"[任务ID: {task_id}] 检测到转换后的PDF，开始保存到MinIO: {converted_pdf_path}")
+                    try:
+                        minio = MinioStorageService()
+                        
+                        # 上传PDF到MinIO
+                        upload_result = minio.upload_pdf_file(
+                            pdf_file_path=converted_pdf_path,
+                            document_id=document.id,
+                            original_filename=os.path.splitext(document.original_filename)[0]
+                        )
+                        
+                        # 更新数据库中的converted_pdf_url
+                        document.converted_pdf_url = upload_result['object_name']
+                        db.commit()
+                        
+                        logger.info(f"[任务ID: {task_id}] PDF已保存到MinIO: {upload_result['object_name']}, "
+                                  f"数据库已更新converted_pdf_url")
+                        
+                        # PDF已成功保存，现在可以清理临时文件
+                        try:
+                            os.remove(converted_pdf_path)
+                            logger.debug(f"[任务ID: {task_id}] 已删除临时PDF文件: {converted_pdf_path}")
+                        except Exception as e:
+                            logger.warning(f"[任务ID: {task_id}] 删除临时PDF文件失败: {e}")
+                    except Exception as e:
+                        logger.error(f"[任务ID: {task_id}] 保存PDF到MinIO失败: {e}", exc_info=True)
+                        # 不影响主流程，但需要清理临时PDF
+                        try:
+                            if converted_pdf_path and os.path.exists(converted_pdf_path):
+                                os.remove(converted_pdf_path)
+                        except Exception:
+                            pass
+                else:
+                    logger.warning(f"[任务ID: {task_id}] 转换后的PDF文件不存在: {converted_pdf_path}")
         except Exception as e:
             logger.error(f"[任务ID: {task_id}] Unstructured解析失败: {e}", exc_info=True)
             raise
         
-        # 3. 清理临时文件
+        # 3. 清理临时文件（包括临时目录，但PDF文件已在上面处理）
         logger.debug(f"[任务ID: {task_id}] 步骤4.1/7: 清理临时文件")
         try:
-            os.remove(temp_file_path)
-            os.rmdir(temp_dir)
+            # 删除原始临时文件
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            
+            # 清理PDF临时目录（如果存在且为空）
+            if converted_pdf_dir and os.path.isdir(converted_pdf_dir):
+                try:
+                    # 尝试删除目录内容（如果有残留）
+                    import shutil
+                    if not os.listdir(converted_pdf_dir):
+                        os.rmdir(converted_pdf_dir)
+                    else:
+                        # 如果目录不为空，尝试强制删除
+                        shutil.rmtree(converted_pdf_dir)
+                    logger.debug(f"[任务ID: {task_id}] 已清理PDF临时目录: {converted_pdf_dir}")
+                except Exception as e:
+                    logger.debug(f"[任务ID: {task_id}] 清理PDF临时目录失败（可能已被清理）: {e}")
+            
+            # 删除主临时目录
+            if os.path.isdir(temp_dir):
+                try:
+                    os.rmdir(temp_dir)
+                except OSError:
+                    # 如果目录不为空，可能是PDF目录还在，尝试清理
+                    try:
+                        import shutil
+                        shutil.rmtree(temp_dir)
+                    except Exception:
+                        pass
+            
             logger.debug(f"[任务ID: {task_id}] 临时文件清理成功: {temp_file_path}")
         except Exception as e:
             logger.warning(f"[任务ID: {task_id}] 清理临时文件失败: {e}, 路径={temp_file_path}")
@@ -187,20 +259,94 @@ def process_document_task(self, document_id: int):
         for i, chunk_content in enumerate(chunks):
             element_index_start = None
             element_index_end = None
+            page_number = None
+            
             if chunks_metadata and i < len(chunks_metadata):
                 element_index_start = chunks_metadata[i].get('element_index_start')
                 element_index_end = chunks_metadata[i].get('element_index_end')
+            
+            # ✅ 新增：从 text_element_index_map 中提取 page_number 和 coordinates
+            # 如果 element_index_start 和 element_index_end 都存在，查找对应的信息
+            page_numbers = []
+            coordinates_list = []  # 收集所有坐标，用于计算合并坐标
+            
+            if text_element_index_map:
+                # 查找 element_index_start 到 element_index_end 范围内的所有信息
+                if element_index_start is not None and element_index_end is not None:
+                    for map_item in text_element_index_map:
+                        elem_idx = map_item.get('element_index')
+                        if element_index_start <= elem_idx <= element_index_end:
+                            page_num = map_item.get('page_number')
+                            if page_num is not None and page_num not in page_numbers:
+                                page_numbers.append(page_num)
+                            
+                            # ✅ 收集坐标信息（用于后续计算合并坐标）
+                            coords = map_item.get('coordinates')
+                            if coords and isinstance(coords, dict):
+                                # 确保坐标有有效值
+                                if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
+                                    coordinates_list.append(coords)
+                elif element_index_start is not None:
+                    # 只有 start，只查找对应的
+                    for map_item in text_element_index_map:
+                        if map_item.get('element_index') == element_index_start:
+                            page_num = map_item.get('page_number')
+                            if page_num is not None:
+                                page_numbers.append(page_num)
+                            
+                            # ✅ 获取起始元素的坐标
+                            coords = map_item.get('coordinates')
+                            if coords and isinstance(coords, dict):
+                                if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
+                                    coordinates_list.append(coords)
+                            break
+                
+                # 取主要的 page_number（第一个，通常是起始页码）
+                if page_numbers:
+                    page_number = page_numbers[0]
+            
+            # ✅ 计算合并后的坐标（如果 chunk 跨越多个元素，合并坐标范围）
+            chunk_coordinates = None
+            if coordinates_list:
+                if len(coordinates_list) == 1:
+                    # 只有一个坐标，直接使用
+                    chunk_coordinates = coordinates_list[0]
+                else:
+                    # 多个坐标，计算合并后的边界框
+                    min_x = min(c.get('x', 0) for c in coordinates_list)
+                    min_y = min(c.get('y', 0) for c in coordinates_list)
+                    max_x = max((c.get('x', 0) + c.get('width', 0)) for c in coordinates_list)
+                    max_y = max((c.get('y', 0) + c.get('height', 0)) for c in coordinates_list)
+                    chunk_coordinates = {
+                        'x': min_x,
+                        'y': min_y,
+                        'width': max_x - min_x,
+                        'height': max_y - min_y
+                    }
+            
             # 定位排序用的 pos：优先使用 element_index_start；缺失则使用一个递增的偏移
             pos = element_index_start if element_index_start is not None else (10_000_000 + i)
+            
+            # 构建 chunk metadata（包含 page_number 和 coordinates）
+            chunk_meta = {
+                'chunk_index': i,
+                'element_index_start': element_index_start,
+                'element_index_end': element_index_end,
+                # ✅ 新增：保存 page_number
+                'page_number': page_number,
+                # ✅ 新增：保存 coordinates（用于坐标重叠度计算）
+                'coordinates': chunk_coordinates
+            }
+            
+            # 如果跨多页，保存 page_number_range（优化：避免重复查找）
+            if page_numbers and len(page_numbers) > 1:
+                chunk_meta['page_number_range'] = sorted(page_numbers)
+            
             merged_items.append({
                 'type': 'text',
                 'content': chunk_content,
                 'pos': pos,
-                'meta': {
-                    'chunk_index': i,
-                    'element_index_start': element_index_start,
-                    'element_index_end': element_index_end
-                }
+                'meta': chunk_meta
             })
 
         # 收集表格块
@@ -209,13 +355,17 @@ def process_document_task(self, document_id: int):
                 tbl_index = tbl.get('element_index')
                 tbl_text = tbl.get('table_text') or ''
                 tbl_data = tbl.get('table_data')
+                # ✅ 新增：从表格元数据中获取 page_number
+                tbl_page_number = tbl.get('page_number')
                 merged_items.append({
                     'type': 'table',
                     'content': tbl_text,
                     'pos': tbl_index if tbl_index is not None else 9_000_000,
                     'meta': {
                         'element_index': tbl_index,
-                        'table_data': tbl_data
+                        'table_data': tbl_data,
+                        # ✅ 新增：保存 page_number
+                        'page_number': tbl_page_number
                     }
                 })
             except Exception:
@@ -223,7 +373,121 @@ def process_document_task(self, document_id: int):
 
         # 重新按 pos 排序并重建 chunk_index
         merged_items.sort(key=lambda x: (x.get('pos') is None, x.get('pos')))
-
+        
+        # ✅ 验证：检查表格是否在正确位置（基于 element_index 验证）
+        logger.info(f"[任务ID: {task_id}] 开始验证表格位置正确性...")
+        validation_errors = []
+        table_count = 0
+        text_count = 0
+        
+        for idx, item in enumerate(merged_items):
+            item_type = item.get('type', 'unknown')
+            item_pos = item.get('pos')
+            item_meta = item.get('meta', {})
+            
+            if item_type == 'table':
+                table_count += 1
+                table_elem_idx = item_meta.get('element_index')
+                table_page = item_meta.get('page_number')
+                
+                # ✅ 验证：表格必须有 element_index
+                if table_elem_idx is None:
+                    validation_errors.append(f"表格块 (chunk_index={idx}) 缺少 element_index，无法验证位置")
+                    logger.warning(f"[任务ID: {task_id}] 表格块 (chunk_index={idx}) 缺少 element_index")
+                    continue
+                
+                # 检查前后的文本块，验证表格是否在正确位置
+                prev_item = merged_items[idx - 1] if idx > 0 else None
+                next_item = merged_items[idx + 1] if idx < len(merged_items) - 1 else None
+                
+                validation_info = {
+                    'table_pos': item_pos,
+                    'table_element_index': table_elem_idx,
+                    'table_page': table_page,
+                    'chunk_index_after_sort': idx
+                }
+                
+                # 验证前一个块
+                if prev_item:
+                    prev_type = prev_item.get('type')
+                    prev_pos = prev_item.get('pos')
+                    prev_meta = prev_item.get('meta', {})
+                    prev_elem_start = prev_meta.get('element_index_start') or prev_meta.get('element_index')
+                    prev_elem_end = prev_meta.get('element_index_end')
+                    
+                    validation_info['prev_type'] = prev_type
+                    validation_info['prev_pos'] = prev_pos
+                    validation_info['prev_elem_start'] = prev_elem_start
+                    validation_info['prev_elem_end'] = prev_elem_end
+                    
+                    # 验证：如果前一个块是文本块且有 element_index_end，检查排序是否正确
+                    # 注意：表格可能在文本块的 element_index_end 之后，这是正确的
+                    # 但如果表格的 element_index 小于文本块的 element_index_start，那就有问题
+                    if prev_type == 'text' and prev_elem_start is not None and table_elem_idx is not None:
+                        if table_elem_idx < prev_elem_start:
+                            validation_errors.append(f"位置错误: 表格 element_index ({table_elem_idx}) 小于前一个文本块的 element_index_start ({prev_elem_start})")
+                    elif prev_pos is not None and item_pos is not None and prev_pos >= item_pos:
+                        validation_errors.append(f"位置错误: 表格 (pos={item_pos}) 应该在前一个块 (pos={prev_pos}) 之后")
+                
+                # 验证后一个块
+                if next_item:
+                    next_type = next_item.get('type')
+                    next_pos = next_item.get('pos')
+                    next_meta = next_item.get('meta', {})
+                    next_elem_start = next_meta.get('element_index_start') or next_meta.get('element_index')
+                    
+                    validation_info['next_type'] = next_type
+                    validation_info['next_pos'] = next_pos
+                    validation_info['next_elem_start'] = next_elem_start
+                    
+                    # 验证：如果后一个块是文本块，表格的 element_index 应该在后一个块之前
+                    if next_type == 'text' and next_elem_start is not None and table_elem_idx is not None:
+                        if table_elem_idx >= next_elem_start:
+                            validation_info['warning'] = f"表格 element_index ({table_elem_idx}) 应该在后一个文本块之前 ({next_elem_start})"
+                    elif next_pos is not None and item_pos is not None and item_pos >= next_pos:
+                        validation_errors.append(f"位置错误: 表格 (pos={item_pos}) 应该在后一个块 (pos={next_pos}) 之前")
+                
+                logger.info(f"[任务ID: {task_id}] 表格验证 (chunk_index={idx}): {validation_info}")
+        
+        # ✅ 验证：检查是否有表格丢失或重复
+        parsed_table_count = len(tables_meta)
+        if table_count != parsed_table_count:
+            validation_errors.append(f"表格数量不匹配: 解析到 {parsed_table_count} 个表格，但合并后只有 {table_count} 个表格块")
+            logger.warning(f"[任务ID: {task_id}] 表格数量不匹配: 解析={parsed_table_count}, 合并={table_count}")
+        
+        # ✅ 验证：检查表格的 element_index 是否有重复
+        table_indices = [item.get('meta', {}).get('element_index') 
+                         for item in merged_items 
+                         if item.get('type') == 'table' and item.get('meta', {}).get('element_index') is not None]
+        if len(table_indices) != len(set(table_indices)):
+            duplicates = [idx for idx in table_indices if table_indices.count(idx) > 1]
+            validation_errors.append(f"发现重复的表格 element_index: {duplicates}")
+            logger.warning(f"[任务ID: {task_id}] 发现重复的表格 element_index: {duplicates}")
+        
+        if validation_errors:
+            logger.warning(f"[任务ID: {task_id}] 表格位置验证发现 {len(validation_errors)} 个错误:")
+            for error in validation_errors:
+                logger.warning(f"[任务ID: {task_id}]   - {error}")
+        else:
+            logger.info(f"[任务ID: {task_id}] ✅ 表格位置验证通过: 所有表格都在正确位置 (共 {table_count} 个表格)")
+        
+        # ✅ 记录排序后的块顺序（前10个和后10个，用于调试）
+        total_items = len(merged_items)
+        log_items = merged_items[:10] + (merged_items[-10:] if total_items > 20 else [])
+        logger.info(f"[任务ID: {task_id}] 排序后的块顺序（前10个{'和后10个' if total_items > 20 else ''}）:")
+        for idx, item in enumerate(log_items):
+            actual_idx = idx if idx < 10 else (total_items - 10 + (idx - 10))
+            item_type = item.get('type')
+            item_pos = item.get('pos')
+            item_meta = item.get('meta', {})
+            if item_type == 'table':
+                elem_idx = item_meta.get('element_index')
+                logger.info(f"[任务ID: {task_id}]   [{actual_idx}] {item_type}: pos={item_pos}, element_index={elem_idx}")
+            else:
+                elem_start = item_meta.get('element_index_start')
+                elem_end = item_meta.get('element_index_end')
+                logger.info(f"[任务ID: {task_id}]   [{actual_idx}] {item_type}: pos={item_pos}, element_index_range=({elem_start}, {elem_end})")
+        
         # 保存分块到数据库（按配置决定是否存正文，同时保存 element_index 范围/表格数据）
         store_text = getattr(settings, 'STORE_CHUNK_TEXT_IN_DB', False)
         import json
@@ -243,12 +507,16 @@ def process_document_task(self, document_id: int):
                 logger.debug(f"[任务ID: {task_id}] 已保存 {new_index + 1}/{len(merged_items)} 个分块到数据库")
         
         db.commit()
-        logger.info(f"[任务ID: {task_id}] 分块数据已保存到数据库: 共 {len(merged_items)} 条记录（含element_index范围/表格）")
+        
+        # ✅ 统计信息
+        text_chunks = sum(1 for item in merged_items if item.get('type') == 'text')
+        table_chunks = sum(1 for item in merged_items if item.get('type') == 'table')
+        logger.info(f"[任务ID: {task_id}] 分块数据已保存到数据库: 共 {len(merged_items)} 条记录（文本块={text_chunks}, 表格块={table_chunks}）")
 
         # 将全文分块归档到 MinIO（同时保存 element_index 信息）
         try:
             minio = MinioStorageService()
-            # 保存带索引信息的分块数据
+            # 保存带索引信息的分块数据（✅ 新增：包含 coordinates 和 page_number）
             chunks_for_storage = []
             for i, item in enumerate(merged_items):
                 chunk_data = {
@@ -257,12 +525,18 @@ def process_document_task(self, document_id: int):
                     'chunk_type': item['type']
                 }
                 meta = item.get('meta') or {}
+                # 保存 element_index 信息
                 if 'element_index_start' in meta:
                     chunk_data['element_index_start'] = meta.get('element_index_start')
                 if 'element_index_end' in meta:
                     chunk_data['element_index_end'] = meta.get('element_index_end')
                 if 'element_index' in meta:
                     chunk_data['element_index'] = meta.get('element_index')
+                # ✅ 新增：保存 page_number 和 coordinates（用于坐标重叠度计算）
+                if 'page_number' in meta:
+                    chunk_data['page_number'] = meta.get('page_number')
+                if 'coordinates' in meta and meta.get('coordinates'):
+                    chunk_data['coordinates'] = meta.get('coordinates')
                 chunks_for_storage.append(chunk_data)
             minio.upload_chunks(str(document_id), chunks_for_storage)
             logger.info(f"[任务ID: {task_id}] 分块JSON已归档到 MinIO（含element_index）")
@@ -307,19 +581,28 @@ def process_document_task(self, document_id: int):
                     # 创建或获取图片记录
                     image_row = img_service.create_image_from_bytes(document_id, data, image_ext=img.get('ext', '.png'), image_type=img.get('image_type'))
                     
-                    # 保存 element_index 到图片的 metadata JSON 中（关键：用于100%还原）
-                    if element_index is not None:
+                    # ✅ 保存 element_index 和 page_number 到图片的 metadata JSON 中（关键：用于100%还原和关联查找）
+                    element_index = img.get('element_index')
+                    page_number = img.get('page_number')
+                    if element_index is not None or page_number is not None:
                         import json
                         try:
                             existing_meta = {}
                             if image_row.meta:
                                 existing_meta = json.loads(image_row.meta) if isinstance(image_row.meta, str) else image_row.meta
-                            existing_meta['element_index'] = element_index
+                            if element_index is not None:
+                                existing_meta['element_index'] = element_index
+                            if page_number is not None:
+                                existing_meta['page_number'] = page_number
+                            # 同时保存 coordinates（如果存在）
+                            coordinates = img.get('coordinates')
+                            if coordinates:
+                                existing_meta['coordinates'] = coordinates
                             image_row.meta = json.dumps(existing_meta, ensure_ascii=False)
                             db.commit()
-                            logger.debug(f"[任务ID: {task_id}] 图片 {image_row.id} 已保存 element_index={element_index}")
+                            logger.debug(f"[任务ID: {task_id}] 图片 {image_row.id} 已保存 element_index={element_index}, page_number={page_number}")
                         except Exception as e:
-                            logger.warning(f"[任务ID: {task_id}] 保存图片 element_index 失败: {e}")
+                            logger.warning(f"[任务ID: {task_id}] 保存图片 metadata 失败: {e}")
                             db.rollback()
                     
                     # 步骤2：检查图片是否已有向量（避免重复生成）
@@ -473,15 +756,134 @@ def process_document_task(self, document_id: int):
                     chunk_text = next(text_iter)
                 except StopIteration:
                     chunk_text = ""
+                
+                # ✅ 优化：对于表格块，从 meta 中提取完整的表格数据并生成完整文本
+                chunk_meta_dict = {}  # 确保在所有情况下都有定义
+                if chunk.chunk_type == 'table' and chunk.meta:
+                    try:
+                        chunk_meta_dict = json.loads(chunk.meta) if isinstance(chunk.meta, str) else chunk.meta
+                        table_data = chunk_meta_dict.get('table_data', {})
+                        
+                        # 优先使用结构化单元格数据生成完整文本
+                        if table_data.get('cells'):
+                            cells = table_data['cells']
+                            text_lines = []
+                            for row in cells:
+                                if isinstance(row, (list, tuple)):
+                                    # 使用制表符分隔，保持列对齐
+                                    row_text = '\t'.join(str(cell) if cell is not None else '' for cell in row)
+                                    text_lines.append(row_text)
+                                else:
+                                    text_lines.append(str(row))
+                            chunk_text = '\n'.join(text_lines)
+                            logger.debug(f"[任务ID: {task_id}] 表格块 {chunk.id}: 从结构化数据生成完整文本 ({len(text_lines)} 行)")
+                        # 如果没有 cells，尝试使用 HTML（至少包含结构化信息）
+                        elif table_data.get('html'):
+                            # ✅ 修复：正确解析 HTML 表格结构，保持行列关系
+                            try:
+                                import re
+                                html_text = table_data['html']
+                                
+                                # 方法1：使用 BeautifulSoup（如果可用）
+                                try:
+                                    from bs4 import BeautifulSoup
+                                    soup = BeautifulSoup(html_text, 'html.parser')
+                                    table = soup.find('table')
+                                    if table:
+                                        text_lines = []
+                                        for tr in table.find_all('tr'):
+                                            row_cells = []
+                                            for td in tr.find_all(['td', 'th']):
+                                                cell_text = td.get_text(strip=True)
+                                                row_cells.append(cell_text)
+                                            if row_cells:
+                                                # 使用制表符分隔同一行的单元格
+                                                text_lines.append('\t'.join(row_cells))
+                                        
+                                        if text_lines:
+                                            # 使用换行符分隔不同行
+                                            chunk_text = '\n'.join(text_lines)
+                                            logger.debug(f"[任务ID: {task_id}] 表格块 {chunk.id}: 从 HTML (BeautifulSoup) 提取文本 ({len(text_lines)} 行)")
+                                except ImportError:
+                                    # 方法2：使用正则表达式解析（兜底方案）
+                                    tr_pattern = r'<tr[^>]*>(.*?)</tr>'
+                                    td_pattern = r'<t[dh][^>]*>(.*?)</t[dh]>'
+                                    
+                                    trs = re.findall(tr_pattern, html_text, re.DOTALL | re.IGNORECASE)
+                                    if trs:
+                                        text_lines = []
+                                        for tr_content in trs:
+                                            tds = re.findall(td_pattern, tr_content, re.DOTALL | re.IGNORECASE)
+                                            if tds:
+                                                row_cells = []
+                                                for td in tds:
+                                                    # 移除内嵌的 HTML 标签
+                                                    cell_text = re.sub(r'<[^>]+>', '', td)
+                                                    # 处理 HTML 实体
+                                                    cell_text = cell_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+                                                    cell_text = ' '.join(cell_text.split()).strip()
+                                                    row_cells.append(cell_text)
+                                                
+                                                if row_cells:
+                                                    text_lines.append('\t'.join(row_cells))
+                                        
+                                        if text_lines:
+                                            chunk_text = '\n'.join(text_lines)
+                                            logger.debug(f"[任务ID: {task_id}] 表格块 {chunk.id}: 从 HTML (正则) 提取文本 ({len(text_lines)} 行)")
+                            except Exception as e:
+                                logger.warning(f"[任务ID: {task_id}] 表格块 {chunk.id}: 从 HTML 提取文本失败: {e}")
+                                chunk_text = None  # 继续使用原始的 table_text
+                        # 如果都没有，使用原始的 table_text（已在上面获取）
+                        if chunk_text:
+                            logger.debug(f"[任务ID: {task_id}] 表格块 {chunk.id} 最终文本长度: {len(chunk_text)}")
+                    except Exception as e:
+                        logger.warning(f"[任务ID: {task_id}] 表格块 {chunk.id} 提取完整内容失败: {e}，使用原始文本")
+                        # 解析失败时确保 chunk_meta_dict 至少是空字典
+                        chunk_meta_dict = {}
+                
                 # 跳过空内容分块
                 if not (chunk_text or "").strip():
                     logger.warning(f"[任务ID: {task_id}] 分块 {chunk.id} 内容为空，跳过向量化与索引")
                     continue
+                
+                # ✅ 优化：记录表格块的处理信息
+                if chunk.chunk_type == 'table':
+                    logger.info(f"[任务ID: {task_id}] 表格块 {chunk.id} 向量化: 文本长度={len(chunk_text)}, "
+                               f"包含单元格数据={bool(chunk_meta_dict.get('table_data', {}).get('cells'))}")
+                
                 # 生成向量（Ollama不可用时将返回空列表，允许继续索引文本）
                 vector = vector_service.generate_embedding(chunk_text)
                 vectorize_time = time.time() - chunk_start
                 
-                # 构建索引文档
+                # 构建索引文档（✅ 新增：包含完整的 metadata 信息）
+                # 从 chunk.meta 中提取完整的 metadata（包含 element_index、page_number、coordinates）
+                # ✅ 注意：对于表格块，chunk_meta_dict 已经在上面提取过，需要确保已定义
+                if chunk.chunk_type != 'table':
+                    # 非表格块，需要重新解析 meta
+                    chunk_meta_dict = {}
+                    if chunk.meta:
+                        try:
+                            chunk_meta_dict = json.loads(chunk.meta) if isinstance(chunk.meta, str) else chunk.meta
+                        except:
+                            pass
+                # 表格块的 chunk_meta_dict 已在上面提取，直接使用
+                
+                # 构建 metadata（包含所有关键信息）
+                chunk_metadata = {
+                    "chunk_index": i
+                }
+                # ✅ 添加 element_index 信息
+                if chunk_meta_dict.get('element_index_start') is not None:
+                    chunk_metadata['element_index_start'] = chunk_meta_dict.get('element_index_start')
+                if chunk_meta_dict.get('element_index_end') is not None:
+                    chunk_metadata['element_index_end'] = chunk_meta_dict.get('element_index_end')
+                # ✅ 添加 page_number
+                if chunk_meta_dict.get('page_number') is not None:
+                    chunk_metadata['page_number'] = chunk_meta_dict.get('page_number')
+                # ✅ 添加 coordinates
+                if chunk_meta_dict.get('coordinates'):
+                    chunk_metadata['coordinates'] = chunk_meta_dict.get('coordinates')
+                
                 chunk_doc = {
                     "document_id": document_id,
                     "chunk_id": chunk.id,
@@ -489,7 +891,7 @@ def process_document_task(self, document_id: int):
                     "category_id": document.category_id if hasattr(document, 'category_id') else None,
                     "content": chunk_text,
                     "chunk_type": chunk.chunk_type if hasattr(chunk, 'chunk_type') else "text",
-                    "metadata": {"chunk_index": i},
+                    "metadata": chunk_metadata,  # ✅ 使用完整的 metadata
                     "created_at": chunk.created_at.isoformat() if chunk.created_at else None
                 }
                 # 仅当有有效向量时写入

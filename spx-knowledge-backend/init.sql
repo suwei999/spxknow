@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS `documents` (
     `file_size` INT COMMENT '文件大小',
     `file_hash` VARCHAR(64) COMMENT '文件哈希',
     `file_path` VARCHAR(500) COMMENT '文件路径',
+    `converted_pdf_url` VARCHAR(500) COMMENT '转换后的PDF文件路径（MinIO对象键），用于预览',
     `knowledge_base_id` INT NOT NULL COMMENT '知识库ID',
     `category_id` INT NULL COMMENT '分类ID',
     `tags` JSON COMMENT '标签列表JSON',

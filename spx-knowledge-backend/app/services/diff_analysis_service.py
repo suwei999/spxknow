@@ -184,4 +184,118 @@ class DiffAnalysisService:
                 code=ErrorCode.VALIDATION_ERROR,
                 message=f"版本比较失败: {str(e)}"
             )
+    
+    def calculate_detailed_diff(
+        self,
+        old_content: str,
+        new_content: str
+    ) -> Dict[str, Any]:
+        """计算详细的内容差异，返回可用于前端高亮的diff数据"""
+        try:
+            logger.info("开始计算详细内容差异")
+            
+            # ✅ 修复：空内容处理
+            if old_content is None:
+                old_content = ""
+            if new_content is None:
+                new_content = ""
+            
+            old_lines = old_content.splitlines(keepends=True) if old_content else []
+            new_lines = new_content.splitlines(keepends=True) if new_content else []
+            
+            # 使用 difflib.SequenceMatcher 计算逐行diff
+            matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
+            
+            diff_data = []
+            old_line_num = 0
+            new_line_num = 0
+            
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if tag == 'equal':
+                    # 相同内容
+                    for line in old_lines[i1:i2]:
+                        old_line_num += 1
+                        new_line_num += 1
+                        diff_data.append({
+                            "type": "equal",
+                            "old_line": old_line_num,
+                            "new_line": new_line_num,
+                            "content": line.rstrip('\n\r')
+                        })
+                elif tag == 'delete':
+                    # 删除的内容
+                    for line in old_lines[i1:i2]:
+                        old_line_num += 1
+                        diff_data.append({
+                            "type": "delete",
+                            "old_line": old_line_num,
+                            "new_line": None,
+                            "content": line.rstrip('\n\r')
+                        })
+                elif tag == 'insert':
+                    # 新增的内容
+                    for line in new_lines[j1:j2]:
+                        new_line_num += 1
+                        diff_data.append({
+                            "type": "insert",
+                            "old_line": None,
+                            "new_line": new_line_num,
+                            "content": line.rstrip('\n\r')
+                        })
+                elif tag == 'replace':
+                    # 替换的内容：先删除旧内容，再插入新内容
+                    # 先删除旧内容
+                    for line in old_lines[i1:i2]:
+                        old_line_num += 1
+                        diff_data.append({
+                            "type": "delete",
+                            "old_line": old_line_num,
+                            "new_line": None,
+                            "content": line.rstrip('\n\r')
+                        })
+                    # 再插入新内容
+                    for line in new_lines[j1:j2]:
+                        new_line_num += 1
+                        diff_data.append({
+                            "type": "insert",
+                            "old_line": None,
+                            "new_line": new_line_num,
+                            "content": line.rstrip('\n\r')
+                        })
+            
+            # 计算统计信息
+            added_count = sum(1 for item in diff_data if item["type"] == "insert")
+            removed_count = sum(1 for item in diff_data if item["type"] == "delete")
+            equal_count = sum(1 for item in diff_data if item["type"] == "equal")
+            
+            # 计算修改行数（连续的delete+insert对视为修改）
+            modified_count = 0
+            i = 0
+            while i < len(diff_data) - 1:
+                if diff_data[i]["type"] == "delete" and diff_data[i + 1]["type"] == "insert":
+                    modified_count += 1
+                    i += 2
+                else:
+                    i += 1
+            
+            return {
+                "statistics": {
+                    "added_lines": added_count,
+                    "removed_lines": removed_count,
+                    "modified_lines": modified_count,
+                    "total_changes": added_count + removed_count,
+                    "change_ratio": (added_count + removed_count) / len(old_lines) if len(old_lines) > 0 else 0,
+                    "equal_lines": equal_count
+                },
+                "diff_data": diff_data,
+                "old_line_count": len(old_lines),
+                "new_line_count": len(new_lines)
+            }
+            
+        except Exception as e:
+            logger.error(f"计算详细内容差异失败: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.VALIDATION_ERROR,
+                message=f"计算详细内容差异失败: {str(e)}"
+            )
 

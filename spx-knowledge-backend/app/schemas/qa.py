@@ -128,6 +128,8 @@ class SourceInfo(BaseModel):
     content_snippet: str
     similarity_score: float
     position_info: Dict[str, Any]
+    # ✅ 新增：关联图片信息
+    associated_images: Optional[List[Dict[str, Any]]] = None
 
 class QAMultimodalQuestionResponse(BaseModel):
     """多模态问答响应"""
@@ -157,6 +159,8 @@ class ImageSearchResult(BaseModel):
     similarity_score: float
     image_info: Dict[str, Any]
     source_document: Dict[str, Any]
+    # ✅ 上下文文本块信息（已存在字段，现在会填充内容）
+    # context_info 结构: {"chunks": [...], "chunk_count": int, "document_id": int}
     context_info: Optional[Dict[str, Any]] = None
 
 class QAImageSearchResponse(BaseModel):

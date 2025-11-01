@@ -54,8 +54,39 @@
           <template v-if="isTableChunk">
             <el-tabs v-model="tableTab" type="border-card">
               <el-tab-pane label="原始预览" name="preview">
-                <div class="table-html" v-if="tableHtml" v-html="tableHtml"></div>
-                <el-empty v-else description="无原始预览，已使用网格编辑" />
+                <!-- ✅ 调试信息 -->
+                <div style="padding: 10px; background: #f5f5f5; margin-bottom: 10px; font-size: 12px; color: #666;">
+                  <div>tableHtml 状态: {{ tableHtml ? `存在 (${tableHtml.length} 字符)` : '空' }}</div>
+                  <div>debugTableHtml 状态: {{ debugTableHtml ? `存在 (${debugTableHtml.length} 字符)` : '空' }}</div>
+                  <div>tableData 状态: {{ tableData && tableData.length > 0 ? `${tableData.length} 行` : '空' }}</div>
+                  <div>isTableChunk: {{ isTableChunk }}</div>
+                  <div>currentChunk.chunk_index: {{ currentChunk?.chunk_index }}</div>
+                </div>
+                
+                <!-- ✅ 优先显示 HTML 表格（最准确的原始结构） -->
+                <div v-if="debugTableHtml" class="table-html-wrapper">
+                  <div class="table-html" v-html="debugTableHtml"></div>
+                </div>
+                <!-- ✅ 如果没有 HTML，尝试从 cells 生成表格预览 -->
+                <div v-else-if="tableData && tableData.length > 0 && !(tableData.length === 1 && tableData[0]?.length <= 1)" class="table-preview-from-cells">
+                  <table class="preview-table" border="1" cellpadding="5" cellspacing="0" style="width: 100%; border-collapse: collapse;">
+                    <tbody>
+                      <tr v-for="(row, rowIdx) in tableData" :key="rowIdx">
+                        <td v-for="(cell, cellIdx) in row" :key="cellIdx" style="border: 1px solid #ddd; padding: 8px;">
+                          {{ cell }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <el-alert
+                    type="warning"
+                    :closable="false"
+                    style="margin-top: 10px;"
+                    description="⚠️ 此表格预览由结构化数据生成，原始 HTML 不可用。如果内容不正确，请检查后端表格提取逻辑。"
+                  />
+                </div>
+                <!-- ✅ 如果既没有 HTML 也没有 cells，显示提示 -->
+                <el-empty v-else description="无法显示表格预览：缺少表格结构数据（HTML 或 cells）。可能是解析时未正确提取表格结构。" />
               </el-tab-pane>
               <el-tab-pane label="网格编辑" name="grid">
                 <div class="table-editor-tools">
@@ -187,6 +218,12 @@ const isTableChunk = computed(() => (currentChunk.value?.chunk_type === 'table')
 const tableData = ref<string[][]>([])
 const tableHtml = ref<string>('')
 const tableTab = ref<'preview' | 'grid'>('preview')
+
+// ✅ 调试用 computed，确保响应式更新
+const debugTableHtml = computed(() => {
+  console.log('[响应式调试] tableHtml computed 被调用，当前值:', tableHtml.value ? `${tableHtml.value.substring(0, 50)}...` : '(空)')
+  return tableHtml.value
+})
 const tableColumns = computed(() => {
   const cols = tableData.value[0]?.length || 0
   return Array.from({ length: cols }, (_, i) => `C${i + 1}`)
@@ -225,9 +262,183 @@ const loadChunks = async () => {
     const res = await getDocumentChunks(props.documentId, { page: 1, size: 1000, include_content: true } as any)
     const data = (res as any)?.data
     chunks.value = Array.isArray(data) ? data : (data?.list || data?.chunks || [])
+    
+    // ✅ 调试：检查表格块的数据
+    const tableChunks = chunks.value.filter((c: any) => c.chunk_type === 'table')
+    console.log('[块列表调试] 找到', tableChunks.length, '个表格块')
+    tableChunks.forEach((chunk: any, idx: number) => {
+      console.log(`[块列表调试] 表格块 #${chunk.chunk_index}:`, {
+        id: chunk.id,
+        chunk_index: chunk.chunk_index,
+        meta: chunk.meta,
+        metaType: typeof chunk.meta,
+        hasTableData: chunk.meta && (typeof chunk.meta === 'string' ? JSON.parse(chunk.meta || '{}') : chunk.meta)?.table_data
+      })
+    })
   } catch (error) {
     ElMessage.error('加载块列表失败')
+    console.error('[块列表调试] 加载失败:', error)
   }
+}
+
+// ✅ 辅助函数：初始化表格数据（从 chunk 数据中提取）
+const initializeTableData = (chunk: any) => {
+  if (!chunk || chunk.chunk_type !== 'table') {
+    tableData.value = []
+    tableHtml.value = ''
+    return
+  }
+  
+  try {
+    // 解析 meta 字段
+    const metaRaw = chunk.meta
+    console.log('[表格调试] chunk 原始数据:', chunk)
+    console.log('[表格调试] metaRaw:', metaRaw, '类型:', typeof metaRaw)
+    
+    const meta = typeof metaRaw === 'string' ? JSON.parse(metaRaw || '{}') : (metaRaw || {})
+    console.log('[表格调试] 解析后的 meta:', meta)
+    console.log('[表格调试] meta.table_data:', meta?.table_data)
+    
+    // ✅ 优先使用 table_data.html（最准确的表格结构）
+    const htmlFromMeta = meta?.table_data?.html || ''
+    console.log('[表格调试] 从 meta 获取的 html:', htmlFromMeta ? `${htmlFromMeta.substring(0, 100)}...` : '(空)')
+    console.log('[表格调试] meta.table_data 完整内容:', JSON.stringify(meta?.table_data, null, 2))
+    
+    tableHtml.value = htmlFromMeta
+    console.log('[表格调试] ✅ tableHtml.value 已设置为:', tableHtml.value ? `${tableHtml.value.substring(0, 100)}...` : '(空)')
+    console.log('[表格调试] tableHtml.value 长度:', tableHtml.value ? tableHtml.value.length : 0)
+    
+    // ✅ 优先使用 table_data.cells（结构化数据，最准确）
+    // ⚠️ 重要：只有当 cells 是有效的二维数组（多行多列）时才使用，否则使用 HTML
+    const cells = meta?.table_data?.cells
+    console.log('[表格调试] cells:', cells, '是否为数组:', Array.isArray(cells))
+    
+    // ✅ 检查 cells 是否有效（至少2列或2行，或HTML为空时才使用只有1行1列的cells）
+    if (Array.isArray(cells) && cells.length > 0) {
+      const firstRow = cells[0]
+      const isValidCells = Array.isArray(firstRow) && (
+        // 有效的表格：至少有2列，或至少有2行
+        (firstRow.length >= 2) || 
+        (cells.length >= 2) ||
+        // 如果HTML为空，即使只有1行1列也使用cells
+        !tableHtml.value
+      )
+      
+      if (isValidCells) {
+        tableData.value = cells.map((r: any[]) => {
+          if (Array.isArray(r)) {
+            return r.map(v => String(v ?? ''))
+          }
+          return [String(r ?? '')]
+        })
+        console.log('[表格调试] ✅ 成功从 cells 提取表格数据:', tableData.value.length, '行 x', tableData.value[0]?.length || 0, '列')
+        // ⚠️ 如果 tableHtml 存在，优先使用 HTML 渲染，但保留 tableData 用于编辑
+        if (tableHtml.value) {
+          console.log('[表格调试] 同时存在 HTML，将优先渲染 HTML')
+        }
+        // 不 return，继续处理 HTML（如果有的话）
+      } else {
+        console.log('[表格调试] ⚠️ cells 结构无效（可能只有1行1列），跳过使用 cells，优先使用 HTML')
+      }
+    }
+    
+    // ✅ 如果 tableHtml 存在，优先使用 HTML 渲染
+    // 如果 tableData 还没设置或只有1行1列，尝试从 HTML 中提取表格结构
+    if (tableHtml.value) {
+      // 如果 tableData 为空或无效，从 HTML 提取
+      if (!tableData.value || tableData.value.length === 0 || 
+          (tableData.value.length === 1 && tableData.value[0]?.length <= 1)) {
+        try {
+          console.log('[表格调试] 从 HTML 提取表格结构到 tableData...')
+          // 创建一个临时 DOM 元素来解析 HTML
+          const parser = new DOMParser()
+          const doc = parser.parseFromString(tableHtml.value, 'text/html')
+          const table = doc.querySelector('table')
+          if (table) {
+            const rows: string[][] = []
+            const trs = table.querySelectorAll('tr')
+            trs.forEach(tr => {
+              const row: string[] = []
+              const cells = tr.querySelectorAll('td, th')
+              cells.forEach(cell => {
+                row.push(cell.textContent?.trim() || '')
+              })
+              if (row.length > 0) {
+                rows.push(row)
+              }
+            })
+            if (rows.length > 0) {
+              tableData.value = rows
+              console.log('[表格调试] ✅ 从 HTML 成功提取表格数据:', tableData.value.length, '行 x', tableData.value[0]?.length || 0, '列')
+            }
+          }
+        } catch (e) {
+          console.warn('[表格调试] 从 HTML 解析表格失败:', e)
+        }
+      } else {
+        console.log('[表格调试] tableData 已有效，不需要从 HTML 提取')
+      }
+      // ⚠️ 重要：如果 tableHtml 存在，直接使用它渲染，不再继续执行兜底逻辑
+      // 但保留 tableData 用于网格编辑
+      return
+    }
+    
+    // ⚠️ 最后兜底：从 content 解析（可能包含 OCR 错误，不推荐）
+    const content = chunk.content || ''
+    console.log('[表格调试] 兜底逻辑 - content:', content ? `${content.substring(0, 100)}...` : '(空)')
+    
+    if (content) {
+      // 尝试按制表符分隔（这是我们从结构化数据生成的格式）
+      if (content.includes('\t')) {
+        const lines = content.split('\n').filter(l => l.trim())
+        if (lines.length > 0) {
+          tableData.value = lines.map(l => l.split('\t').map(c => c.trim()))
+          console.log('[表格调试] ✅ 从 content (制表符) 提取表格数据:', tableData.value.length, '行')
+          return
+        }
+      }
+      // 尝试按管道符分隔（Markdown 表格格式）
+      if (content.includes('|')) {
+        const lines = content.split('\n').filter(l => l.trim() && !l.match(/^[\s|:\-]+$/))
+        if (lines.length > 0) {
+          tableData.value = lines.map(l => {
+            const cols = l.split('|').map(c => c.trim()).filter(c => c && !c.match(/^[\-:]+$/))
+            return cols.length > 0 ? cols : ['']
+          }).filter(row => row.length > 0 && row.some(cell => cell))
+          if (tableData.value.length > 0) {
+            console.log('[表格调试] ✅ 从 content (管道符) 提取表格数据:', tableData.value.length, '行')
+            return
+          }
+        }
+      }
+      // 尝试按多个空格分隔（可能是 OCR 文本）
+      const lines = content.split('\n').filter(l => l.trim())
+      if (lines.length > 0) {
+        const parsed = lines.map(l => l.split(/\s{2,}/).filter(c => c.trim()))
+        if (parsed.length > 0 && parsed.some(row => row.length > 1)) {
+          tableData.value = parsed
+          console.log('[表格调试] ✅ 从 content (多空格) 提取表格数据:', tableData.value.length, '行')
+          return
+        }
+      }
+      // 如果都不行，至少显示一个单元格，内容是整个 content
+      tableData.value = [[content]]
+      console.log('[表格调试] ⚠️ 无法解析表格结构，显示为单个单元格')
+    } else {
+      console.log('[表格调试] ⚠️ content 为空，显示空表格')
+      tableData.value = [['']]
+    }
+  } catch (e) {
+    console.error('[表格调试] ❌ 初始化表格数据失败:', e, e.stack)
+    const fallbackContent = chunk?.content || ''
+    tableData.value = fallbackContent ? [[fallbackContent]] : [['无法加载表格数据']]
+  }
+  
+  console.log('[表格调试] ===== 函数结束时的最终状态 =====')
+  console.log('[表格调试] 最终 tableData:', tableData.value, '行数:', tableData.value?.length || 0)
+  console.log('[表格调试] 最终 tableHtml:', tableHtml.value ? `${tableHtml.value.substring(0, 100)}...` : '(空)', '长度:', tableHtml.value?.length || 0)
+  console.log('[表格调试] tableHtml.value 是否存在:', !!tableHtml.value)
+  console.log('[表格调试] =========================================')
 }
 
 const onRowClick = async (data: any) => {
@@ -237,27 +448,9 @@ const onRowClick = async (data: any) => {
 
   currentChunk.value = { ...data }
   editorContent.value = data.content || ''
-  // 初始化表格数据
-  if (currentChunk.value.chunk_type === 'table') {
-    try {
-      const metaRaw = (currentChunk.value as any).meta
-      const meta = typeof metaRaw === 'string' ? JSON.parse(metaRaw) : (metaRaw || {})
-      const cells = meta?.table_data?.cells
-      tableHtml.value = meta?.table_data?.html || ''
-      if (Array.isArray(cells) && Array.isArray(cells[0])) {
-        tableData.value = cells.map((r: any[]) => r.map(v => String(v ?? '')))
-      } else {
-        // 简单按换行和空格切分
-        const lines = (currentChunk.value.content || '').split('\n')
-        tableData.value = lines.map(l => l.split(/\s+/))
-      }
-    } catch (e) {
-      tableData.value = [[currentChunk.value.content || '']]
-    }
-  } else {
-    tableData.value = []
-    tableHtml.value = ''
-  }
+  
+  // ✅ 初始化表格数据（优先使用 meta.table_data）
+  initializeTableData(currentChunk.value)
 
   // 若内容为空（例如 DB 不存正文），再请求详情补全
   if (!editorContent.value) {
@@ -265,6 +458,9 @@ const onRowClick = async (data: any) => {
       const res = await getChunkDetail(props.documentId, chunkId)
       currentChunk.value = res.data
       editorContent.value = res.data?.content || ''
+      
+      // ✅ 重要：重新初始化表格数据（因为获取了新的数据，可能包含更完整的 meta）
+      initializeTableData(currentChunk.value)
     } catch (error) {
       // 保持已有数据
     }
@@ -277,6 +473,27 @@ const onRowClick = async (data: any) => {
 
 const onEditorReady = () => {
   // 编辑器准备就绪
+}
+
+// ✅ 表格编辑功能：添加行
+const addRow = () => {
+  if (tableData.value.length === 0) {
+    tableData.value = [['']]
+  } else {
+    const colCount = tableData.value[0]?.length || 1
+    tableData.value.push(Array(colCount).fill(''))
+  }
+}
+
+// ✅ 表格编辑功能：添加列
+const addCol = () => {
+  if (tableData.value.length === 0) {
+    tableData.value = [['']]
+  } else {
+    tableData.value.forEach(row => {
+      row.push('')
+    })
+  }
 }
 
 const loadChunkVersions = async (chunkId: number) => {
@@ -458,10 +675,84 @@ onMounted(() => {
       .el-table__row:hover > td { background: rgba(255,255,255,0.045) !important; color: #e6ecf5; }
       .el-table__row.current-row > td { background: rgba(64,158,255,0.10) !important; color: #eaf2ff; }
       .type-pill { display: inline-block; min-width: 48px; padding: 2px 10px; border-radius: 999px; font-size: 13px; }
-      .type-pill.text { background: linear-gradient(135deg, rgba(0,140,255,0.6), rgba(0,120,255,0.28)); color: #eaf2ff; box-shadow: 0 0 6px rgba(0,140,255,0.2); }
-      .type-pill.table { background: linear-gradient(135deg, rgba(0,210,150,0.6), rgba(0,200,140,0.28)); color: #ecfff7; box-shadow: 0 0 6px rgba(0,210,150,0.2); }
+    }
+    
+    /* ✅ 表格预览样式 */
+    .table-html-wrapper {
+      width: 100%;
+      overflow-x: auto;
+      padding: 10px;
+      background: #fff;
+      border-radius: 4px;
+    }
+    
+    .table-html {
+      width: 100%;
+      overflow-x: auto;
+      
+      :deep(table) {
+        width: 100%;
+        border-collapse: collapse;
+        border: 1px solid #ddd;
+        background: white;
+        
+        th, td {
+          border: 1px solid #ddd;
+          padding: 8px 12px;
+          text-align: left;
+          vertical-align: top;
+        }
+        
+        th {
+          background-color: #f5f5f5;
+          font-weight: 600;
+        }
+        
+        tr:nth-child(even) {
+          background-color: #f9f9f9;
+        }
+        
+        tr:hover {
+          background-color: #f0f0f0;
+        }
+      }
+      
+      :deep(thead) {
+        background-color: #f5f5f5;
+      }
+    }
+    
+    .table-preview-from-cells {
+      width: 100%;
+      overflow-x: auto;
+      
+      .preview-table {
+        width: 100%;
+        border-collapse: collapse;
+        border: 1px solid #ddd;
+        background: white;
+        
+        td {
+          border: 1px solid #ddd;
+          padding: 8px;
+          text-align: left;
+          vertical-align: top;
+        }
+        
+        tr:first-child td {
+          background-color: #f5f5f5;
+          font-weight: 600;
+        }
+        
+        tr:nth-child(even) {
+          background-color: #f9f9f9;
+        }
+      }
     }
   }
+  
+  .type-pill.text { background: linear-gradient(135deg, rgba(0,140,255,0.6), rgba(0,120,255,0.28)); color: #eaf2ff; box-shadow: 0 0 6px rgba(0,140,255,0.2); }
+  .type-pill.table { background: linear-gradient(135deg, rgba(0,210,150,0.6), rgba(0,200,140,0.28)); color: #ecfff7; box-shadow: 0 0 6px rgba(0,210,150,0.2); }
 
   .editor-main {
     .editor-header {

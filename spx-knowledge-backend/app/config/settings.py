@@ -202,6 +202,17 @@ class Settings(BaseSettings):
     UNSTRUCTURED_TXT_ENCODING: str = "utf-8"
     # 统一的语言优先级配置（供 Unstructured 解析使用）
     UNSTRUCTURED_LANGUAGES: List[str] = ["zh", "en"]
+    
+    # 文档内容过滤配置（提升解析质量 - 文档降噪处理）
+    ENABLE_TOC_DETECTION: bool = True  # 启用目录识别（将误识别为表格的目录转换为文本）
+    ENABLE_HEADER_FOOTER_FILTER: bool = True  # 启用页眉页脚过滤（排除页眉页脚内容）
+    ENABLE_BLANK_CONTENT_FILTER: bool = True  # 启用空白内容过滤（排除空白页、纯空白字符）
+    ENABLE_NOISE_TEXT_FILTER: bool = True  # 启用噪声文本过滤（排除OCR错误、碎片文本等）
+    ENABLE_COPYRIGHT_FILTER: bool = True  # 启用版权声明过滤（排除版权页内容）
+    ENABLE_WATERMARK_FILTER: bool = True  # 启用水印过滤（排除水印文字）
+    ENABLE_COVER_PAGE_FILTER: bool = True  # 启用封面/封底页过滤（排除封面封底内容）
+    ENABLE_FOOTNOTE_FILTER: bool = False  # 启用脚注/页边注释过滤（默认关闭，因为某些脚注可能有用）
+    ENABLE_DUPLICATE_DETECTION: bool = True  # 启用重复内容检测（排除重复的段落或标题）
 
     # 文档预处理/转换（参照 Dify 流程）
     ENABLE_DOCX_REPAIR: bool = True  # 解析前修复主文档关系并清洗无效关系
@@ -215,6 +226,14 @@ class Settings(BaseSettings):
     POPPLER_PATH: Optional[str] = None  # 如 C:\tools\poppler\bin
     TESSERACT_PATH: Optional[str] = None  # 如 C:\Program Files\Tesseract-OCR
     TESSDATA_PREFIX: Optional[str] = None  # 如 C:\Program Files\Tesseract-OCR\tessdata
+    
+    # Unstructured模型配置（本地模型路径，优先使用本地模型）
+    # 模型目录结构：models/unstructured/yolo_x_layout/yolox_10.05.onnx
+    UNSTRUCTURED_MODELS_DIR: str = os.path.join(_PROJECT_ROOT, "models", "unstructured")
+    # Hugging Face缓存目录（用于存储从HF下载的模型，如果未设置则使用 UNSTRUCTURED_MODELS_DIR）
+    HF_HOME: Optional[str] = None  # 默认None，将设置为 UNSTRUCTURED_MODELS_DIR
+    # 是否允许从Hugging Face自动下载模型（如果本地不存在）
+    UNSTRUCTURED_AUTO_DOWNLOAD_MODEL: bool = True  # 默认允许自动下载，优先使用本地模型，本地没有则联网下载
     
     # 分块存储策略
     STORE_CHUNK_TEXT_IN_DB: bool = False  # 轻量模式：仅存元信息到 MySQL，全文分块归档到 MinIO

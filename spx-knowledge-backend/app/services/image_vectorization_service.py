@@ -14,6 +14,12 @@ import open_clip
 import cv2
 from app.core.logging import logger
 from app.core.exceptions import CustomException, ErrorCode
+from app.utils.download_progress import (
+    log_download_start, 
+    log_download_success, 
+    log_download_error,
+    setup_hf_download_progress
+)
 
 class ImageVectorizationService:
     """图片向量化服务 - 严格按照设计文档实现"""
@@ -35,28 +41,165 @@ class ImageVectorizationService:
             try:
                 os.makedirs(_settings.CLIP_MODELS_DIR, exist_ok=True)
                 os.makedirs(_settings.CLIP_CACHE_DIR, exist_ok=True)
-            except Exception:
-                pass
+                logger.info(f"✅ CLIP模型目录已准备: {_settings.CLIP_MODELS_DIR}")
+                logger.info(f"✅ CLIP缓存目录已准备: {_settings.CLIP_CACHE_DIR}")
+            except Exception as e:
+                logger.warning(f"创建CLIP目录失败: {e}")
             os.environ.setdefault('OPENCLIP_CACHE', _settings.CLIP_CACHE_DIR)
 
-            # 若本地权重存在则优先使用；否则允许在线下载到缓存目录
-            pretrained_arg = _settings.CLIP_PRETRAINED_PATH if os.path.exists(_settings.CLIP_PRETRAINED_PATH) else "laion2b_s34b_b79k"
+            # 检查本地权重文件是否存在
             model_name = getattr(_settings, 'CLIP_MODEL_NAME', 'ViT-B-32')
-            clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
-                model_name, pretrained=pretrained_arg, device=self.device
-            )
+            model_full_name = f"{model_name} (CLIP)"
+            
+            # ⚠️ 重要：检查模型是否已存在（包括指定路径和缓存目录）
+            # open_clip 库下载的模型可能缓存在 OPENCLIP_CACHE 目录中
+            model_found = False
+            model_location = None
+            
+            def _check_clip_model_in_directory(directory, desc=""):
+                """在指定目录中查找 CLIP 模型文件"""
+                if not os.path.exists(directory):
+                    return None
+                try:
+                    # CLIP 模型可能是 .pt, .pth, .safetensors 等格式
+                    model_extensions = ['.pt', '.pth', '.safetensors', '.bin']
+                    for root, dirs, files in os.walk(directory):
+                        for file in files:
+                            # 检查是否是CLIP模型文件（通常包含模型名称或pretrained标识）
+                            file_lower = file.lower()
+                            if any(file_lower.endswith(ext) for ext in model_extensions):
+                                # 检查文件名是否包含CLIP相关标识
+                                if ('clip' in file_lower or 
+                                    'vit-b-32' in file_lower or 
+                                    'laion' in file_lower or
+                                    'openclip' in file_lower):
+                                    model_path = os.path.join(root, file)
+                                    try:
+                                        file_size = os.path.getsize(model_path)
+                                        # CLIP模型通常>10MB
+                                        if file_size > 10 * 1024 * 1024:  # 至少10MB
+                                            return model_path
+                                    except OSError:
+                                        continue
+                except Exception:
+                    pass
+                return None
+            
+            # 1. 优先检查指定路径
+            if os.path.exists(_settings.CLIP_PRETRAINED_PATH):
+                model_found = True
+                model_location = _settings.CLIP_PRETRAINED_PATH
+                pretrained_arg = _settings.CLIP_PRETRAINED_PATH
+                logger.info(f"✅ 检测到本地CLIP模型权重: {_settings.CLIP_PRETRAINED_PATH}")
+                logger.info(f"🔧 正在从本地加载 CLIP 模型: {model_name}")
+            else:
+                # 2. 检查 open_clip 缓存目录
+                cached_model = _check_clip_model_in_directory(_settings.CLIP_CACHE_DIR, "CLIP缓存目录")
+                if cached_model:
+                    model_found = True
+                    model_location = cached_model
+                    # open_clip 会自动使用缓存，不需要指定路径
+                    pretrained_arg = "laion2b_s34b_b79k"
+                    logger.info(f"✅ 在 CLIP 缓存目录中发现模型: {cached_model}")
+                    logger.info(f"💡 open_clip 库将自动使用缓存中的模型，无需重新下载")
+                    logger.info(f"🔧 正在从缓存加载 CLIP 模型: {model_name}")
+                else:
+                    # 3. 检查 Hugging Face 默认缓存位置（open_clip 可能使用 HF Hub）
+                    try:
+                        hf_default_cache = os.path.expanduser("~/.cache/huggingface")
+                        cached_model = _check_clip_model_in_directory(hf_default_cache, "HF默认缓存")
+                        if cached_model:
+                            model_found = True
+                            model_location = cached_model
+                            pretrained_arg = "laion2b_s34b_b79k"
+                            logger.info(f"✅ 在 HF 默认缓存目录中发现 CLIP 模型: {cached_model}")
+                            logger.info(f"💡 open_clip 库将自动使用缓存中的模型，无需重新下载")
+                            logger.info(f"🔧 正在从缓存加载 CLIP 模型: {model_name}")
+                    except Exception as e:
+                        logger.debug(f"检查 HF 默认缓存目录时出错: {e}")
+                
+                # 如果模型不存在，才记录下载开始
+                if not model_found:
+                    logger.info(f"⚠️ 本地CLIP模型权重不存在: {_settings.CLIP_PRETRAINED_PATH}")
+                    logger.info(f"⚠️ CLIP缓存目录中未发现模型: {_settings.CLIP_CACHE_DIR}")
+                    
+                    # 设置 Hugging Face 下载进度显示
+                    try:
+                        # 启用 Hugging Face Hub 的进度显示
+                        os.environ.setdefault('HF_HUB_DISABLE_PROGRESS_BARS', '0')
+                        # 尝试设置 tqdm 进度条
+                        from huggingface_hub.utils import disable_progress_bars
+                        disable_progress_bars(False)
+                    except Exception:
+                        pass
+                    
+                    # 记录下载开始信息
+                    log_download_start(
+                        model_name=model_full_name,
+                        source="Hugging Face",
+                        estimated_size="300-500 MB"
+                    )
+                    
+                    pretrained_arg = "laion2b_s34b_b79k"
+                    logger.info(f"🔧 正在下载并加载 CLIP 模型: {model_name}, pretrained={pretrained_arg}")
+                    logger.info(f"💾 下载后的模型将保存到缓存目录: {_settings.CLIP_CACHE_DIR}")
+            
+            # 尝试加载模型，如果是下载过程，捕获下载相关错误
+            try:
+                clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+                    model_name, pretrained=pretrained_arg, device=self.device
+                )
+                
+                # 如果是从网络下载的（模型不在缓存中），记录成功
+                if not model_found:
+                    log_download_success(
+                        model_name=model_full_name,
+                        save_path=_settings.CLIP_CACHE_DIR
+                    )
+                
+                logger.info("✅ CLIP模型加载完成，正在移动到设备...")
+            except Exception as download_error:
+                # 判断是否是下载相关的错误
+                error_str = str(download_error).lower()
+                is_download_error = any(keyword in error_str for keyword in [
+                    'download', 'huggingface', 'hub', 'network', 'connection', 
+                    'timeout', 'unpack', 'http', 'https', 'ssl', 'certificate'
+                ])
+                
+                if is_download_error:
+                    # 使用统一的错误日志格式
+                    log_download_error(
+                        model_name=model_full_name,
+                        error=download_error,
+                        download_url="https://huggingface.co/laion/CLIP-ViT-B-32-xlaion2b-s34b-b79k",
+                        local_path=_settings.CLIP_PRETRAINED_PATH,
+                        readme_path="models/clip/README.md"
+                    )
+                    
+                    raise CustomException(
+                        code=ErrorCode.VECTOR_GENERATION_FAILED,
+                        message=f"CLIP模型下载失败: {str(download_error)}。请检查网络连接或手动下载模型到 {_settings.CLIP_PRETRAINED_PATH}。详见 models/clip/README.md"
+                    )
+                else:
+                    # 其他类型的错误（如模型加载、格式错误等）
+                    logger.error(f"❌ CLIP模型加载失败（非下载错误）: {download_error}")
+                    raise
+            
             clip_model.eval()
             clip_model.to(self.device)
             self.models['clip'] = clip_model
             self.transforms['clip'] = clip_preprocess
-            logger.info("CLIP模型初始化完成")
+            logger.info("✅ CLIP模型初始化完成，已加载到设备")
             
             # 关闭 ResNet/ViT 以避免联网下载
             
-            logger.info("所有视觉模型初始化完成")
+            logger.info("✅ 所有视觉模型初始化完成")
             
+        except CustomException:
+            # 重新抛出自定义异常
+            raise
         except Exception as e:
-            logger.error(f"模型初始化失败: {e}", exc_info=True)
+            logger.error(f"❌ 模型初始化失败: {e}", exc_info=True)
             raise CustomException(
                 code=ErrorCode.VECTOR_GENERATION_FAILED,
                 message=f"视觉模型初始化失败: {str(e)}"

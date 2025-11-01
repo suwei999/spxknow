@@ -317,6 +317,114 @@ class MinioStorageService:
                 message=f"元数据上传失败: {str(e)}"
             )
     
+    def update_chunk_content(self, document_id: int, chunk_index: int, new_content: str, chunk_meta: dict = None) -> Dict[str, Any]:
+        """
+        更新 MinIO 中的单个 chunk 内容
+        下载 chunks.jsonl.gz，更新指定 chunk_index 的内容，重新上传
+        """
+        try:
+            logger.info(f"开始更新 MinIO chunk: document_id={document_id}, chunk_index={chunk_index}")
+            
+            import json
+            import gzip
+            from io import BytesIO
+            from datetime import datetime
+            
+            # 查找 chunks.jsonl.gz 文件路径
+            prefix = "documents/"
+            files = self.list_files(prefix)
+            needle = f"/{document_id}/parsed/chunks/chunks.jsonl.gz"
+            target = None
+            for f in files:
+                if f.get("object_name", "").endswith(needle):
+                    target = f["object_name"]
+                    break
+            
+            if not target:
+                logger.warning(f"未找到 chunks.jsonl.gz 文件，document_id={document_id}")
+                raise CustomException(
+                    code=ErrorCode.MINIO_DOWNLOAD_FAILED,
+                    message=f"未找到 chunks.jsonl.gz 文件: document_id={document_id}"
+                )
+            
+            # 下载现有文件
+            chunks_data = self.download_file(target)
+            
+            # 解析所有 chunks
+            chunks_list = []
+            with gzip.GzipFile(fileobj=BytesIO(chunks_data), mode='rb') as gz:
+                for line in gz:
+                    try:
+                        chunk_item = json.loads(line)
+                        chunks_list.append(chunk_item)
+                    except Exception:
+                        continue
+            
+            # 找到并更新指定的 chunk
+            chunk_found = False
+            for chunk_item in chunks_list:
+                if chunk_item.get('index') == chunk_index or chunk_item.get('chunk_index') == chunk_index:
+                    # 更新 content
+                    chunk_item['content'] = new_content
+                    # 如果提供了 meta，更新 metadata 字段
+                    if chunk_meta:
+                        if 'element_index_start' in chunk_meta:
+                            chunk_item['element_index_start'] = chunk_meta.get('element_index_start')
+                        if 'element_index_end' in chunk_meta:
+                            chunk_item['element_index_end'] = chunk_meta.get('element_index_end')
+                        if 'page_number' in chunk_meta:
+                            chunk_item['page_number'] = chunk_meta.get('page_number')
+                        if 'coordinates' in chunk_meta:
+                            chunk_item['coordinates'] = chunk_meta.get('coordinates')
+                    # 标记为已编辑
+                    chunk_item['edited'] = True
+                    chunk_found = True
+                    break
+            
+            if not chunk_found:
+                logger.warning(f"未找到 chunk_index={chunk_index} 在 chunks.jsonl.gz 中")
+                raise CustomException(
+                    code=ErrorCode.MINIO_DOWNLOAD_FAILED,
+                    message=f"未找到 chunk_index={chunk_index}"
+                )
+            
+            # 重新压缩并上传
+            buf = BytesIO()
+            with gzip.GzipFile(fileobj=buf, mode='wb') as gz:
+                for chunk_item in chunks_list:
+                    line = json.dumps(chunk_item, ensure_ascii=False).encode('utf-8')
+                    gz.write(line + b"\n")
+            chunks_bytes = buf.getvalue()
+            
+            # 上传更新后的文件
+            self.client.put_object(
+                bucket_name=self.bucket_name,
+                object_name=target,
+                data=BytesIO(chunks_bytes),
+                length=len(chunks_bytes),
+                content_type="application/gzip"
+            )
+            
+            result = {
+                "success": True,
+                "chunks_path": target,
+                "chunks_count": len(chunks_list),
+                "chunks_size": len(chunks_bytes),
+                "updated_chunk_index": chunk_index
+            }
+            
+            logger.info(f"MinIO chunk 更新成功: {target}, chunk_index={chunk_index}")
+            return result
+            
+        except CustomException:
+            raise
+        except Exception as e:
+            logger.error(f"更新 MinIO chunk 错误: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.MINIO_UPLOAD_FAILED,
+                message=f"更新 MinIO chunk 失败: {str(e)}"
+            )
+    
     def download_file(self, object_name: str) -> bytes:
         """下载文件 - 根据设计文档实现"""
         try:
@@ -358,29 +466,56 @@ class MinioStorageService:
             return False
 
     def delete_prefix(self, prefix: str) -> int:
-        """按前缀删除整个目录（递归）。返回删除对象数量。"""
+        """
+        按前缀删除整个目录（递归）。返回删除对象数量。
+        
+        优化：
+        - 使用批量删除提高性能
+        - 收集并记录删除错误
+        - 返回实际删除的对象数量（排除失败的对象）
+        """
         try:
-            logger.info(f"开始按前缀删除MinIO对象: {prefix}")
+            logger.debug(f"开始按前缀删除MinIO对象: {prefix}")
+            # 列出所有需要删除的对象
             to_delete = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=True))
             if not to_delete:
-                logger.info("前缀下无对象可删")
+                logger.debug(f"前缀下无对象可删: {prefix}")
                 return 0
+            
             from minio.deleteobjects import DeleteObject
             errors = []
+            deleted_count = 0
+            
+            # 批量删除（性能优化：一次删除多个对象）
             for err in self.client.remove_objects(
                 self.bucket_name,
                 (DeleteObject(obj.object_name) for obj in to_delete),
             ):
                 errors.append(err)
+            
+            # 计算实际删除的数量（总数 - 错误数）
+            deleted_count = len(to_delete) - len(errors)
+            
             if errors:
-                logger.warning(f"部分对象删除失败，共 {len(errors)} 条")
-            logger.info(f"前缀删除完成: 删除 {len(to_delete)} 个对象")
-            return len(to_delete)
+                logger.warning(f"前缀 {prefix} 部分对象删除失败，共 {len(errors)} 条错误，成功 {deleted_count} 条")
+            else:
+                logger.debug(f"前缀删除完成: {prefix}，删除 {deleted_count} 个对象")
+            
+            return deleted_count  # 返回实际删除的数量，而不是总数
         except Exception as e:
-            logger.error(f"按前缀删除失败: {e}")
+            logger.error(f"按前缀删除失败: {prefix} - {e}", exc_info=True)
             return 0
-        except Exception as e:
-            logger.error(f"文件删除错误: {e}", exc_info=True)
+    
+    def file_exists(self, object_name: str) -> bool:
+        """检查文件是否存在"""
+        try:
+            self.client.stat_object(self.bucket_name, object_name)
+            return True
+        except S3Error as e:
+            if e.code == 'NoSuchKey':
+                return False
+            raise
+        except Exception:
             return False
     
     def list_files(self, prefix: str = "") -> list:
@@ -411,6 +546,65 @@ class MinioStorageService:
             return []
 
     # =============== 通用字节上传（用于图片等二进制） ===============
+    def upload_pdf_file(self, pdf_file_path: str, document_id: int, original_filename: str = None) -> Dict[str, Any]:
+        """
+        上传PDF文件到MinIO（用于DOCX等转换后的PDF预览）
+        
+        参数:
+            pdf_file_path: PDF文件的本地路径
+            document_id: 文档ID
+            original_filename: 原始文件名（可选，用于生成路径）
+        
+        返回:
+            包含object_name等信息的字典
+        """
+        try:
+            import os
+            from io import BytesIO
+            
+            if not os.path.exists(pdf_file_path):
+                raise ValueError(f"PDF文件不存在: {pdf_file_path}")
+            
+            # 读取PDF文件
+            with open(pdf_file_path, 'rb') as f:
+                pdf_data = f.read()
+            
+            # 生成存储路径
+            now = datetime.now()
+            year = now.strftime("%Y")
+            month = now.strftime("%m")
+            # 使用document_id生成路径
+            pdf_filename = f"{original_filename or 'converted'}.pdf"
+            object_name = f"documents/{year}/{month}/doc_{document_id}/converted/{pdf_filename}"
+            
+            # 上传到MinIO
+            self.client.put_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name,
+                data=BytesIO(pdf_data),
+                length=len(pdf_data),
+                content_type="application/pdf"
+            )
+            
+            result = {
+                "success": True,
+                "object_name": object_name,
+                "bucket_name": self.bucket_name,
+                "file_size": len(pdf_data),
+                "content_type": "application/pdf",
+                "upload_timestamp": datetime.now().isoformat()
+            }
+            
+            logger.info(f"PDF文件上传成功: {object_name}, 大小: {len(pdf_data)} bytes")
+            return result
+            
+        except Exception as e:
+            logger.error(f"PDF文件上传错误: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.MINIO_UPLOAD_FAILED,
+                message=f"PDF文件上传失败: {str(e)}"
+            )
+    
     def upload_bytes(self, object_name: str, data: bytes, content_type: str = "application/octet-stream") -> str:
         """上传任意二进制到指定对象名，返回对象路径。"""
         from io import BytesIO

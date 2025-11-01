@@ -300,6 +300,29 @@ async def get_document_chunks(
             content = getattr(c, 'content', None)
             if (not content) and (idx is not None) and (idx in content_map):
                 content = content_map[idx]
+            
+            # 解析 meta 字段（包含表格数据 table_data）
+            meta_dict = None
+            if c.meta:
+                try:
+                    meta_dict = json.loads(c.meta) if isinstance(c.meta, str) else c.meta
+                    # ✅ 调试：检查表格块的 meta 数据
+                    if getattr(c, "chunk_type", "text") == "table":
+                        logger.debug(f"[表格调试] 块 #{idx} (ID={c.id}): meta_dict={meta_dict}")
+                        if meta_dict and isinstance(meta_dict, dict):
+                            table_data = meta_dict.get('table_data')
+                            logger.debug(f"[表格调试] 块 #{idx}: table_data={table_data}")
+                            if table_data:
+                                logger.debug(f"[表格调试] 块 #{idx}: table_data.html={bool(table_data.get('html'))}, "
+                                           f"table_data.cells={bool(table_data.get('cells'))}, "
+                                           f"rows={table_data.get('rows', 0)}, "
+                                           f"columns={table_data.get('columns', 0)}")
+                            else:
+                                logger.warning(f"[表格调试] ⚠️ 块 #{idx} (ID={c.id}): meta 中缺少 table_data！meta_dict 内容: {meta_dict.keys() if isinstance(meta_dict, dict) else 'N/A'}")
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.error(f"[表格调试] 解析块 #{idx} 的 meta 失败: {e}, meta_raw={c.meta[:100] if c.meta else None}")
+                    meta_dict = {}
+            
             items.append({
                 "id": c.id,
                 "document_id": c.document_id,
@@ -308,6 +331,7 @@ async def get_document_chunks(
                 "chunk_type": getattr(c, "chunk_type", "text"),
                 "char_count": len(content or getattr(c, "content", "") or ""),
                 "created_at": getattr(c, "created_at", None),
+                "meta": meta_dict,  # ✅ 新增：返回 meta 字段，包含表格数据 table_data
             })
         return {"code": 0, "message": "ok", "data": {"list": items, "total": len(items), "page": page, "size": size}}
     except Exception as e:
@@ -366,6 +390,15 @@ async def get_document_chunk_detail(
             except Exception:
                 content = ""
 
+        # 解析 meta 字段（包含表格数据 table_data）
+        import json
+        meta_dict = None
+        if chunk.meta:
+            try:
+                meta_dict = json.loads(chunk.meta) if isinstance(chunk.meta, str) else chunk.meta
+            except (json.JSONDecodeError, TypeError):
+                meta_dict = {}
+        
         data = {
             "chunk_id": chunk.id,
             "document_id": chunk.document_id,
@@ -376,6 +409,7 @@ async def get_document_chunk_detail(
             "version": getattr(chunk, 'version', 1),
             "created_at": getattr(chunk, 'created_at', None),
             "last_modified_at": getattr(chunk, 'last_modified_at', None),
+            "meta": meta_dict,  # ✅ 新增：返回 meta 字段，包含表格数据 table_data
         }
         return {"code": 0, "message": "ok", "data": data}
     except HTTPException:
@@ -447,9 +481,33 @@ async def get_document_preview(
         except Exception:
             pass
 
-        # 如果是 Office 文档，尝试生成并返回 PDF 预览
+        # 如果是 Office 文档，优先使用已转换的PDF（如果存在）
         ext = os.path.splitext(doc.file_path)[1].lower()
         is_office = ext in {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
+        
+        # 如果已经有转换后的PDF URL，直接使用它
+        if is_office and doc.converted_pdf_url:
+            try:
+                pdf_preview_url = minio.client.presigned_get_object(
+                    minio.bucket_name, 
+                    doc.converted_pdf_url, 
+                    expires=timedelta(hours=1)
+                )
+                logger.info(f"使用已转换的PDF预览: {doc.converted_pdf_url}")
+                return {
+                    "code": 0, 
+                    "message": "ok", 
+                    "data": {
+                        "preview_url": pdf_preview_url, 
+                        "content_type": "application/pdf", 
+                        "original_url": original_url,
+                        "is_converted_pdf": True
+                    }
+                }
+            except Exception as e:
+                logger.warning(f"获取已转换PDF失败: {e}，尝试重新转换")
+                # 如果获取失败，继续执行下面的转换逻辑
+        
         if is_office:
             try:
                 # 预览目标对象键

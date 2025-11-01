@@ -15,6 +15,7 @@ class Document(BaseModel):
     file_size = Column(Integer, comment="文件大小")
     file_hash = Column(String(64), comment="文件哈希")
     file_path = Column(String(500), comment="文件路径")
+    converted_pdf_url = Column(String(500), comment="转换后的PDF文件路径（MinIO对象键），用于预览")
     knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False, comment="知识库ID")
     category_id = Column(Integer, ForeignKey("knowledge_base_categories.id"), comment="分类ID")
     tags = Column(JSON, comment="标签列表JSON")

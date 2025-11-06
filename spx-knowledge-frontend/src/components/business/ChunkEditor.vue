@@ -54,39 +54,61 @@
           <template v-if="isTableChunk">
             <el-tabs v-model="tableTab" type="border-card">
               <el-tab-pane label="原始预览" name="preview">
-                <!-- ✅ 调试信息 -->
-                <div style="padding: 10px; background: #f5f5f5; margin-bottom: 10px; font-size: 12px; color: #666;">
-                  <div>tableHtml 状态: {{ tableHtml ? `存在 (${tableHtml.length} 字符)` : '空' }}</div>
-                  <div>debugTableHtml 状态: {{ debugTableHtml ? `存在 (${debugTableHtml.length} 字符)` : '空' }}</div>
-                  <div>tableData 状态: {{ tableData && tableData.length > 0 ? `${tableData.length} 行` : '空' }}</div>
-                  <div>isTableChunk: {{ isTableChunk }}</div>
-                  <div>currentChunk.chunk_index: {{ currentChunk?.chunk_index }}</div>
-                </div>
-                
-                <!-- ✅ 优先显示 HTML 表格（最准确的原始结构） -->
-                <div v-if="debugTableHtml" class="table-html-wrapper">
-                  <div class="table-html" v-html="debugTableHtml"></div>
-                </div>
-                <!-- ✅ 如果没有 HTML，尝试从 cells 生成表格预览 -->
-                <div v-else-if="tableData && tableData.length > 0 && !(tableData.length === 1 && tableData[0]?.length <= 1)" class="table-preview-from-cells">
-                  <table class="preview-table" border="1" cellpadding="5" cellspacing="0" style="width: 100%; border-collapse: collapse;">
-                    <tbody>
-                      <tr v-for="(row, rowIdx) in tableData" :key="rowIdx">
-                        <td v-for="(cell, cellIdx) in row" :key="cellIdx" style="border: 1px solid #ddd; padding: 8px;">
-                          {{ cell }}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
+                <!-- ✅ 优先使用 cells 渲染（保存后能立即看到最新数据），HTML 作为兜底 -->
+                <div v-if="tableData && tableData.length > 0 && !(tableData.length === 1 && tableData[0]?.length <= 1)" class="table-preview-from-cells">
+                  <div class="table-container">
+                    <table class="preview-table" style="width: 100%; border-collapse: separate; border-spacing: 0; font-size: 16px; line-height: 1.8;">
+                      <thead v-if="tableData.length > 0">
+                        <tr>
+                          <th v-for="(cell, cellIdx) in tableData[0]" :key="cellIdx" 
+                              class="table-header"
+                              style="background: linear-gradient(to bottom, #4a90e2, #357abd); color: #ffffff; font-weight: 700; font-size: 16px; padding: 16px 20px; text-align: left; border-bottom: 3px solid #2c5f8a; border-right: 2px solid rgba(255, 255, 255, 0.2); white-space: nowrap;">
+                            {{ cell }}
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, rowIdx) in tableData.slice(1)" :key="rowIdx" 
+                            :class="{ 'table-row-even': rowIdx % 2 === 0 }"
+                            :style="{ backgroundColor: rowIdx % 2 === 0 ? '#f9fafb' : 'white' }">
+                          <td v-for="(cell, cellIdx) in row" :key="cellIdx" 
+                              class="table-cell"
+                              :style="{
+                                padding: '16px 20px',
+                                borderBottom: '2px solid #d0d0d0',
+                                borderRight: cellIdx < row.length - 1 ? '2px solid #d0d0d0' : 'none',
+                                color: cellIdx === 0 ? '#34495e' : '#2c3e50',
+                                fontWeight: cellIdx === 0 ? '600' : 'normal',
+                                fontSize: '15px',
+                                lineHeight: '1.8',
+                                minHeight: '48px',
+                                background: cellIdx === 0 ? (rowIdx % 2 === 0 ? 'linear-gradient(to right, #f0f2f5, #f9fafb)' : 'linear-gradient(to right, #f8f9fa, #ffffff)') : 'transparent'
+                              }">
+                            {{ cell }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                   <el-alert
                     type="warning"
                     :closable="false"
                     style="margin-top: 10px;"
-                    description="⚠️ 此表格预览由结构化数据生成，原始 HTML 不可用。如果内容不正确，请检查后端表格提取逻辑。"
+                    description="✅ 当前使用结构化 cells 渲染。若需核对原始解析，可切换为 HTML 预览（当存在）。"
                   />
                 </div>
-                <!-- ✅ 如果既没有 HTML 也没有 cells，显示提示 -->
-                <el-empty v-else description="无法显示表格预览：缺少表格结构数据（HTML 或 cells）。可能是解析时未正确提取表格结构。" />
+                <!-- ✅ 如果 cells 不可用，再尝试 HTML 预览 -->
+                <div v-else-if="debugTableHtml" class="table-html-wrapper">
+                  <div class="table-html" v-html="debugTableHtml"></div>
+                  <el-alert
+                    type="info"
+                    :closable="false"
+                    style="margin-top: 10px;"
+                    description="当前使用 HTML 兜底渲染。保存后的最新 cells 建议优先使用结构化渲染。"
+                  />
+                </div>
+                <!-- ✅ 两者都没有时提示 -->
+                <el-empty v-else description="无法显示表格预览：缺少表格结构数据（cells 或 HTML）。" />
               </el-tab-pane>
               <el-tab-pane label="网格编辑" name="grid">
                 <div class="table-editor-tools">
@@ -120,7 +142,7 @@
         <!-- 元数据信息 -->
         <el-divider>块元数据</el-divider>
         <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="块ID">{{ currentChunk.chunk_id }}</el-descriptions-item>
+          <el-descriptions-item label="块ID">{{ currentChunk.id ?? currentChunk.chunk_id }}</el-descriptions-item>
           <el-descriptions-item label="块类型">{{ currentChunk.chunk_type }}</el-descriptions-item>
           <el-descriptions-item label="字符数">{{ currentChunk.char_count }}</el-descriptions-item>
           <el-descriptions-item label="版本号">{{ currentChunk.version || 1 }}</el-descriptions-item>
@@ -145,16 +167,21 @@
               v-for="version in chunkVersions"
               :key="version.id"
               :timestamp="formatDateTime(version.created_at)"
-              :icon="version.version === currentChunk.version ? 'CaretRight' : ''"
+              :icon="(version.version_number ?? version.version) === currentChunk.version ? 'CaretRight' : ''"
             >
               <el-card>
                 <div class="version-header">
-                  <el-tag size="small">v{{ version.version }}</el-tag>
-                  <span class="version-comment">{{ version.version_comment || '无说明' }}</span>
+                  <el-tag size="small" type="primary" effect="dark">V{{ version.version_number ?? version.version ?? '?' }}</el-tag>
+                  <span class="version-comment" :title="version.version_comment || '无说明'">{{ version.version_comment || '无说明' }}</span>
                 </div>
                 <div class="version-actions">
                   <el-button size="small" @click="handleCompareVersion(version)">对比</el-button>
-                  <el-button size="small" type="primary" @click="handleRestoreVersion(version)">
+                  <el-button 
+                    size="small" 
+                    type="primary" 
+                    :disabled="(version.version_number ?? version.version) === (currentChunk?.version ?? 0)"
+                    @click="handleRestoreVersion(version)"
+                  >
                     恢复
                   </el-button>
                 </div>
@@ -170,14 +197,34 @@
 
   <!-- 版本对比对话框 -->
   <el-dialog v-model="compareDialogVisible" title="版本对比" width="90%">
+    <div class="compare-legend">
+      <span class="legend-ins">绿色 = 新增/修改</span>
+      <span class="legend-del">红色删除线 = 被删除</span>
+    </div>
     <div class="compare-content">
       <div class="compare-left">
-        <h4>版本 {{ compareVersions.new?.version }}</h4>
-        <pre>{{ compareVersions.new?.content || '无内容' }}</pre>
+        <div class="compare-header">
+          <h4>当前版本</h4>
+          <el-tag v-if="compareVersions.new?.version" size="small" type="primary">
+            v{{ compareVersions.new.version }}
+          </el-tag>
+          <span v-if="compareVersions.new?.last_modified_at" class="version-time">
+            {{ formatDateTime(compareVersions.new.last_modified_at) }}
+          </span>
+        </div>
+        <pre v-html="compareHtmlNew || EMPTY_PLACEHOLDER" />
       </div>
       <div class="compare-right">
-        <h4>版本 {{ compareVersions.old?.version }}</h4>
-        <pre>{{ compareVersions.old?.content || '无内容' }}</pre>
+        <div class="compare-header">
+          <h4>选择版本</h4>
+          <el-tag v-if="compareVersions.old?.version_number" size="small" type="info">
+            v{{ compareVersions.old.version_number }}
+          </el-tag>
+          <span v-if="compareVersions.old?.created_at" class="version-time">
+            {{ formatDateTime(compareVersions.old.created_at) }}
+          </span>
+        </div>
+        <pre v-html="compareHtmlOld || EMPTY_PLACEHOLDER" />
       </div>
     </div>
   </el-dialog>
@@ -187,17 +234,19 @@
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CaretRight } from '@element-plus/icons-vue'
-import {
+import { 
   getDocumentChunks,
   getChunkDetail,
   updateChunk,
   getChunkVersions,
+  getChunkVersion,
   restoreChunkVersion,
   revertToPreviousVersion
 } from '@/api/modules/documents'
 import { formatDateTime } from '@/utils/format'
 import { QuillEditor } from '@vueup/vue-quill'
 import '@vueup/vue-quill/dist/vue-quill.snow.css'
+import { getTableByUid, getTableGroupByUid } from '@/api/modules/tables'
 
 const props = defineProps<{
   documentId: number
@@ -212,18 +261,39 @@ const searchKeyword = ref('')
 const saving = ref(false)
 const compareDialogVisible = ref(false)
 const compareVersions = ref<any>({})
+const compareHtmlOld = ref('')
+const compareHtmlNew = ref('')
+const EMPTY_PLACEHOLDER = '<span style="color: #999;">(空内容)</span>'
 const editorRef = ref<any>()
 const editorContent = ref('')
 const isTableChunk = computed(() => (currentChunk.value?.chunk_type === 'table'))
 const tableData = ref<string[][]>([])
 const tableHtml = ref<string>('')
 const tableTab = ref<'preview' | 'grid'>('preview')
+// 统一内容清洗：去除不可见控制字符、零宽字符、非法代理对
+const sanitizeContent = (raw: string): string => {
+  if (!raw) return ''
+  let s = String(raw)
+  // 去除 C0 控制字符与 DEL（保留 \n、\t）
+  s = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+  // 去除零宽字符（ZWSP/ZWNJ/ZWJ/ZWNBSP 等）
+  s = s.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+  // 规范化空白
+  s = s.replace(/\u00A0/g, ' ')
+  return s
+}
+
+// 将富文本 HTML 转为纯文本，避免后端过滤 <> 等特殊字符
+const htmlToPlainText = (html: string): string => {
+  if (!html) return ''
+  const div = document.createElement('div')
+  div.innerHTML = html
+  const text = div.textContent || div.innerText || ''
+  return text
+}
 
 // ✅ 调试用 computed，确保响应式更新
-const debugTableHtml = computed(() => {
-  console.log('[响应式调试] tableHtml computed 被调用，当前值:', tableHtml.value ? `${tableHtml.value.substring(0, 50)}...` : '(空)')
-  return tableHtml.value
-})
+const debugTableHtml = computed(() => tableHtml.value)
 const tableColumns = computed(() => {
   const cols = tableData.value[0]?.length || 0
   return Array.from({ length: cols }, (_, i) => `C${i + 1}`)
@@ -265,24 +335,14 @@ const loadChunks = async () => {
     
     // ✅ 调试：检查表格块的数据
     const tableChunks = chunks.value.filter((c: any) => c.chunk_type === 'table')
-    console.log('[块列表调试] 找到', tableChunks.length, '个表格块')
-    tableChunks.forEach((chunk: any, idx: number) => {
-      console.log(`[块列表调试] 表格块 #${chunk.chunk_index}:`, {
-        id: chunk.id,
-        chunk_index: chunk.chunk_index,
-        meta: chunk.meta,
-        metaType: typeof chunk.meta,
-        hasTableData: chunk.meta && (typeof chunk.meta === 'string' ? JSON.parse(chunk.meta || '{}') : chunk.meta)?.table_data
-      })
-    })
   } catch (error) {
     ElMessage.error('加载块列表失败')
-    console.error('[块列表调试] 加载失败:', error)
+    
   }
 }
 
-// ✅ 辅助函数：初始化表格数据（从 chunk 数据中提取）
-const initializeTableData = (chunk: any) => {
+// ✅ 辅助函数：初始化表格数据（优先通过 table_id 懒加载整表 JSON）
+const initializeTableData = async (chunk: any) => {
   if (!chunk || chunk.chunk_type !== 'table') {
     tableData.value = []
     tableHtml.value = ''
@@ -292,64 +352,105 @@ const initializeTableData = (chunk: any) => {
   try {
     // 解析 meta 字段
     const metaRaw = chunk.meta
-    console.log('[表格调试] chunk 原始数据:', chunk)
-    console.log('[表格调试] metaRaw:', metaRaw, '类型:', typeof metaRaw)
+    
     
     const meta = typeof metaRaw === 'string' ? JSON.parse(metaRaw || '{}') : (metaRaw || {})
-    console.log('[表格调试] 解析后的 meta:', meta)
-    console.log('[表格调试] meta.table_data:', meta?.table_data)
+
+    // ✅ 新策略：优先整表聚合（存在 table_group_uid 时）
+    const tableGroupUid: string | undefined = meta?.table_group_uid
+    if (tableGroupUid) {
+      try {
+        const res = await getTableGroupByUid(tableGroupUid)
+        const t = (res as any)?.data || {}
+        const cells = Array.isArray(t.cells) ? t.cells : []
+        const headers = (t.headers && typeof t.headers === 'object') ? t.headers : {}
+        if (cells.length > 0) {
+          tableData.value = cells.map((r: any[]) => Array.isArray(r) ? r.map(v => String(v ?? '')) : [String(r ?? '')])
+        } else if (headers?.content && Array.isArray(headers.content) && headers.content.length > 0) {
+          tableData.value = headers.content.map((r: any[]) => Array.isArray(r) ? r.map(v => String(v ?? '')) : [String(r ?? '')])
+        } else {
+          tableData.value = []
+        }
+        tableHtml.value = ''
+        
+        return
+      } catch (e: any) {
+        
+      }
+    }
+
+    // 其次：单片懒加载
+    const tableUid: string | undefined = meta?.table_id
+    if (tableUid) {
+      try {
+        const res = await getTableByUid(tableUid)
+        const t = (res as any)?.data || {}
+        // cells_json/headers_json/source_html 等字段由后端直接返回 JSON 字符串或对象
+        const cells = typeof t.cells_json === 'string' ? JSON.parse(t.cells_json || '[]') : (t.cells_json || [])
+        const headers = typeof t.headers_json === 'string' ? JSON.parse(t.headers_json || '{}') : (t.headers_json || {})
+        const htmlFromSnapshot = t.source_html || ''
+
+        // 优先 cells 渲染
+        if (Array.isArray(cells) && cells.length > 0) {
+          tableData.value = cells.map((r: any[]) => Array.isArray(r) ? r.map(v => String(v ?? '')) : [String(r ?? '')])
+        } else if (headers?.content && Array.isArray(headers.content) && headers.content.length > 0) {
+          // 若无 cells，仅表头也做兜底
+          tableData.value = headers.content.map((r: any[]) => Array.isArray(r) ? r.map(v => String(v ?? '')) : [String(r ?? '')])
+        } else {
+          tableData.value = []
+        }
+        tableHtml.value = htmlFromSnapshot || ''
+        
+        return
+      } catch (e: any) {
+        
+      }
+    }
     
-    // ✅ 优先使用 table_data.html（最准确的表格结构）
-    const htmlFromMeta = meta?.table_data?.html || ''
-    console.log('[表格调试] 从 meta 获取的 html:', htmlFromMeta ? `${htmlFromMeta.substring(0, 100)}...` : '(空)')
-    console.log('[表格调试] meta.table_data 完整内容:', JSON.stringify(meta?.table_data, null, 2))
-    
-    tableHtml.value = htmlFromMeta
-    console.log('[表格调试] ✅ tableHtml.value 已设置为:', tableHtml.value ? `${tableHtml.value.substring(0, 100)}...` : '(空)')
-    console.log('[表格调试] tableHtml.value 长度:', tableHtml.value ? tableHtml.value.length : 0)
-    
-    // ✅ 优先使用 table_data.cells（结构化数据，最准确）
-    // ⚠️ 重要：只有当 cells 是有效的二维数组（多行多列）时才使用，否则使用 HTML
+    // 兼容旧数据：使用 meta.table_data（如仍存在）
     const cells = meta?.table_data?.cells
-    console.log('[表格调试] cells:', cells, '是否为数组:', Array.isArray(cells))
     
-    // ✅ 检查 cells 是否有效（至少2列或2行，或HTML为空时才使用只有1行1列的cells）
+    
+    // ✅ 优先使用 cells 数组（最准确的结构化数据）
     if (Array.isArray(cells) && cells.length > 0) {
       const firstRow = cells[0]
+      // 验证 cells 是否有效（至少2列或2行）
       const isValidCells = Array.isArray(firstRow) && (
-        // 有效的表格：至少有2列，或至少有2行
-        (firstRow.length >= 2) || 
-        (cells.length >= 2) ||
-        // 如果HTML为空，即使只有1行1列也使用cells
-        !tableHtml.value
+        (firstRow.length >= 2) ||  // 至少2列
+        (cells.length >= 2)         // 或至少2行
       )
       
       if (isValidCells) {
+        // ✅ 直接使用 cells 数组（主要数据源）
         tableData.value = cells.map((r: any[]) => {
           if (Array.isArray(r)) {
             return r.map(v => String(v ?? ''))
           }
           return [String(r ?? '')]
         })
-        console.log('[表格调试] ✅ 成功从 cells 提取表格数据:', tableData.value.length, '行 x', tableData.value[0]?.length || 0, '列')
-        // ⚠️ 如果 tableHtml 存在，优先使用 HTML 渲染，但保留 tableData 用于编辑
-        if (tableHtml.value) {
-          console.log('[表格调试] 同时存在 HTML，将优先渲染 HTML')
-        }
-        // 不 return，继续处理 HTML（如果有的话）
-      } else {
-        console.log('[表格调试] ⚠️ cells 结构无效（可能只有1行1列），跳过使用 cells，优先使用 HTML')
+        
+        
+        // HTML 仅作为备份存储（不用于主要渲染）
+        const htmlFromMeta = meta?.table_data?.html || ''
+        tableHtml.value = htmlFromMeta
+        
+        
+        // ✅ 使用 cells 后直接返回，不再处理 HTML
+        return
       }
     }
     
-    // ✅ 如果 tableHtml 存在，优先使用 HTML 渲染
-    // 如果 tableData 还没设置或只有1行1列，尝试从 HTML 中提取表格结构
+    // ⚠️ 仅当 cells 不可用时，才使用 HTML（兜底方案）
+    const htmlFromMeta = meta?.table_data?.html || ''
+    tableHtml.value = htmlFromMeta
+    
+    
+    // ✅ 如果 HTML 存在，尝试从中提取表格结构
     if (tableHtml.value) {
       // 如果 tableData 为空或无效，从 HTML 提取
       if (!tableData.value || tableData.value.length === 0 || 
           (tableData.value.length === 1 && tableData.value[0]?.length <= 1)) {
         try {
-          console.log('[表格调试] 从 HTML 提取表格结构到 tableData...')
           // 创建一个临时 DOM 元素来解析 HTML
           const parser = new DOMParser()
           const doc = parser.parseFromString(tableHtml.value, 'text/html')
@@ -369,14 +470,11 @@ const initializeTableData = (chunk: any) => {
             })
             if (rows.length > 0) {
               tableData.value = rows
-              console.log('[表格调试] ✅ 从 HTML 成功提取表格数据:', tableData.value.length, '行 x', tableData.value[0]?.length || 0, '列')
             }
           }
         } catch (e) {
-          console.warn('[表格调试] 从 HTML 解析表格失败:', e)
+          
         }
-      } else {
-        console.log('[表格调试] tableData 已有效，不需要从 HTML 提取')
       }
       // ⚠️ 重要：如果 tableHtml 存在，直接使用它渲染，不再继续执行兜底逻辑
       // 但保留 tableData 用于网格编辑
@@ -385,7 +483,7 @@ const initializeTableData = (chunk: any) => {
     
     // ⚠️ 最后兜底：从 content 解析（可能包含 OCR 错误，不推荐）
     const content = chunk.content || ''
-    console.log('[表格调试] 兜底逻辑 - content:', content ? `${content.substring(0, 100)}...` : '(空)')
+    
     
     if (content) {
       // 尝试按制表符分隔（这是我们从结构化数据生成的格式）
@@ -393,7 +491,7 @@ const initializeTableData = (chunk: any) => {
         const lines = content.split('\n').filter(l => l.trim())
         if (lines.length > 0) {
           tableData.value = lines.map(l => l.split('\t').map(c => c.trim()))
-          console.log('[表格调试] ✅ 从 content (制表符) 提取表格数据:', tableData.value.length, '行')
+          
           return
         }
       }
@@ -406,7 +504,6 @@ const initializeTableData = (chunk: any) => {
             return cols.length > 0 ? cols : ['']
           }).filter(row => row.length > 0 && row.some(cell => cell))
           if (tableData.value.length > 0) {
-            console.log('[表格调试] ✅ 从 content (管道符) 提取表格数据:', tableData.value.length, '行')
             return
           }
         }
@@ -417,28 +514,21 @@ const initializeTableData = (chunk: any) => {
         const parsed = lines.map(l => l.split(/\s{2,}/).filter(c => c.trim()))
         if (parsed.length > 0 && parsed.some(row => row.length > 1)) {
           tableData.value = parsed
-          console.log('[表格调试] ✅ 从 content (多空格) 提取表格数据:', tableData.value.length, '行')
           return
         }
       }
       // 如果都不行，至少显示一个单元格，内容是整个 content
       tableData.value = [[content]]
-      console.log('[表格调试] ⚠️ 无法解析表格结构，显示为单个单元格')
     } else {
-      console.log('[表格调试] ⚠️ content 为空，显示空表格')
       tableData.value = [['']]
     }
   } catch (e) {
-    console.error('[表格调试] ❌ 初始化表格数据失败:', e, e.stack)
+    
     const fallbackContent = chunk?.content || ''
     tableData.value = fallbackContent ? [[fallbackContent]] : [['无法加载表格数据']]
   }
   
-  console.log('[表格调试] ===== 函数结束时的最终状态 =====')
-  console.log('[表格调试] 最终 tableData:', tableData.value, '行数:', tableData.value?.length || 0)
-  console.log('[表格调试] 最终 tableHtml:', tableHtml.value ? `${tableHtml.value.substring(0, 100)}...` : '(空)', '长度:', tableHtml.value?.length || 0)
-  console.log('[表格调试] tableHtml.value 是否存在:', !!tableHtml.value)
-  console.log('[表格调试] =========================================')
+  
 }
 
 const onRowClick = async (data: any) => {
@@ -450,7 +540,7 @@ const onRowClick = async (data: any) => {
   editorContent.value = data.content || ''
   
   // ✅ 初始化表格数据（优先使用 meta.table_data）
-  initializeTableData(currentChunk.value)
+  await initializeTableData(currentChunk.value)
 
   // 若内容为空（例如 DB 不存正文），再请求详情补全
   if (!editorContent.value) {
@@ -460,7 +550,7 @@ const onRowClick = async (data: any) => {
       editorContent.value = res.data?.content || ''
       
       // ✅ 重要：重新初始化表格数据（因为获取了新的数据，可能包含更完整的 meta）
-      initializeTableData(currentChunk.value)
+      await initializeTableData(currentChunk.value)
     } catch (error) {
       // 保持已有数据
     }
@@ -501,7 +591,7 @@ const loadChunkVersions = async (chunkId: number) => {
     const res = await getChunkVersions(props.documentId, chunkId)
     chunkVersions.value = res.data.versions || []
   } catch (error) {
-    console.error('加载版本历史失败:', error)
+    
   }
 }
 
@@ -510,13 +600,24 @@ const handleSave = async () => {
   
   try {
     await ElMessageBox.confirm(
-      '修改后将重新向量化整个文档。确定要保存吗？',
+      '仅对当前分块重新向量化，不会影响其他分块。确定要保存吗？',
       '确认修改',
       { type: 'warning' }
     )
     
     saving.value = true
-    let content = editorContent.value
+    // 兼容后端使用 id 或 chunk_id 的情况
+    const chunkId = (currentChunk.value.id ?? currentChunk.value.chunk_id)
+    if (!chunkId) {
+      ElMessage.error('保存失败：未找到 chunkId')
+      return
+    }
+
+    let content = editorContent.value || ''
+    if (!content.trim() && !isTableChunk.value) {
+      ElMessage.error('内容不能为空')
+      return
+    }
     let metadata: any = undefined
     if (isTableChunk.value) {
       // 将表格合并为文本（用于搜索），同时把结构写回 metadata
@@ -526,14 +627,76 @@ const handleSave = async () => {
       metaObj.table_data = { cells: tableData.value, html: tableHtml.value }
       metadata = metaObj
     }
-    await updateChunk(props.documentId, currentChunk.value.chunk_id, {
+    else {
+      // 普通文本块：把富文本 HTML 转成纯文本
+      content = htmlToPlainText(content)
+    }
+
+    // 最后统一清洗文本内容
+    content = sanitizeContent(content)
+    
+
+    await updateChunk(props.documentId, Number(chunkId), {
       content,
       metadata,
       version_comment: '块级修改'
     })
     
-    ElMessage.success('保存成功，正在重新向量化...')
+    ElMessage.success('保存成功，正在对当前分块重新向量化...')
+    // ✅ 立即同步编辑态到当前选中块，避免界面仍显示旧内容
+    try {
+      // 更新 currentChunk 的内容与 meta，保证“分块内容”区域立刻显示新值
+      (currentChunk.value as any).content = content
+      if (metadata) {
+        ;(currentChunk.value as any).meta = metadata
+      }
+      // 同步版本号与修改时间到前端（后端已写库，前端先行展示）
+      const prevVer = Number((currentChunk.value as any).version || 0)
+      ;(currentChunk.value as any).version = prevVer > 0 ? prevVer + 1 : 1
+      ;(currentChunk.value as any).last_modified_at = new Date().toISOString()
+    } catch (e) {}
+
+    // ✅ 表格：保存后优先继续使用本地已编辑的 cells 渲染；
+    // 服务器写回 document_tables 可能存在异步/缓存延迟，这里暂不立即强制刷新，避免覆盖你刚编辑的内容。
+    // 如需立即拉取服务器数据，可改为 true。
+    const REFRESH_TABLE_AFTER_SAVE = true
+    if (isTableChunk.value && REFRESH_TABLE_AFTER_SAVE) {
+      try {
+        const metaRaw: any = metadata ?? (currentChunk.value as any).meta
+        const metaObj = typeof metaRaw === 'string' ? (JSON.parse(metaRaw || '{}') || {}) : (metaRaw || {})
+        const groupUid: string | undefined = metaObj.table_group_uid
+        const tableUid: string | undefined = metaObj.table_id || metaObj.table_uid
+        if (groupUid) {
+          const res: any = await getTableGroupByUid(`${groupUid}?_=${Date.now()}`)
+          const t = (res as any)?.data || {}
+          const cells = Array.isArray(t.cells) ? t.cells : []
+          if (cells.length > 0) {
+            tableData.value = cells.map((r: any[]) => Array.isArray(r) ? r.map(v => String(v ?? '')) : [String(r ?? '')])
+            tableHtml.value = ''
+          }
+        } else if (tableUid) {
+          const res: any = await getTableByUid(`${tableUid}?_=${Date.now()}`)
+          const t = (res as any)?.data || {}
+          const cells = typeof t.cells_json === 'string' ? JSON.parse(t.cells_json || '[]') : (t.cells_json || [])
+          if (Array.isArray(cells) && cells.length > 0) {
+            tableData.value = cells.map((r: any[]) => Array.isArray(r) ? r.map(v => String(v ?? '')) : [String(r ?? '')])
+            tableHtml.value = ''
+          }
+        }
+      } catch (e) {
+        
+      }
+    }
+
     await loadChunks()
+    // 用最新列表项覆盖当前块的元数据（确保版本号/时间等与后端一致）
+    try {
+      const id = (currentChunk.value as any)?.id ?? (currentChunk.value as any)?.chunk_id
+      const fresh = (chunks.value || []).find((c: any) => (c.id ?? c.chunk_id) === id)
+      if (fresh) {
+        currentChunk.value = { ...fresh, content: (currentChunk.value as any).content, meta: (currentChunk.value as any).meta }
+      }
+    } catch (e) {}
   } catch (error: any) {
     if (error !== 'cancel') {
       ElMessage.error('保存失败')
@@ -549,26 +712,187 @@ const handleCancel = () => {
 
 const handleCompareVersion = async (version: any) => {
   try {
-    const res = await restoreChunkVersion(props.documentId, currentChunk.value.chunk_id, version.version)
-    compareVersions.value = {
-      new: currentChunk.value,
-      old: res.data
+    const chunkId = (currentChunk.value?.id ?? currentChunk.value?.chunk_id)
+    if (!chunkId) {
+      ElMessage.error('无法获取块ID')
+      return
     }
+    
+    const verNum = (version.version_number ?? version.version ?? version)
+    if (!verNum) {
+      ElMessage.error('无法获取版本号')
+      return
+    }
+    
+    
+    
+    // 获取旧版本数据
+    const res = await getChunkVersion(props.documentId, chunkId, Number(verNum))
+    
+    // 提取版本数据：后端返回 { code: 0, message: "ok", data: ChunkVersionResponse }
+    const verData = (res as any)?.data || res
+    
+    // 获取当前块完整内容（如果只有预览）
+    let currentContent = currentChunk.value?.content || ''
+    if (!currentContent || currentContent.length < 100) {
+      // 如果内容太短，可能是预览，尝试获取完整内容
+      try {
+        const chunkDetailRes = await getChunkDetail(props.documentId, chunkId)
+        const chunkDetail = (chunkDetailRes as any)?.data || chunkDetailRes
+        currentContent = chunkDetail?.content || currentContent
+      } catch (e) {
+        // ignore
+      }
+    }
+    
+    // 准备对比数据
+    const oldContent = String(verData?.content || '')
+    const newContent = String(currentContent || '')
+    
+    
+    
+    if (!oldContent && !newContent) {
+      ElMessage.warning('两个版本都没有内容可对比')
+      return
+    }
+    
+    compareVersions.value = {
+      new: { ...currentChunk.value, content: newContent },
+      old: { ...verData, content: oldContent }
+    }
+    
+    // 生成高亮对比 HTML（行级 + 行内词级）
+    const { oldHtml, newHtml } = diffLinesWithWordLevel(oldContent, newContent)
+    compareHtmlOld.value = oldHtml || EMPTY_PLACEHOLDER
+    compareHtmlNew.value = newHtml || EMPTY_PLACEHOLDER
+    
+    
+    
     compareDialogVisible.value = true
-  } catch (error) {
-    ElMessage.error('加载版本对比失败')
+  } catch (error: any) {
+    ElMessage.error(`加载版本对比失败: ${error?.message || '未知错误'}`)
   }
+}
+
+// 行级 + 行内词级差分，便于阅读长段
+function diffLinesWithWordLevel(oldText: string, newText: string): { oldHtml: string, newHtml: string } {
+  const oldLines = oldText.split(/\r?\n/)
+  const newLines = newText.split(/\r?\n/)
+  const m = oldLines.length, n = newLines.length
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = oldLines[i] === newLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  let i = 0, j = 0
+  const oldParts: string[] = []
+  const newParts: string[] = []
+  while (i < m && j < n) {
+    if (oldLines[i] === newLines[j]) {
+      const v = escapeHtml(oldLines[i])
+      oldParts.push(v)
+      newParts.push(v)
+      i++; j++
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      // 行被删除：对该行做词级高亮，整体标红
+      const { oldHtml } = diffWords(oldLines[i], '')
+      oldParts.push(oldHtml || `<span class="diff-del">${escapeHtml(oldLines[i])}</span>`)
+      i++
+    } else {
+      // 行被新增：对该行做词级高亮，整体标绿
+      const { newHtml } = diffWords('', newLines[j])
+      newParts.push(newHtml || `<span class="diff-ins">${escapeHtml(newLines[j])}</span>`)
+      j++
+    }
+  }
+  while (i < m) { oldParts.push(`<span class="diff-del">${escapeHtml(oldLines[i++])}</span>`) }
+  while (j < n) { newParts.push(`<span class="diff-ins">${escapeHtml(newLines[j++])}</span>`) }
+  return { oldHtml: oldParts.join('\n'), newHtml: newParts.join('\n') }
 }
 
 const handleRestoreVersion = async (version: any) => {
   try {
-    await ElMessageBox.confirm('确定要恢复到此版本吗？', '确认回退', { type: 'warning' })
+    const verNum = (version.version_number ?? version.version ?? version)
+    if (!verNum) {
+      ElMessage.error('无法获取版本号')
+      return
+    }
+
+    // 如果已经是当前版本，不应该执行回退
+    if (verNum === currentChunk.value?.version) {
+      ElMessage.warning('当前已经是此版本，无需回退')
+      return
+    }
+
+    await ElMessageBox.confirm(
+      `确定要回退到版本 V${verNum} 吗？当前版本将保存为历史版本。`,
+      '确认回退',
+      { type: 'warning' }
+    )
+
+    const chunkId = (currentChunk.value?.id ?? currentChunk.value?.chunk_id)
+    if (!chunkId) {
+      ElMessage.error('无法获取块ID')
+      return
+    }
+
+    // ✅ 立即更新版本号，禁用恢复按钮（防止重复点击）
+    if (currentChunk.value) {
+      currentChunk.value.version = Number(verNum)
+    }
+
+    await restoreChunkVersion(props.documentId, Number(chunkId), Number(verNum))
+    ElMessage.success('恢复成功，正在刷新数据...')
+
+    // ✅ 先刷新左侧列表，确保获取最新的块数据（包括回退后的 meta）
+    await loadChunks()
     
-    await revertToPreviousVersion(props.documentId, currentChunk.value.chunk_id)
-    ElMessage.success('恢复成功')
+    // ✅ 从刷新后的列表中找到当前块，更新 currentChunk（确保所有字段都是最新的）
+    const freshChunk = (chunks.value || []).find((c: any) => (c.id ?? c.chunk_id) === chunkId)
+    if (freshChunk) {
+      currentChunk.value = { ...freshChunk }
+      // ✅ 确保版本号正确（从后端返回的最新数据）
+      if (freshChunk.version !== undefined) {
+        currentChunk.value.version = freshChunk.version
+      }
+      editorContent.value = freshChunk.content || ''
+    } else {
+      // 如果找不到，至少确保版本号已更新
+      if (currentChunk.value) {
+        currentChunk.value.version = Number(verNum)
+      }
+    }
     
-    // 重新加载当前块
-    await handleChunkSelect(currentChunk.value)
+    // ✅ 重新加载版本历史
+    await loadChunkVersions(Number(chunkId))
+
+    // ✅ 若为表格块，强制刷新整表数据（等待后端更新完成）
+    if (isTableChunk.value) {
+      // 短暂延迟，确保后端 document_tables 更新完成
+      await new Promise(resolve => setTimeout(resolve, 300))
+      try {
+        const metaRaw = currentChunk.value?.meta
+        const meta = typeof metaRaw === 'string' ? JSON.parse(metaRaw || '{}') : (metaRaw || {})
+        const tableGroupUid = meta?.table_group_uid
+        const tableUid = meta?.table_id || meta?.table_uid
+        if (tableGroupUid) {
+          const res = await getTableGroupByUid(`${tableGroupUid}?_=${Date.now()}`)
+          const t = (res as any)?.data || {}
+          const cells = Array.isArray(t.cells) ? t.cells : []
+          tableData.value = cells.map((r: any[]) => Array.isArray(r) ? r.map(v => String(v ?? '')) : [String(r ?? '')])
+          tableHtml.value = ''
+        } else if (tableUid) {
+          const res = await getTableByUid(`${tableUid}?_=${Date.now()}`)
+          const t = (res as any)?.data || {}
+          const cells = typeof t.cells_json === 'string' ? JSON.parse(t.cells_json || '[]') : (t.cells_json || [])
+          tableData.value = Array.isArray(cells) ? cells.map((r: any[]) => Array.isArray(r) ? r.map(v => String(v ?? '')) : [String(r ?? '')]) : []
+          tableHtml.value = t.source_html || ''
+        }
+      } catch (e) {
+        console.warn('回退后刷新表格数据失败:', e)
+      }
+    }
   } catch (error: any) {
     if (error !== 'cancel') {
       ElMessage.error('恢复失败')
@@ -584,6 +908,44 @@ const getTypeColor = (type: string) => {
     table: 'info'
   }
   return map[type] || ''
+}
+
+// 词级 LCS diff（不引第三方），保留空白字符分隔，效果直观
+function diffWords(oldText: string, newText: string): { oldHtml: string, newHtml: string } {
+  const A = oldText.split(/(\s+)/)
+  const B = newText.split(/(\s+)/)
+  const m = A.length, n = B.length
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  let i = 0, j = 0
+  const oldParts: string[] = []
+  const newParts: string[] = []
+  while (i < m && j < n) {
+    if (A[i] === B[j]) {
+      const v = escapeHtml(A[i])
+      oldParts.push(v)
+      newParts.push(v)
+      i++; j++
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      oldParts.push(`<span class=\"diff-del\">${escapeHtml(A[i])}</span>`) ; i++
+    } else {
+      newParts.push(`<span class=\"diff-ins\">${escapeHtml(B[j])}</span>`); j++
+    }
+  }
+  while (i < m) { oldParts.push(`<span class=\"diff-del\">${escapeHtml(A[i++])}</span>`) }
+  while (j < n) { newParts.push(`<span class=\"diff-ins\">${escapeHtml(B[j++])}</span>`) }
+  return { oldHtml: oldParts.join(''), newHtml: newParts.join('') }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 }
 
 onMounted(() => {
@@ -724,28 +1086,113 @@ onMounted(() => {
     
     .table-preview-from-cells {
       width: 100%;
-      overflow-x: auto;
       
-      .preview-table {
+      .table-container {
         width: 100%;
-        border-collapse: collapse;
-        border: 1px solid #ddd;
+        overflow-x: auto;
+        overflow-y: visible;
         background: white;
+        border-radius: 6px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
+        border: 1px solid #e0e0e0 !important;
         
-        td {
-          border: 1px solid #ddd;
-          padding: 8px;
-          text-align: left;
-          vertical-align: top;
-        }
-        
-        tr:first-child td {
-          background-color: #f5f5f5;
-          font-weight: 600;
-        }
-        
-        tr:nth-child(even) {
-          background-color: #f9f9f9;
+        .preview-table {
+          width: 100%;
+          min-width: 100%;
+          border-collapse: separate;
+          border-spacing: 0;
+          background: white;
+          font-size: 16px;
+          line-height: 1.8;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+          
+          .table-header {
+            background: linear-gradient(to bottom, #4a90e2, #357abd) !important;
+            color: #ffffff !important;
+            font-weight: 700 !important;
+            font-size: 16px !important;
+            padding: 16px 20px !important;
+            text-align: left !important;
+            vertical-align: middle !important;
+            border-bottom: 3px solid #2c5f8a !important;
+            border-right: 2px solid rgba(255, 255, 255, 0.2) !important;
+            white-space: nowrap !important;
+            position: sticky !important;
+            top: 0 !important;
+            z-index: 10 !important;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1) !important;
+            letter-spacing: 0.3px !important;
+            
+            &:first-child {
+              border-left: none;
+              border-top-left-radius: 6px;
+            }
+            
+            &:last-child {
+              border-right: none;
+              border-top-right-radius: 6px;
+            }
+          }
+          
+          .table-cell {
+            padding: 16px 20px !important;
+            text-align: left !important;
+            vertical-align: top !important;
+            border-bottom: 2px solid #d0d0d0 !important;
+            border-right: 2px solid #d0d0d0 !important;
+            color: #2c3e50 !important;
+            background: white !important;
+            word-wrap: break-word !important;
+            word-break: break-word !important;
+            font-size: 15px !important;
+            line-height: 1.8 !important;
+            min-height: 48px !important;
+            
+            &:first-child {
+              border-left: none;
+              font-weight: 600;
+              color: #34495e;
+              background: linear-gradient(to right, #f8f9fa, #ffffff);
+              border-right: 2px solid #d0d0d0;
+            }
+            
+            &:last-child {
+              border-right: none;
+            }
+          }
+          
+          .table-row-even {
+            .table-cell {
+              background-color: #f9fafb;
+              
+              &:first-child {
+                background: linear-gradient(to right, #f0f2f5, #f9fafb);
+              }
+            }
+          }
+          
+          tbody tr:hover {
+            .table-cell {
+              background-color: #e8f4f8 !important;
+              border-color: #b0d4e8;
+              
+              &:first-child {
+                background: linear-gradient(to right, #e0ecf0, #e8f4f8) !important;
+              }
+            }
+          }
+          
+          tbody tr:last-child {
+            .table-cell {
+              border-bottom: 2px solid #d0d0d0;
+            }
+          }
+          
+          // 第一列（对比维度）特殊样式
+          tbody tr .table-cell:first-child {
+            min-width: 120px;
+            max-width: 200px;
+          }
         }
       }
     }
@@ -783,8 +1230,14 @@ onMounted(() => {
       
       .version-comment {
         flex: 1;
+        font-size: 14px;
+        color: #e2e8f0;
+        font-weight: 500;
+        letter-spacing: .2px;
+      }
+      :deep(.el-tag) {
         font-size: 12px;
-        color: #666;
+        padding: 2px 8px;
       }
     }
     
@@ -817,6 +1270,69 @@ onMounted(() => {
       }
     }
   }
+}
+
+.compare-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+
+  .compare-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    
+    h4 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    
+    .version-time {
+      font-size: 12px;
+      color: #999;
+      margin-left: auto;
+    }
+  }
+
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 16px;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 200px;
+    max-height: 500px;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  
+  :deep(.diff-ins) { 
+    background: #083c19; 
+    color: #c6f6d5; 
+    padding: 2px 4px;
+    border-radius: 3px;
+  }
+  
+  :deep(.diff-del) { 
+    background: #5b0000; 
+    color: #fed7d7; 
+    text-decoration: line-through;
+    padding: 2px 4px;
+    border-radius: 3px;
+  }
+}
+
+.compare-legend {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 8px;
+  .legend-ins { color: #38a169; }
+  .legend-del { color: #e53e3e; text-decoration: line-through; }
 }
 </style>
 

@@ -310,6 +310,49 @@ CREATE TABLE IF NOT EXISTS `operation_logs` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作日志表';
 
 -- ============================================
+-- 14. 分块关系表（父子/顺序关系）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `chunk_relations` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '关系ID',
+    `document_id` INT NOT NULL COMMENT '文档ID',
+    `relation_type` VARCHAR(32) NOT NULL COMMENT '关系类型: parent_child|sequence',
+    `parent_chunk_id` VARCHAR(64) NULL COMMENT '父块ID',
+    `child_chunk_id` VARCHAR(64) NULL COMMENT '子块ID/顺序中的后继',
+    `order_in_parent` INT NULL COMMENT '子块在父块内的顺序',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    INDEX `idx_rel_doc_parent_order` (`document_id`, `parent_chunk_id`, `order_in_parent`),
+    INDEX `idx_rel_doc_type` (`document_id`, `relation_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档分块关系表';
+
+-- ============================================
+-- 15. 文档表格表（表格JSON懒加载）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `document_tables` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `table_uid` VARCHAR(64) NOT NULL UNIQUE COMMENT '表格唯一UID（UUID）',
+    `table_group_uid` VARCHAR(64) NOT NULL COMMENT '整表分组UID（同一张大表的所有分片共享）',
+    `document_id` INT NOT NULL COMMENT '文档ID',
+    `element_index` INT NULL COMMENT '文档顺序索引',
+    `n_rows` INT DEFAULT 0 COMMENT '行数',
+    `n_cols` INT DEFAULT 0 COMMENT '列数',
+    `headers_json` MEDIUMTEXT COMMENT '表头JSON',
+    `cells_json` LONGTEXT COMMENT '单元格JSON（必要时可gzip存储）',
+    `spans_json` MEDIUMTEXT COMMENT '合并单元格JSON',
+    `stats_json` MEDIUMTEXT COMMENT '列类型与统计信息JSON',
+    `part_index` INT DEFAULT 0 COMMENT '分片索引',
+    `part_count` INT DEFAULT 1 COMMENT '总分片数',
+    `row_range` VARCHAR(50) NULL COMMENT '此分片覆盖的行范围',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    INDEX `idx_doc_tables_doc_id` (`document_id`),
+    INDEX `idx_doc_tables_uid` (`table_uid`),
+    INDEX `idx_doc_tables_group` (`document_id`, `table_group_uid`, `part_index`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档表格存储表';
+
+-- ============================================
 -- 初始化完成
 -- ============================================
 SELECT 'SPX Knowledge Base 数据库初始化完成！' AS message;

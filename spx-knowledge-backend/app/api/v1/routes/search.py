@@ -1,31 +1,10 @@
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from app.dependencies.database import get_db
-from app.services.search_service import SearchService
-
-router = APIRouter()
-
-
-@router.get("/mixed")
-def mixed_search(
-    q: str = Query(..., description="查询文本"),
-    top_k: int = Query(10, ge=1, le=100),
-    kb_id: int | None = Query(None),
-    alpha: float = Query(0.6, ge=0.0, le=1.0),
-    use_vector: bool = Query(True),
-    use_keywords: bool = Query(True),
-    db: Session = Depends(get_db),
-):
-    svc = SearchService(db)
-    items = svc.mixed_search(q, knowledge_base_id=kb_id, top_k=top_k, alpha=alpha, use_keywords=use_keywords, use_vector=use_vector)
-    return {"code": 0, "message": "ok", "data": {"list": items, "total": len(items)}}
-
 """
 Search API Routes
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from typing import List, Optional, Dict, Any
+from sqlalchemy.orm import Session
 from app.schemas.search import (
     SearchRequest, SearchResponse, SearchSuggestionRequest,
     SearchHistoryResponse, SaveSearchRequest, SearchAdvancedRequest,
@@ -33,38 +12,105 @@ from app.schemas.search import (
 )
 from app.services.search_service import SearchService
 from app.dependencies.database import get_db
-from sqlalchemy.orm import Session
+from app.core.logging import logger
 
 router = APIRouter()
 
-@router.post("/", response_model=List[SearchResponse])
+
+@router.get("/mixed")
+async def mixed_search(
+    q: str = Query(..., description="查询文本"),
+    top_k: int = Query(None, ge=1, le=100, description="返回结果数量（如果为None，使用配置的RERANK_TOP_K）"),
+    kb_id: int | None = Query(None, description="知识库ID"),
+    alpha: float = Query(0.6, ge=0.0, le=1.0, description="向量搜索权重"),
+    use_vector: bool = Query(True, description="是否使用向量搜索"),
+    use_keywords: bool = Query(True, description="是否使用关键词搜索"),
+    similarity_threshold: float | None = Query(None, ge=0.0, le=1.0, description="相似度阈值(0-1)"),
+    db: Session = Depends(get_db),
+):
+    """混合搜索接口 - 支持向量+关键词融合检索+Rerank精排"""
+    try:
+        logger.info(f"API请求: 混合搜索(GET)，查询: {q[:50]}..., 知识库ID: {kb_id}, top_k: {top_k}, 阈值: {similarity_threshold}")
+        svc = SearchService(db)
+        items = await svc.mixed_search(
+            query_text=q,
+            knowledge_base_id=kb_id,
+            top_k=top_k,
+            alpha=alpha,
+            use_keywords=use_keywords,
+            use_vector=use_vector,
+            similarity_threshold=similarity_threshold
+        )
+        logger.info(f"API响应: 返回 {len(items)} 个搜索结果")
+        return {"code": 0, "message": "ok", "data": {"list": items, "total": len(items)}}
+    except Exception as e:
+        logger.error(f"混合搜索API错误(GET): {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"混合搜索失败: {str(e)}"
+        )
+
+@router.post("/")
 async def search(
     search_request: SearchRequest,
     db: Session = Depends(get_db)
 ):
-    """基础搜索 - 支持关键词、语义、混合搜索"""
-    service = SearchService(db)
-    return await service.search(search_request)
+    """基础搜索 - 支持关键词、语义、混合搜索 + Rerank精排"""
+    try:
+        logger.info(f"API请求: 文本搜索，查询: {search_request.query[:50]}..., 类型: {search_request.search_type}, 知识库ID: {search_request.knowledge_base_id}")
+        
+        service = SearchService(db)
+        results = await service.search(search_request)
+        logger.info(f"API响应(HTTP): 最终返回前端 {len(results)} 个搜索结果（total={len(results)}, items={len(results)}）")
+        return {"total": len(results), "items": results}
+    except Exception as e:
+        logger.error(f"文本搜索API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"搜索失败: {str(e)}"
+        )
 
-@router.post("/vector", response_model=List[SearchResponse])
+@router.post("/vector")
 async def vector_search(
     search_request: SearchRequest,
     db: Session = Depends(get_db)
 ):
-    """向量搜索 - 基于向量相似度的语义搜索"""
-    service = SearchService(db)
-    search_request.search_type = "vector"
-    return await service.vector_search(search_request)
+    """向量搜索 - 基于向量相似度的语义搜索 + Rerank精排"""
+    try:
+        logger.info(f"API请求: 向量搜索，查询: {search_request.query[:50]}..., 知识库ID: {search_request.knowledge_base_id}")
+        
+        service = SearchService(db)
+        search_request.search_type = "vector"
+        results = await service.vector_search(search_request)
+        logger.info(f"API响应: 返回 {len(results)} 个搜索结果")
+        return {"total": len(results), "items": results}
+    except Exception as e:
+        logger.error(f"向量搜索API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"向量搜索失败: {str(e)}"
+        )
 
-@router.post("/hybrid", response_model=List[SearchResponse])
+@router.post("/hybrid")
 async def hybrid_search(
     search_request: SearchRequest,
     db: Session = Depends(get_db)
 ):
-    """混合搜索 - 结合关键词和语义的混合检索"""
-    service = SearchService(db)
-    search_request.search_type = "hybrid"
-    return await service.hybrid_search(search_request)
+    """混合搜索 - 结合关键词和语义的混合检索 + Rerank精排"""
+    try:
+        logger.info(f"API请求: 混合搜索，查询: {search_request.query[:50]}..., 知识库ID: {search_request.knowledge_base_id}")
+        
+        service = SearchService(db)
+        search_request.search_type = "hybrid"
+        results = await service.hybrid_search(search_request)
+        logger.info(f"API响应: 返回 {len(results)} 个搜索结果")
+        return {"total": len(results), "items": results}
+    except Exception as e:
+        logger.error(f"混合搜索API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"混合搜索失败: {str(e)}"
+        )
 
 @router.get("/suggestions")
 async def get_search_suggestions(
@@ -73,9 +119,19 @@ async def get_search_suggestions(
     db: Session = Depends(get_db)
 ):
     """搜索建议 - 提供搜索建议和自动补全"""
-    service = SearchService(db)
-    request = SearchSuggestionRequest(query=query, limit=limit)
-    return await service.get_suggestions(request)
+    try:
+        logger.info(f"API请求: 搜索建议，查询: {query[:50]}..., 限制: {limit}")
+        service = SearchService(db)
+        request = SearchSuggestionRequest(query=query, limit=limit)
+        results = await service.get_suggestions(request)
+        logger.info(f"API响应: 返回 {len(results)} 个搜索建议")
+        return results
+    except Exception as e:
+        logger.error(f"搜索建议API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取搜索建议失败: {str(e)}"
+        )
 
 @router.get("/history", response_model=List[SearchHistoryResponse])
 async def get_search_history(
@@ -84,8 +140,18 @@ async def get_search_history(
     db: Session = Depends(get_db)
 ):
     """获取用户搜索历史"""
-    service = SearchService(db)
-    return await service.get_search_history(user_id=user_id, limit=limit)
+    try:
+        logger.info(f"API请求: 获取搜索历史，用户ID: {user_id}, 限制: {limit}")
+        service = SearchService(db)
+        results = await service.get_search_history(user_id=user_id, limit=limit)
+        logger.info(f"API响应: 返回 {len(results)} 条搜索历史")
+        return results
+    except Exception as e:
+        logger.error(f"获取搜索历史API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取搜索历史失败: {str(e)}"
+        )
 
 @router.post("/save")
 async def save_search(
@@ -93,8 +159,18 @@ async def save_search(
     db: Session = Depends(get_db)
 ):
     """保存常用搜索"""
-    service = SearchService(db)
-    return await service.save_search(save_request)
+    try:
+        logger.info(f"API请求: 保存搜索，查询: {save_request.query[:50]}..., 类型: {save_request.search_type}")
+        service = SearchService(db)
+        result = await service.save_search(save_request)
+        logger.info(f"API响应: 搜索已保存")
+        return result
+    except Exception as e:
+        logger.error(f"保存搜索API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"保存搜索失败: {str(e)}"
+        )
 
 @router.delete("/history/{history_id}")
 async def delete_search_history(
@@ -102,18 +178,37 @@ async def delete_search_history(
     db: Session = Depends(get_db)
 ):
     """删除搜索历史"""
-    service = SearchService(db)
-    await service.delete_search_history(history_id)
-    return {"message": "搜索历史已删除"}
+    try:
+        logger.info(f"API请求: 删除搜索历史，历史ID: {history_id}")
+        service = SearchService(db)
+        await service.delete_search_history(history_id)
+        logger.info(f"API响应: 搜索历史已删除")
+        return {"message": "搜索历史已删除"}
+    except Exception as e:
+        logger.error(f"删除搜索历史API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"删除搜索历史失败: {str(e)}"
+        )
 
-@router.post("/advanced", response_model=List[SearchResponse])
+@router.post("/advanced")
 async def advanced_search(
     advanced_request: SearchAdvancedRequest,
     db: Session = Depends(get_db)
 ):
     """高级搜索 - 支持复杂查询语法"""
-    service = SearchService(db)
-    return await service.advanced_search(advanced_request)
+    try:
+        logger.info(f"API请求: 高级搜索，查询: {advanced_request.query[:50]}...")
+        service = SearchService(db)
+        results = await service.advanced_search(advanced_request)
+        logger.info(f"API响应: 返回 {len(results)} 个搜索结果")
+        return {"total": len(results), "items": results}
+    except Exception as e:
+        logger.error(f"高级搜索API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"高级搜索失败: {str(e)}"
+        )
 
 @router.get("/facets", response_model=SearchFacetsResponse)
 async def get_search_facets(
@@ -122,8 +217,18 @@ async def get_search_facets(
     db: Session = Depends(get_db)
 ):
     """获取搜索分面信息 - 提供搜索结果的分面统计"""
-    service = SearchService(db)
-    return await service.get_search_facets(query, knowledge_base_id)
+    try:
+        logger.info(f"API请求: 获取搜索分面，查询: {query[:50]}..., 知识库ID: {knowledge_base_id}")
+        service = SearchService(db)
+        results = await service.get_search_facets(query, knowledge_base_id)
+        logger.info(f"API响应: 返回搜索分面信息")
+        return results
+    except Exception as e:
+        logger.error(f"获取搜索分面API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取搜索分面失败: {str(e)}"
+        )
 
 @router.post("/similar", response_model=List[SearchResponse])
 async def similar_search(
@@ -131,5 +236,15 @@ async def similar_search(
     db: Session = Depends(get_db)
 ):
     """相似搜索 - 基于文档相似度搜索"""
-    service = SearchService(db)
-    return await service.similar_search(similar_request)
+    try:
+        logger.info(f"API请求: 相似搜索，文档ID: {similar_request.document_id}, 分块ID: {similar_request.chunk_id}")
+        service = SearchService(db)
+        results = await service.similar_search(similar_request)
+        logger.info(f"API响应: 返回 {len(results)} 个相似搜索结果")
+        return results
+    except Exception as e:
+        logger.error(f"相似搜索API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"相似搜索失败: {str(e)}"
+        )

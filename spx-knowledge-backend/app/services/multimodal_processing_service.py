@@ -28,7 +28,8 @@ class MultimodalProcessingService:
     def __init__(self, db: Session):
         self.db = db
         self.ollama_service = OllamaService(db)
-        self.image_vectorization_service = ImageVectorizationService()
+        # 延迟加载：仅在需要图片能力时再初始化，避免纯文本流程加载CLIP
+        self.image_vectorization_service: Optional[ImageVectorizationService] = None
         
         # 输入类型定义 - 根据设计文档
         self.INPUT_TYPES = {
@@ -561,6 +562,8 @@ class MultimodalProcessingService:
         """提取图片特征"""
         try:
             # 使用图片向量化服务提取特征
+            if self.image_vectorization_service is None:
+                self.image_vectorization_service = ImageVectorizationService()
             features = await self.image_vectorization_service.extract_image_features(image)
             return features
         except Exception as e:
@@ -595,6 +598,8 @@ class MultimodalProcessingService:
         """生成图片向量"""
         try:
             # 使用图片向量化服务生成向量
+            if self.image_vectorization_service is None:
+                self.image_vectorization_service = ImageVectorizationService()
             embedding = await self.image_vectorization_service.vectorize_image(image, "hybrid")
             return embedding
         except Exception as e:

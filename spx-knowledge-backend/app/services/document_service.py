@@ -407,31 +407,47 @@ class DocumentService(BaseService[Document]):
                 logger.warning(f"OpenSearch 索引删除失败: {e}，但继续执行MySQL删除")
                 delete_stats["opensearch_deleted"] = False
 
+            # 软删除模式也不再保留外部资源：同步清理 MinIO（与硬删除一致）
+            if not hard:
+                try:
+                    minio_result = self._delete_minio_files(doc_id, prefixes, doc.converted_pdf_url)
+                    delete_stats["minio_deleted"] = minio_result["total_deleted"]
+                    delete_stats["minio_failed"] = len(minio_result["failed_prefixes"])
+                    if minio_result["has_failures"]:
+                        logger.warning(f"软删除模式：MinIO有部分失败，但继续执行MySQL删除（文档ID: {doc_id}）")
+                except Exception as e:
+                    logger.warning(f"软删除模式：删除 MinIO 失败: {e}，继续执行MySQL删除")
+
             # 2) 删除MySQL数据（关键操作，确保执行）
             from app.models.chunk import DocumentChunk
             from app.models.image import DocumentImage
             from app.models.chunk_version import ChunkVersion
             from app.models.version import DocumentVersion
+            # 关系与表格
+            from sqlalchemy import text as _sql_text
 
             try:
-                if hard:
-                    # 物理删除顺序：文档版本 -> 分块版本 -> 分块 -> 图片 -> 文档
-                    chunk_ids = [rid for (rid,) in self.db.query(DocumentChunk.id).filter(DocumentChunk.document_id == doc_id).all()]
-                    if chunk_ids:
-                        self.db.query(ChunkVersion).filter(ChunkVersion.chunk_id.in_(chunk_ids)).delete(synchronize_session=False)
-                        self.db.query(DocumentChunk).filter(DocumentChunk.id.in_(chunk_ids)).delete(synchronize_session=False)
-                    # 删除文档级版本记录
-                    self.db.query(DocumentVersion).filter(DocumentVersion.document_id == doc_id).delete(synchronize_session=False)
-                    self.db.query(DocumentImage).filter(DocumentImage.document_id == doc_id).delete(synchronize_session=False)
-                    self.db.query(Document).filter(Document.id == doc_id).delete(synchronize_session=False)
-                    delete_stats["mysql_deleted"] = 5  # 估算删除的表数量
-                else:
-                    # 软删除
-                    self.db.query(DocumentChunk).filter(DocumentChunk.document_id == doc_id).update({"is_deleted": True})
-                    self.db.query(DocumentImage).filter(DocumentImage.document_id == doc_id).update({"is_deleted": True})
-                    # 软删除文档版本
-                    self.db.query(DocumentVersion).filter(DocumentVersion.document_id == doc_id).update({"is_deleted": True})
-                    doc.is_deleted = True
+                # 无论 hard 与否，均执行物理删除，确保“不同步保留，全部清除”
+                # 物理删除顺序：文档版本 -> 分块版本 -> 分块 -> 关系/表格 -> 图片 -> 文档
+                chunk_ids = [rid for (rid,) in self.db.query(DocumentChunk.id).filter(DocumentChunk.document_id == doc_id).all()]
+                if chunk_ids:
+                    self.db.query(ChunkVersion).filter(ChunkVersion.chunk_id.in_(chunk_ids)).delete(synchronize_session=False)
+                    self.db.query(DocumentChunk).filter(DocumentChunk.id.in_(chunk_ids)).delete(synchronize_session=False)
+                # 删除分块关系（parent_child / sequence）
+                try:
+                    self.db.execute(_sql_text("DELETE FROM chunk_relations WHERE document_id=:doc_id"), {"doc_id": doc_id})
+                except Exception:
+                    pass
+                # 删除文档表格（document_tables）
+                try:
+                    self.db.execute(_sql_text("DELETE FROM document_tables WHERE document_id=:doc_id"), {"doc_id": doc_id})
+                except Exception:
+                    pass
+                # 删除文档级版本记录与图片、文档本身
+                self.db.query(DocumentVersion).filter(DocumentVersion.document_id == doc_id).delete(synchronize_session=False)
+                self.db.query(DocumentImage).filter(DocumentImage.document_id == doc_id).delete(synchronize_session=False)
+                self.db.query(Document).filter(Document.id == doc_id).delete(synchronize_session=False)
+                delete_stats["mysql_deleted"] = 5  # 估算删除的表数量
                 
                 self.db.commit()
                 logger.info(f"MySQL删除完成（{'硬删除' if hard else '软删除'}）: {doc_id}")

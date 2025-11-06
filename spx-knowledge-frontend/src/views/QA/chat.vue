@@ -131,21 +131,37 @@ const handleSendMessage = async (message: string) => {
     return
   }
 
-  // TODO: 调用后端API发送消息并获取回答
-  // 这里只是模拟
-  const response = {
-    id: Date.now(),
-    type: 'assistant',
-    content: '这是一个模拟回答',
-    created_at: new Date().toISOString()
-  }
+  try {
+    const { askQuestion } = await import('@/api/modules/qa')
+    const sessionId = currentSession.value.session_id || currentSession.value.id
+    
+    const res = await askQuestion(sessionId, {
+      text_content: message,
+      input_type: 'text',
+      search_type: 'hybrid'
+    })
 
-  // 添加到消息列表
-  qaStore.addMessage(response)
-  
-  // 如果chatRef有addMessage方法，也可以调用
-  if (chatRef.value?.addMessage) {
-    chatRef.value.addMessage(response)
+    const response = {
+      id: Date.now(),
+      type: 'assistant',
+      content: res.data.answer_content || res.data.answer || '暂无回答',
+      created_at: new Date().toISOString(),
+      source_info: res.data.source_info,
+      processing_info: res.data.processing_info
+    }
+
+    // 添加到消息列表
+    if (qaStore.addMessage) {
+      qaStore.addMessage(response)
+    }
+    
+    // 如果chatRef有addMessage方法，也可以调用
+    if (chatRef.value?.addMessage) {
+      chatRef.value.addMessage(response)
+    }
+  } catch (error: any) {
+    console.error('发送消息失败:', error)
+    ElMessage.error(error?.response?.data?.detail || '发送消息失败')
   }
 }
 

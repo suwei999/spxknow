@@ -17,9 +17,9 @@ class OpenSearchService:
     
     def __init__(self):
         self.client = self._create_client()
-        self.document_index = "documents"
-        self.image_index = "images"
-        self.qa_index = "qa_history"
+        self.document_index = settings.DOCUMENT_INDEX_NAME
+        self.image_index = settings.IMAGE_INDEX_NAME
+        self.qa_index = settings.QA_INDEX_NAME
         self._ensure_indices_exist()
     
     def _create_client(self) -> OpenSearch:
@@ -70,6 +70,17 @@ class OpenSearchService:
                         )
                         self.client.indices.delete(index=self.document_index, ignore=[400, 404])
                         self._create_document_index()
+                    # 兜底：若 knn 未开启，则在线开启
+                    try:
+                        settings_res = self.client.indices.get_settings(index=self.document_index)
+                        knn_flag = settings_res.get(self.document_index, {}).get('settings', {}).get('index', {}).get('knn')
+                        if not (str(knn_flag).lower() == 'true'):
+                            self.client.indices.put_settings(index=self.document_index, body={"index.knn": True})
+                            logger.info(f"文档索引检测到 knn 未开启，已自动开启: {self.document_index}")
+                        else:
+                            logger.info(f"文档索引 knn 已开启: {self.document_index}")
+                    except Exception as _e:
+                        logger.warning(f"文档索引 knn 设置检查/开启失败: {_e}")
                 except Exception:
                     # 若映射读取失败，尽量继续
                     pass
@@ -77,6 +88,18 @@ class OpenSearchService:
             # 创建图片专用索引
             if not self.client.indices.exists(index=self.image_index):
                 self._create_image_index()
+            else:
+                # 兜底：若 knn 未开启，则在线开启
+                try:
+                    settings_res = self.client.indices.get_settings(index=self.image_index)
+                    knn_flag = settings_res.get(self.image_index, {}).get('settings', {}).get('index', {}).get('knn')
+                    if not (str(knn_flag).lower() == 'true'):
+                        self.client.indices.put_settings(index=self.image_index, body={"index.knn": True})
+                        logger.info(f"图片索引检测到 knn 未开启，已自动开启: {self.image_index}")
+                    else:
+                        logger.info(f"图片索引 knn 已开启: {self.image_index}")
+                except Exception as _e:
+                    logger.warning(f"图片索引 knn 设置检查/开启失败: {_e}")
             
             # 创建问答历史索引
             if not self.client.indices.exists(index=self.qa_index):
@@ -99,12 +122,14 @@ class OpenSearchService:
             # 根据设计文档的索引配置
             index_mapping = {
                 "settings": {
-                    "number_of_shards": 3,
-                    "number_of_replicas": 1,
+                    "number_of_shards": settings.OPENSEARCH_NUMBER_OF_SHARDS,
+                    "number_of_replicas": settings.OPENSEARCH_NUMBER_OF_REPLICAS,
+                    # 关键：开启 KNN（用于 content_vector）
+                    "index.knn": True,
                     "analysis": {
                         "analyzer": {
                             "ik_max_word": {
-                                "type": "ik_max_word"
+                                "type": settings.TEXT_ANALYZER
                             }
                         }
                     }
@@ -120,8 +145,8 @@ class OpenSearchService:
                         # 内容字段
                         "content": {
                             "type": "text",
-                            "analyzer": "ik_max_word",
-                            "search_analyzer": "ik_max_word"
+                            "analyzer": settings.TEXT_ANALYZER,
+                            "search_analyzer": settings.TEXT_ANALYZER
                         },
                         "chunk_type": {"type": "keyword"},
                         "tags": {"type": "keyword"},
@@ -139,8 +164,8 @@ class OpenSearchService:
                                 "space_type": "cosinesimil",
                                 "engine": "nmslib",
                                 "parameters": {
-                                    "ef_construction": 128,
-                                    "m": 24
+                                    "ef_construction": settings.HNSW_EF_CONSTRUCTION,
+                                    "m": settings.HNSW_M
                                 }
                             }
                         },
@@ -163,7 +188,13 @@ class OpenSearchService:
             }
             
             self.client.indices.create(index=self.document_index, body=index_mapping)
-            logger.info(f"文档索引创建成功: {self.document_index}")
+            logger.info(f"文档索引创建成功: {self.document_index}，已设置 index.knn=true，向量字段=content_vector，维度={settings.TEXT_EMBEDDING_DIMENSION}")
+            try:
+                settings_res = self.client.indices.get_settings(index=self.document_index)
+                knn_flag = settings_res.get(self.document_index, {}).get('settings', {}).get('index', {}).get('knn')
+                logger.info(f"文档索引当前 knn 设置: {knn_flag}")
+            except Exception as _e:
+                logger.warning(f"读取文档索引 settings 失败: {_e}")
             
         except Exception as e:
             logger.error(f"创建文档索引失败: {e}", exc_info=True)
@@ -180,8 +211,10 @@ class OpenSearchService:
             # 根据设计文档的图片索引配置
             index_mapping = {
                 "settings": {
-                    "number_of_shards": 3,
-                    "number_of_replicas": 1
+                    "number_of_shards": settings.OPENSEARCH_NUMBER_OF_SHARDS,
+                    "number_of_replicas": settings.OPENSEARCH_NUMBER_OF_REPLICAS,
+                    # 关键：开启 KNN（用于 content_vector）
+                    "index.knn": True
                 },
                 "mappings": {
                     "properties": {
@@ -204,7 +237,7 @@ class OpenSearchService:
                         # 内容字段
                         "ocr_text": {
                             "type": "text",
-                            "analyzer": "ik_max_word"
+                            "analyzer": settings.TEXT_ANALYZER
                         },
                         "description": {"type": "text"},
                         "feature_tags": {"type": "keyword"},
@@ -212,14 +245,14 @@ class OpenSearchService:
                         # 向量字段 - 512维图片向量，HNSW算法
                         "image_vector": {
                             "type": "knn_vector",
-                            "dimension": 512,
+                            "dimension": settings.IMAGE_EMBEDDING_DIMENSION,
                             "method": {
                                 "name": "hnsw",
                                 "space_type": "cosinesimil",
                                 "engine": "nmslib",
                                 "parameters": {
-                                    "ef_construction": 128,
-                                    "m": 24
+                                    "ef_construction": settings.HNSW_EF_CONSTRUCTION,
+                                    "m": settings.HNSW_M
                                 }
                             }
                         },
@@ -237,7 +270,13 @@ class OpenSearchService:
             }
             
             self.client.indices.create(index=self.image_index, body=index_mapping)
-            logger.info(f"图片索引创建成功: {self.image_index}")
+            logger.info(f"图片索引创建成功: {self.image_index}，已设置 index.knn=true，向量字段=image_vector，维度=512")
+            try:
+                settings_res = self.client.indices.get_settings(index=self.image_index)
+                knn_flag = settings_res.get(self.image_index, {}).get('settings', {}).get('index', {}).get('knn')
+                logger.info(f"图片索引当前 knn 设置: {knn_flag}")
+            except Exception as _e:
+                logger.warning(f"读取图片索引 settings 失败: {_e}")
             
         except Exception as e:
             logger.error(f"创建图片索引失败: {e}", exc_info=True)
@@ -254,7 +293,9 @@ class OpenSearchService:
             index_mapping = {
                 "settings": {
                     "number_of_shards": 3,
-                    "number_of_replicas": 1
+                    "number_of_replicas": 1,
+                    # 关键：开启 KNN（用于 image_vector）
+                    "index.knn": True
                 },
                 "mappings": {
                     "properties": {
@@ -463,41 +504,102 @@ class OpenSearchService:
         )
         return True
     
-    async def search_document_vectors(
+    def search_document_vectors_sync(
         self,
         query_vector: List[float],
-        similarity_threshold: float = 0.7,
+        similarity_threshold: float | None = None,
         limit: int = 10,
-        knowledge_base_id: Optional[int] = None
+        knowledge_base_id: Optional[int] = None,
+        category_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """搜索文档向量 - 根据设计文档实现"""
+        """搜索文档向量（同步版本）- 根据设计文档实现"""
         try:
-            logger.info(f"开始文档向量搜索，相似度阈值: {similarity_threshold}")
+            # 兜底阈值：优先使用入参，否则读取配置
+            if similarity_threshold is None:
+                from app.config.settings import settings as _settings
+                similarity_threshold = float(getattr(_settings, "SEARCH_VECTOR_THRESHOLD", 0.0))
+            logger.info(f"开始文档向量搜索（同步），相似度阈值: {similarity_threshold}")
             
-            # 构建搜索查询
-            query = {
-                "knn": {
-                    "field": "content_vector",
-                    "query_vector": query_vector,
-                    "k": limit,
-                    "num_candidates": limit * 2
-                }
-            }
-            
-            # 添加知识库过滤
+            # 兼容/校验：query_vector 必须是 float 数组，避免 OS 报 x_content_parse_exception
+            try:
+                # 字符串 -> JSON
+                if isinstance(query_vector, str):
+                    import json as _json
+                    query_vector = _json.loads(query_vector)
+                # numpy -> list
+                try:
+                    import numpy as _np
+                    if isinstance(query_vector, _np.ndarray):
+                        query_vector = query_vector.tolist()
+                except Exception:
+                    pass
+                # 元素转 float
+                if isinstance(query_vector, list):
+                    query_vector = [float(x) for x in query_vector]
+            except Exception as _ve:
+                logger.warning(f"查询向量格式修正失败，将返回空结果: {_ve}")
+                return []
+            if not isinstance(query_vector, list) or not query_vector:
+                logger.warning("查询向量为空或格式错误，返回空结果")
+                return []
+            if not all(isinstance(x, (int, float)) for x in query_vector):
+                logger.warning("查询向量元素非数值类型，返回空结果")
+                return []
+
+            # 构建过滤条件
+            filters = []
             if knowledge_base_id:
-                query["knn"]["filter"] = {
-                    "term": {
-                        "knowledge_base_id": knowledge_base_id
+                filters.append({"term": {"knowledge_base_id": knowledge_base_id}})
+            if category_id is not None:
+                filters.append({"term": {"category_id": category_id}})
+
+            # 额外调试日志（仅首5维），便于定位解析问题
+            try:
+                from app.core.logging import logger as _lg
+                _lg.info(
+                    f"[KNN] index={self.document_index}, dim={len(query_vector)}, "
+                    f"first5={query_vector[:5]}, kb_id={knowledge_base_id}, category_id={category_id}"
+                )
+            except Exception:
+                pass
+
+            # 2.11 官方稳态语法：顶层 knn + field/query_vector，filter 仅在存在时添加
+            # 按 OpenSearch k-NN plugin 固定语法：content_vector + vector（不要 values/field/query_vector）
+            body = {
+                "size": limit,
+                "query": {
+                    "knn": {
+                        "content_vector": {
+                            "vector": query_vector,
+                            "k": limit
+                        }
                     }
                 }
-            
-            # 执行搜索
-            response = self.client.search(
-                index=self.document_index,
-                body={"query": query},
-                size=limit
-            )
+            }
+
+            # 强制标准 JSON 序列化-反序列化，避免任何非基元类型导致被当作字符串
+            try:
+                import json as _json
+                body_json = _json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+                logger.info(f"[KNN][body_first200]={body_json[:200]}")
+                body = _json.loads(body_json)
+            except Exception:
+                pass
+
+            try:
+                response = self.client.search(index=self.document_index, body=body)
+            except Exception as e_primary:
+                # 兼容分支：部分集群要求 query_vector 使用 {"values": [...]} 包装
+                try:
+                    import copy as _copy, json as _json
+                    alt_body = _copy.deepcopy(body)
+                    qv = alt_body["query"]["knn"].pop("query_vector", None)
+                    alt_body["query"]["knn"]["query_vector"] = {"values": qv if isinstance(qv, list) else []}
+                    alt_json = _json.dumps(alt_body, ensure_ascii=False, separators=(",", ":"))
+                    logger.info(f"[KNN][compat_values][body_first200]={alt_json[:200]}")
+                    response = self.client.search(index=self.document_index, body=alt_body)
+                except Exception:
+                    raise e_primary
             
             # 处理搜索结果
             results = []
@@ -514,7 +616,7 @@ class OpenSearchService:
                     }
                     results.append(result)
             
-            logger.info(f"文档向量搜索完成，找到 {len(results)} 个结果")
+            logger.info(f"文档向量搜索完成（同步），找到 {len(results)} 个结果")
             return results
             
         except Exception as e:
@@ -524,25 +626,73 @@ class OpenSearchService:
                 message=f"文档向量搜索失败: {str(e)}"
             )
     
+    async def search_document_vectors(
+        self,
+        query_vector: List[float],
+        similarity_threshold: Optional[float] = None,
+        limit: int = 10,
+        knowledge_base_id: Optional[int] = None,
+        category_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """搜索文档向量（异步版本）- 根据设计文档实现"""
+        # 异步版本直接调用同步版本（OpenSearch客户端是同步的）
+        return self.search_document_vectors_sync(
+            query_vector=query_vector,
+            similarity_threshold=similarity_threshold,
+            limit=limit,
+            knowledge_base_id=knowledge_base_id,
+            category_id=category_id
+        )
+    
     async def search_image_vectors(
         self,
         query_vector: List[float],
-        similarity_threshold: float = 0.7,
-        limit: int = 10,
+        similarity_threshold: Optional[float] = None,
+        limit: int | None = None,
         knowledge_base_id: Optional[int] = None,
         exclude_image_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """搜索图片向量 - 根据设计文档实现"""
         try:
+            if similarity_threshold is None:
+                similarity_threshold = settings.SEARCH_VECTOR_THRESHOLD
+            if not limit:
+                limit = settings.SEARCH_VECTOR_TOPK
             logger.info(f"开始图片向量搜索，相似度阈值: {similarity_threshold}")
             
-            # 构建搜索查询
-            query = {
-                "knn": {
-                    "field": "image_vector",
-                    "query_vector": query_vector,
-                    "k": limit,
-                    "num_candidates": limit * 2
+            # 确保 query_vector 是正确的类型（List[float]）
+            import json
+            try:
+                # 如果 query_vector 是字符串，先解析
+                if isinstance(query_vector, str):
+                    query_vector = json.loads(query_vector)
+                # 如果是 numpy 数组或其他类型，转换为列表
+                if hasattr(query_vector, 'tolist'):
+                    query_vector = query_vector.tolist()
+                # 确保是列表且元素是浮点数
+                query_vector = [float(x) for x in query_vector]
+                logger.info(f"[Image KNN] 向量维度: {len(query_vector)}, 前5个值: {query_vector[:5]}")
+            except Exception as e:
+                logger.error(f"[Image KNN] query_vector 类型转换失败: {e}, 类型: {type(query_vector)}")
+                raise CustomException(
+                    code=ErrorCode.VECTOR_GENERATION_FAILED,
+                    message=f"图片向量格式错误: {str(e)}"
+                )
+            
+            # 构建搜索查询（使用 OpenSearch k-NN plugin 标准语法）
+            # 重要：k 值应该略大于 limit，以便有足够的候选进行阈值过滤
+            # 但不要设置过大，避免召回过多不相关的结果
+            # 策略：k = limit * 2，但不超过 50（避免召回过多低分结果）
+            k_value = min(limit * 2, 50) if limit else 50
+            body = {
+                "size": k_value,  # 先召回更多候选，后续按阈值过滤
+                "query": {
+                    "knn": {
+                        "image_vector": {
+                            "vector": query_vector,
+                            "k": k_value
+                        }
+                    }
                 }
             }
             
@@ -554,35 +704,56 @@ class OpenSearchService:
                 filters.append({"bool": {"must_not": {"term": {"image_id": exclude_image_id}}}})
             
             if filters:
-                query["knn"]["filter"] = {"bool": {"must": filters}}
+                body["query"]["knn"]["image_vector"]["filter"] = {"bool": {"must": filters}}
+            
+            # 强制标准 JSON 序列化-反序列化，确保 query_vector 是数组而不是字符串
+            try:
+                body_json = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+                logger.debug(f"[Image KNN][body_first200]={body_json[:200]}")
+                body = json.loads(body_json)
+            except Exception as e:
+                logger.warning(f"[Image KNN] JSON 序列化失败: {e}")
             
             # 执行搜索
             response = self.client.search(
                 index=self.image_index,
-                body={"query": query},
-                size=limit
+                body=body
             )
             
             # 处理搜索结果
             results = []
+            total_hits = len(response["hits"]["hits"])
+            filtered_count = 0
             for hit in response["hits"]["hits"]:
-                if hit["_score"] >= similarity_threshold:
+                score = hit["_score"]
+                # 严格按阈值过滤：只有 >= threshold 的结果才保留
+                if score >= similarity_threshold:
                     result = {
                         "image_id": hit["_source"]["image_id"],
                         "document_id": hit["_source"]["document_id"],
                         "knowledge_base_id": hit["_source"]["knowledge_base_id"],
                         "image_path": hit["_source"]["image_path"],
-                        "similarity_score": hit["_score"],
+                        "similarity_score": score,
                         "image_type": hit["_source"].get("image_type"),
                         "page_number": hit["_source"].get("page_number"),
                         "coordinates": hit["_source"].get("coordinates"),
                         "ocr_text": hit["_source"].get("ocr_text", ""),
                         "description": hit["_source"].get("description", ""),
-                        "source_document": hit["_source"].get("document_id")  # TODO: 获取文档名称
+                        "source_document": str(hit["_source"].get("document_id", ""))  # 转换为字符串，TODO: 获取文档名称
                     }
                     results.append(result)
+                else:
+                    filtered_count += 1
             
-            logger.info(f"图片向量搜索完成，找到 {len(results)} 个结果")
+            # 限制返回数量（不超过 limit）
+            if limit and len(results) > limit:
+                results = results[:limit]
+            
+            logger.info(
+                f"图片向量搜索完成：召回 {total_hits} 个候选，"
+                f"阈值过滤（>={similarity_threshold}）后 {len(results)} 个结果，"
+                f"过滤掉 {filtered_count} 个低分结果"
+            )
             return results
             
         except Exception as e:
@@ -662,7 +833,7 @@ class OpenSearchService:
                     "coordinates": hit["_source"].get("coordinates"),
                     "ocr_text": hit["_source"].get("ocr_text", ""),
                     "description": hit["_source"].get("description", ""),
-                    "source_document": hit["_source"].get("document_id")
+                    "source_document": str(hit["_source"].get("document_id", ""))  # 转换为字符串，TODO: 获取文档名称
                 }
                 results.append(result)
             
@@ -675,6 +846,391 @@ class OpenSearchService:
                 code=ErrorCode.OPENSEARCH_SEARCH_FAILED,
                 message=f"图片关键词搜索失败: {str(e)}"
             )
+    
+    async def search_document_exact_match(
+        self,
+        query_text: str,
+        limit: int = None,
+        knowledge_base_id: Optional[int] = None,
+        similarity_threshold: float = 0.0,
+        filters: Optional[Dict[str, Any]] = None,
+        sort_by: Optional[str] = None,
+        sort_order: str = "desc",
+        fields: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """精确匹配搜索 - 使用match_phrase查询"""
+        try:
+            # 验证查询文本
+            if not query_text or not query_text.strip():
+                logger.warning("精确匹配搜索：查询文本为空，返回空结果")
+                return []
+            
+            # 验证limit参数
+            if not limit or limit <= 0:
+                limit = settings.SEARCH_VECTOR_TOPK
+            elif limit > 1000:
+                limit = 1000
+                logger.warning(f"精确匹配搜索：limit参数过大，已限制为1000")
+            
+            logger.info(f"开始精确匹配搜索: {query_text[:50]}...，fields={fields or settings.SEARCH_EXACT_FIELDS}")
+            
+            # 构建查询
+            # 若指定多个字段，则使用 multi_match type=phrase；否则使用 match_phrase
+            target_fields = fields or getattr(settings, "SEARCH_EXACT_FIELDS", ["content"]) or ["content"]
+            if isinstance(target_fields, str):
+                target_fields = [target_fields]
+            if len(target_fields) > 1:
+                match_phrase_query = {
+                    "multi_match": {
+                        "query": query_text,
+                        "type": "phrase",
+                        "fields": target_fields
+                    }
+                }
+            else:
+                match_phrase_query = {
+                    "match_phrase": {
+                        target_fields[0]: {
+                            "query": query_text,
+                            "slop": 0
+                        }
+                    }
+                }
+            
+            # 构建过滤条件
+            filter_list = []
+            if knowledge_base_id:
+                filter_list.append({"term": {"knowledge_base_id": knowledge_base_id}})
+            
+            # 添加自定义filters
+            if filters:
+                filter_list.extend(self._build_filters(filters))
+            
+            # 构建最终查询
+            if filter_list:
+                query = {
+                    "bool": {
+                        "must": [match_phrase_query],
+                        "filter": filter_list
+                    }
+                }
+            else:
+                query = match_phrase_query
+            
+            # 构建搜索体
+            search_body = {
+                "query": query,
+                "size": limit,
+                "_source": ["document_id", "chunk_id", "content", "chunk_type", "metadata", "knowledge_base_id"]
+            }
+            
+            # 构建排序（只有在需要自定义排序时才添加）
+            if sort_by:
+                # 验证sort_order
+                order = "desc" if sort_order.lower() == "desc" else "asc"
+                search_body["sort"] = [{sort_by: {"order": order}}]
+            # 如果没有指定sort_by，OpenSearch默认按_score排序，不需要显式指定
+            
+            response = self.client.search(
+                index=self.document_index,
+                body=search_body
+            )
+            
+            # 处理结果
+            results = []
+            for hit in response["hits"]["hits"]:
+                score = hit["_score"]
+                if score >= similarity_threshold:
+                    # 解析metadata字段
+                    metadata_str = hit["_source"].get("metadata", "{}")
+                    try:
+                        metadata = json.loads(metadata_str) if isinstance(metadata_str, str) else metadata_str
+                    except (json.JSONDecodeError, TypeError):
+                        metadata = {}
+                    
+                    results.append({
+                        "document_id": hit["_source"].get("document_id"),
+                        "chunk_id": hit["_source"].get("chunk_id"),
+                        "knowledge_base_id": hit["_source"].get("knowledge_base_id"),
+                        "content": hit["_source"].get("content", ""),
+                        "chunk_type": hit["_source"].get("chunk_type", "text"),
+                        "metadata": metadata,
+                        "score": score,
+                        "bm25_score": score,  # match_phrase使用BM25评分
+                        "original_score": score,
+                        "knn_score": 0.0  # 精确匹配不使用向量搜索
+                    })
+            
+            logger.info(f"精确匹配搜索完成，找到 {len(results)} 个结果")
+            return results
+            
+        except OpenSearchException as e:
+            logger.error(f"精确匹配搜索失败（OpenSearch异常）: {e}", exc_info=True)
+            return []
+        except Exception as e:
+            logger.error(f"精确匹配搜索失败: {e}", exc_info=True)
+            return []
+    
+    def _build_filters(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """构建OpenSearch过滤条件
+        
+        Args:
+            filters: 过滤条件字典，支持以下格式：
+                - {"field": value} - term查询
+                - {"field": {"gte": value}} - range查询
+                - {"field": {"in": [value1, value2]}} - terms查询
+        
+        Returns:
+            OpenSearch过滤条件列表
+        """
+        filter_list = []
+        
+        for field, condition in filters.items():
+            if isinstance(condition, dict):
+                # 处理range查询
+                if any(key in condition for key in ["gte", "gt", "lte", "lt"]):
+                    filter_list.append({"range": {field: condition}})
+                # 处理terms查询（in操作）
+                elif "in" in condition:
+                    filter_list.append({"terms": {field: condition["in"]}})
+                # 处理其他复杂条件
+                else:
+                    filter_list.append({"term": {field: condition}})
+            else:
+                # 简单term查询
+                filter_list.append({"term": {field: condition}})
+        
+            return filter_list
+    
+    async def search_document_advanced(
+        self,
+        query: str,
+        bool_query: Optional[str] = None,
+        exact_phrase: Optional[str] = None,
+        wildcard: Optional[str] = None,
+        regex: Optional[str] = None,
+        limit: int = 10,
+        knowledge_base_id: Optional[int] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        similarity_threshold: float = 0.0
+    ) -> List[Dict[str, Any]]:
+        """高级搜索 - 支持布尔查询、通配符、正则表达式等复杂查询语法"""
+        try:
+            logger.info(f"开始高级搜索: {query[:50]}...")
+            
+            # 验证limit参数
+            if limit <= 0:
+                limit = 10
+            elif limit > 1000:
+                limit = 1000
+                logger.warning(f"高级搜索：limit参数过大，已限制为1000")
+            
+            # 构建查询条件
+            must_clauses = []
+            should_clauses = []
+            must_not_clauses = []
+            
+            # 1. 处理基础查询（query）
+            if query and query.strip():
+                must_clauses.append({"match": {"content": {"query": query}}})
+            
+            # 2. 处理布尔查询（bool_query）
+            # 格式：支持简单的 AND/OR/NOT 语法
+            # 例如："(MongoDB AND 连接) OR (Redis AND 配置)" 或 "MongoDB NOT 错误"
+            if bool_query and bool_query.strip():
+                bool_queries = self._parse_bool_query(bool_query)
+                if bool_queries.get("must"):
+                    must_clauses.extend(bool_queries["must"])
+                if bool_queries.get("should"):
+                    should_clauses.extend(bool_queries["should"])
+                if bool_queries.get("must_not"):
+                    must_not_clauses.extend(bool_queries["must_not"])
+            
+            # 3. 处理精确短语（exact_phrase）
+            if exact_phrase and exact_phrase.strip():
+                must_clauses.append({
+                    "match_phrase": {
+                        "content": {
+                            "query": exact_phrase,
+                            "slop": 0
+                        }
+                    }
+                })
+            
+            # 4. 处理通配符查询（wildcard）
+            if wildcard and wildcard.strip():
+                must_clauses.append({
+                    "wildcard": {
+                        "content": {
+                            "value": wildcard,
+                            "boost": 1.0
+                        }
+                    }
+                })
+            
+            # 5. 处理正则表达式查询（regex）
+            if regex and regex.strip():
+                # 移除regex字符串两端的斜杠（如果存在）
+                regex_pattern = regex.strip()
+                if regex_pattern.startswith('/') and regex_pattern.endswith('/'):
+                    regex_pattern = regex_pattern[1:-1]
+                
+                must_clauses.append({
+                    "regexp": {
+                        "content": {
+                            "value": regex_pattern,
+                            "flags": "ALL",
+                            "boost": 1.0
+                        }
+                    }
+                })
+            
+            # 构建最终查询
+            bool_query_dict = {}
+            if must_clauses:
+                bool_query_dict["must"] = must_clauses
+            if should_clauses:
+                bool_query_dict["should"] = should_clauses
+                bool_query_dict["minimum_should_match"] = 1
+            if must_not_clauses:
+                bool_query_dict["must_not"] = must_not_clauses
+            
+            # 构建过滤条件
+            filter_list = []
+            if knowledge_base_id:
+                filter_list.append({"term": {"knowledge_base_id": knowledge_base_id}})
+            if filters:
+                filter_list.extend(self._build_filters(filters))
+            
+            if filter_list:
+                bool_query_dict["filter"] = filter_list
+            
+            # 如果没有查询条件，返回空结果
+            if not bool_query_dict:
+                logger.warning("高级搜索：没有有效的查询条件")
+                return []
+            
+            query_body = {"bool": bool_query_dict}
+            
+            # 执行搜索
+            search_body = {
+                "query": query_body,
+                "size": limit,
+                "_source": ["document_id", "chunk_id", "content", "chunk_type", "metadata", "knowledge_base_id"]
+            }
+            
+            response = self.client.search(
+                index=self.document_index,
+                body=search_body
+            )
+            
+            # 处理结果
+            results = []
+            for hit in response["hits"]["hits"]:
+                score = hit["_score"]
+                if score >= similarity_threshold:
+                    # 解析metadata字段
+                    metadata_str = hit["_source"].get("metadata", "{}")
+                    try:
+                        metadata = json.loads(metadata_str) if isinstance(metadata_str, str) else metadata_str
+                    except (json.JSONDecodeError, TypeError):
+                        metadata = {}
+                    
+                    results.append({
+                        "document_id": hit["_source"].get("document_id"),
+                        "chunk_id": hit["_source"].get("chunk_id"),
+                        "knowledge_base_id": hit["_source"].get("knowledge_base_id"),
+                        "content": hit["_source"].get("content", ""),
+                        "chunk_type": hit["_source"].get("chunk_type", "text"),
+                        "metadata": metadata,
+                        "score": score,
+                        "bm25_score": score,
+                        "original_score": score,
+                        "knn_score": 0.0
+                    })
+            
+            logger.info(f"高级搜索完成，找到 {len(results)} 个结果")
+            return results
+            
+        except OpenSearchException as e:
+            logger.error(f"高级搜索失败（OpenSearch异常）: {e}", exc_info=True)
+            return []
+        except Exception as e:
+            logger.error(f"高级搜索失败: {e}", exc_info=True)
+            return []
+    
+    def _parse_bool_query(self, bool_query: str) -> Dict[str, List[Dict[str, Any]]]:
+        """解析布尔查询字符串
+        
+        支持格式：
+        - "MongoDB AND 连接" -> must: [MongoDB, 连接]
+        - "MongoDB OR Redis" -> should: [MongoDB, Redis]
+        - "MongoDB NOT 错误" -> must: [MongoDB], must_not: [错误]
+        - "(MongoDB AND 连接) OR (Redis AND 配置)" -> 复杂组合
+        
+        Args:
+            bool_query: 布尔查询字符串
+        
+        Returns:
+            包含must、should、must_not的字典
+        """
+        result = {"must": [], "should": [], "must_not": []}
+        
+        try:
+            # 简单的布尔查询解析（支持 AND、OR、NOT）
+            # 更复杂的语法可以通过递归解析括号实现，这里先实现简单版本
+            
+            # 处理NOT查询
+            if " NOT " in bool_query.upper():
+                parts = bool_query.split(" NOT ", 1)
+                if len(parts) == 2:
+                    # 必须包含parts[0]，不包含parts[1]
+                    if parts[0].strip():
+                        result["must"].append({"match": {"content": {"query": parts[0].strip()}}})
+                    if parts[1].strip():
+                        result["must_not"].append({"match": {"content": {"query": parts[1].strip()}}})
+                    return result
+            
+            # 处理OR查询
+            if " OR " in bool_query.upper():
+                parts = bool_query.split(" OR ")
+                for part in parts:
+                    part = part.strip()
+                    if part:
+                        # 检查是否包含AND
+                        if " AND " in part.upper():
+                            and_parts = part.split(" AND ")
+                            must_items = []
+                            for and_part in and_parts:
+                                and_part = and_part.strip()
+                                if and_part:
+                                    must_items.append({"match": {"content": {"query": and_part}}})
+                            if must_items:
+                                result["must"].append({"bool": {"must": must_items}})
+                        else:
+                            result["should"].append({"match": {"content": {"query": part}}})
+                return result
+            
+            # 处理AND查询
+            if " AND " in bool_query.upper():
+                parts = bool_query.split(" AND ")
+                for part in parts:
+                    part = part.strip()
+                    if part:
+                        result["must"].append({"match": {"content": {"query": part}}})
+                return result
+            
+            # 默认作为must查询
+            if bool_query.strip():
+                result["must"].append({"match": {"content": {"query": bool_query.strip()}}})
+            
+        except Exception as e:
+            logger.warning(f"布尔查询解析失败，使用默认查询: {e}")
+            # 解析失败时，使用原始查询作为must
+            if bool_query.strip():
+                result["must"].append({"match": {"content": {"query": bool_query.strip()}}})
+        
+        return result
     
     async def get_image_vector(self, image_id: int) -> Optional[List[float]]:
         """获取图片向量"""

@@ -222,10 +222,14 @@ export const getChunkVersion = (documentId: number, chunkId: number, version: nu
 }
 
 // 回滚到特定版本
-export const restoreChunkVersion = (documentId: number, chunkId: number, version: number) => {
+export const restoreChunkVersion = (documentId: number, chunkId: number, version: number, revertComment?: string) => {
   return request({
     url: `/documents/${documentId}/chunks/${chunkId}/versions/${version}/restore`,
-    method: 'post'
+    method: 'post',
+    data: {
+      target_version: version,
+      revert_comment: revertComment || `回退到版本 V${version}`
+    }
   })
 }
 

@@ -97,7 +97,7 @@ const steps = computed(() => [
   },
   {
     title: '重新向量化',
-    description: '使用Ollama重新向量化文档',
+    description: '仅对当前分块重新向量化',
     status: 'wait' as const,
     icon: undefined
   },

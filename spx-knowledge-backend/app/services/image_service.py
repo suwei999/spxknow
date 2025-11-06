@@ -161,3 +161,49 @@ class ImageService(BaseService[DocumentImage]):
             image.error_message = str(e)
             self.db.commit()
             return False
+
+    # =============== API 适配：异步包装 ===============
+    async def get_images(self, skip: int = 0, limit: int = 24, document_id: Optional[int] = None) -> List[DocumentImage]:
+        """获取图片列表（支持按文档过滤，分页）。
+        为兼容路由中的 await，这里声明为 async，但内部为同步 ORM 调用。
+        """
+        query = self.db.query(DocumentImage).filter(DocumentImage.is_deleted == False)
+        if document_id is not None:
+            query = query.filter(DocumentImage.document_id == document_id)
+        # 按创建时间倒序（BaseModel 通常含 created_at）
+        try:
+            from app.models.base import BaseModel as _BaseModel  # 仅用于类型上的 created_at 引用
+            created_col = getattr(DocumentImage, 'created_at', None)
+        except Exception:
+            created_col = None
+        if created_col is not None:
+            query = query.order_by(created_col.desc())
+        else:
+            query = query.order_by(DocumentImage.id.desc())
+        return query.offset(skip).limit(limit).all()
+
+    async def get_image(self, image_id: int) -> Optional[DocumentImage]:
+        """获取单张图片详情（异步包装）。"""
+        return self.db.query(DocumentImage).filter(DocumentImage.id == image_id, DocumentImage.is_deleted == False).first()
+
+    async def upload_image(self, file, document_id: int) -> DocumentImage:
+        """上传图片文件并入库（支持 FastAPI UploadFile）。"""
+        # 读取文件二进制
+        if hasattr(file, 'read'):
+            # UploadFile: 需要 await
+            try:
+                data = await file.read()  # type: ignore
+            except TypeError:
+                # 同步 file-like
+                data = file.read()
+        else:
+            raise ValueError("无效的文件对象")
+
+        # 推断扩展名
+        filename = getattr(file, 'filename', None) or 'upload.png'
+        _, ext = os.path.splitext(filename)
+        ext = ext.lower() if ext else '.png'
+        if ext not in ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp']:
+            ext = '.png'
+
+        return self.create_image_from_bytes(document_id=document_id, data=data, image_ext=ext)

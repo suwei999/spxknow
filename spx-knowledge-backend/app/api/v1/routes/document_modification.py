@@ -42,6 +42,9 @@ class ChunkEditPayload(BaseModel):
     version_comment: str | None = Field(None, description="版本备注")
 
 
+# ⚠️ 已废弃：PATCH 接口已统一到 PUT 接口
+# 为了向后兼容，保留此接口但标记为废弃
+# 前端应使用 PUT /documents/{document_id}/chunks/{chunk_id} 接口
 @router.patch("/documents/{doc_id}/chunks/{chunk_id}")
 def edit_chunk(
     payload: ChunkEditPayload,
@@ -49,77 +52,86 @@ def edit_chunk(
     chunk_id: int = Path(...),
     db: Session = Depends(get_db),
 ):
-    # ✅ 修复：统一错误响应格式，使用 HTTPException
-    chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id, DocumentChunk.document_id == doc_id).first()
+    """
+    ⚠️ 已废弃：此接口已统一到 PUT /documents/{document_id}/chunks/{chunk_id}
+    
+    为了向后兼容保留，但建议前端迁移到 PUT 接口。
+    PUT 接口支持更完整的功能（metadata、版本管理、WebSocket 通知等）。
+    """
+    logger.warning(f"⚠️ 使用已废弃的 PATCH 接口，建议使用 PUT 接口: doc_id={doc_id}, chunk_id={chunk_id}")
+    
+    # 直接调用 PUT 接口的核心逻辑（同步版本，不包含 WebSocket 等异步功能）
+    # 验证文档和块是否存在
+    document = db.query(Document).filter(Document.id == doc_id).first()
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": 404, "message": "文档不存在", "data": None}
+        )
+    
+    chunk = db.query(DocumentChunk).filter(
+        DocumentChunk.id == chunk_id,
+        DocumentChunk.document_id == doc_id
+    ).first()
+    
     if not chunk:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": 404, "message": "chunk not found", "data": None}
+            detail={"code": 404, "message": "块不存在", "data": None}
         )
     
-    # ✅ 修复：添加输入验证
+    # 验证内容
     if not payload.content or not payload.content.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": 400, "message": "内容不能为空", "data": None}
         )
-
-    # 创建 chunk 版本记录（递增版本号，记录操作者与创建时间）
-    # ✅ 修复：简化 getattr，直接访问属性
-    new_version_number = (chunk.version or 0) + 1
-    cv = ChunkVersion(
-        chunk_id=chunk.id,
-        version_number=new_version_number,
-        content=payload.content,
-        version_comment=payload.version_comment or "",
-        modified_by="user",
-        created_at=datetime.utcnow(),
-    )
-    db.add(cv)
-    db.commit()
-    db.refresh(cv)
-
-    # 将块内容切换为新版本（更新指针与版本号，按需更新正文）
-    # ✅ 修复：简化 hasattr，直接访问属性（模型中有这些字段）
+    
+    # 保存当前版本
+    from app.services.chunk_version_service import ChunkVersionService
+    version_service = ChunkVersionService(db)
+    current_version_data = {
+        "chunk_id": chunk_id,
+        "content": chunk.content or "",
+        "metadata": chunk.meta,
+        "modified_by": "user",
+        "version_comment": "修改前的版本保存"
+    }
+    version_service.create_chunk_version(chunk_id, current_version_data)
+    
+    # 更新块内容
     chunk.content = payload.content
-    chunk.version = new_version_number
-    chunk.chunk_version_id = cv.id
+    chunk.version += 1
     chunk.last_modified_at = datetime.utcnow()
-    chunk.modification_count = (chunk.modification_count or 0) + 1
+    chunk.modification_count += 1
     chunk.last_modified_by = "user"
+    
     db.commit()
-
-    # 重新生成向量并更新 OS
-    vs = VectorService(db)
+    
+    # 重新向量化并更新 OpenSearch
+    from app.services.vector_service import VectorService
+    from app.services.opensearch_service import OpenSearchService
+    vector_service = VectorService(db)
     osvc = OpenSearchService()
-    vector = vs.generate_embedding(payload.content)
+    vector = vector_service.generate_embedding(payload.content)
     
-    # ✅ 修复：使用辅助函数解析 metadata，并指定具体异常类型
     chunk_meta_dict = parse_chunk_metadata(chunk.meta)
-    
-    # 构建完整的 metadata（保留原有信息并标记为已编辑）
     os_metadata = chunk_meta_dict.copy() if chunk_meta_dict else {}
     os_metadata["edited"] = True
     
-    # ✅ 修复：从 document 对象获取 knowledge_base_id 和 category_id
-    # chunk 模型中没有这些字段，它们在 document 模型中
-    # ✅ 修复：复用 document 对象，避免重复查询
-    document = db.query(Document).filter(Document.id == doc_id).first()
-    
-    os_doc = {
+    osvc.index_document_chunk_sync({
         "document_id": doc_id,
         "chunk_id": chunk.id,
         "knowledge_base_id": document.knowledge_base_id if document else None,
         "category_id": document.category_id if document else None,
         "content": payload.content,
-        "chunk_type": chunk.chunk_type or "text",  # ✅ 修复：简化 getattr
-        "metadata": os_metadata,  # ✅ 使用完整的 metadata
+        "chunk_type": chunk.chunk_type or "text",
+        "metadata": os_metadata,
         "content_vector": vector,
-        "created_at": chunk.created_at.isoformat() if chunk.created_at else None,  # ✅ 修复：简化 getattr
-    }
-    osvc.index_document_chunk_sync(os_doc)
+        "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
+    })
     
-    # ✅ 新增：更新 MinIO 中的 chunk 内容
+    # 更新 MinIO
     try:
         from app.services.minio_storage_service import MinioStorageService
         minio_service = MinioStorageService()
@@ -129,41 +141,11 @@ def edit_chunk(
             new_content=payload.content,
             chunk_meta=chunk_meta_dict
         )
-        logger.info(f"MinIO chunk 更新成功: doc_id={doc_id}, chunk_index={chunk.chunk_index}")
-    except (Exception, ValueError, AttributeError) as minio_err:  # ✅ 修复：指定具体异常类型
-        logger.warning(f"MinIO chunk 更新失败（不影响修改流程）: {minio_err}", exc_info=True)
+    except Exception as minio_err:
+        logger.warning(f"MinIO 更新失败（不影响修改流程）: {minio_err}", exc_info=True)
     
-    # ✅ 修复：添加文档版本更新
-    # ✅ 修复：复用已查询的 document 对象，避免重复查询
-    try:
-        from sqlalchemy import func
-        from app.models.version import DocumentVersion
-        
-        # document 已经在上面查询过了，直接使用
-        if document:
-            # 计算下一个版本号
-            max_ver = db.query(func.max(DocumentVersion.version_number)).filter(
-                DocumentVersion.document_id == doc_id,
-                DocumentVersion.is_deleted == False
-            ).scalar() or 0
-            next_ver = int(max_ver) + 1
-            ver = DocumentVersion(
-                document_id=doc_id,
-                version_number=next_ver,
-                version_type="edit",
-                description=f"编辑分块 {chunk_id}",
-                file_path=document.file_path or "",
-                file_size=document.file_size,
-                file_hash=document.file_hash,
-            )
-            db.add(ver)
-            db.commit()
-            logger.info(f"文档版本更新成功: doc_id={doc_id}, version={next_ver}")
-    except (Exception, ValueError, TypeError) as ver_err:  # ✅ 修复：指定具体异常类型
-        logger.warning(f"记录文档版本失败（不影响修改流程）: {ver_err}", exc_info=True)
-
-    logger.info(f"编辑并重索引完成: doc={doc_id} chunk={chunk_id} version={cv.id}")
-    return {"code": 0, "message": "ok", "data": {"chunk_id": chunk_id, "version_id": cv.id}}
+    logger.info(f"PATCH 接口编辑完成: doc={doc_id} chunk={chunk_id}")
+    return {"code": 0, "message": "ok", "data": {"chunk_id": chunk_id, "version": chunk.version}}
 
 """
 Document Modification API Routes
@@ -327,13 +309,69 @@ def get_chunk_content(
             except (json.JSONDecodeError, TypeError):
                 meta_dict = {}
         
+        # 若数据库未存正文（降本策略），尝试从 MinIO 回灌该分块正文
+        try:
+            if not (chunk.content or "").strip():
+                from app.services.minio_storage_service import MinioStorageService
+                import json, gzip
+                from io import BytesIO
+                minio = MinioStorageService()
+                # 在 MinIO 中定位 chunks.jsonl.gz
+                files = minio.list_files("documents/")
+                needle = f"/{document_id}/parsed/chunks/chunks.jsonl.gz"
+                target = None
+                for f in files:
+                    if f.get("object_name", "").endswith(needle):
+                        target = f["object_name"]
+                        break
+                if target:
+                    raw = minio.download_file(target)
+                    with gzip.GzipFile(fileobj=BytesIO(raw), mode='rb') as gz:
+                        for line in gz:
+                            try:
+                                item = json.loads(line)
+                            except Exception:
+                                continue
+                            idx = item.get('index', item.get('chunk_index'))
+                            if idx == chunk.chunk_index:
+                                chunk_fallback_text = item.get('content') or ""
+                                # 仅用于返回，不写库
+                                chunk.content = chunk_fallback_text
+                                break
+        except Exception:
+            # 回灌失败不影响接口
+            pass
+
+        # 版本号与修改时间兜底（读取版本表最大值与其创建时间）
+        try:
+            from app.models.chunk_version import ChunkVersion
+            from sqlalchemy import func
+            max_ver = db.query(func.max(ChunkVersion.version_number)).filter(
+                ChunkVersion.chunk_id == chunk.id
+            ).scalar() or 0
+            safe_version = max(chunk.version or 0, int(max_ver)) or 1
+            latest_ver = None
+            if max_ver:
+                latest_ver = db.query(ChunkVersion).filter(
+                    ChunkVersion.chunk_id == chunk.id,
+                    ChunkVersion.version_number == int(max_ver)
+                ).first()
+        except Exception:
+            safe_version = getattr(chunk, 'version', 1) or 1
+            latest_ver = None
+
+        # 修改时间兜底
+        _modified_dt = getattr(chunk, 'last_modified_at', None) or (getattr(latest_ver, 'created_at', None) if latest_ver else None) or getattr(chunk, 'created_at', None)
+        last_modified_iso = _modified_dt.isoformat() if _modified_dt else None
+
         # 构建响应数据 - 严格按照设计文档格式
         data = {
             "chunk_id": str(chunk.id),
             "document_id": str(document_id),
             "content": chunk.content,
             "chunk_type": chunk.chunk_type,
-            "version": getattr(chunk, 'version', 1),
+            "version": safe_version,
+            "last_modified_at": last_modified_iso,
             "edit_history": [],
             "meta": meta_dict,  # ✅ 新增：返回 meta 字段，包含表格数据 table_data
         }
@@ -343,7 +381,8 @@ def get_chunk_content(
                 "char_count": len(chunk.content),
                 "token_count": len(chunk.content.split()),  # 简单的词数统计
                 "language": "zh",  # TODO: 实现语言检测
-                "created_at": chunk.created_at.isoformat() if chunk.created_at else "2024-01-01T10:00:00Z"
+                "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
+                "last_modified_at": last_modified_iso,
             }
         else:
             data["metadata"] = None
@@ -389,6 +428,8 @@ def get_document_chunks(
         # 解析每个块的 meta 字段（包含表格数据 table_data）
         import json
         chunks_data = []
+        from app.models.chunk_version import ChunkVersion  # 局部导入避免循环
+        from sqlalchemy import func
         for chunk in chunks:
             meta_dict = None
             if chunk.meta:
@@ -396,13 +437,31 @@ def get_document_chunks(
                     meta_dict = json.loads(chunk.meta) if isinstance(chunk.meta, str) else chunk.meta
                 except (json.JSONDecodeError, TypeError):
                     meta_dict = {}
+            # 修改时间兜底：为空时用创建时间
+            _created = getattr(chunk, 'created_at', None)
+            _modified = getattr(chunk, 'last_modified_at', None)
+            last_modified_iso = None
+            if _modified:
+                last_modified_iso = _modified.isoformat()
+            elif _created:
+                last_modified_iso = _created.isoformat()
+            # 版本号兜底：以版本表最大值为准（兼容旧数据）
+            max_ver = db.query(func.max(ChunkVersion.version_number)).filter(
+                ChunkVersion.chunk_id == chunk.id
+            ).scalar() or 0
+            safe_version = max(chunk.version or 0, int(max_ver)) or 1
             
             chunks_data.append({
-                "chunk_id": str(chunk.id),
+                # 同时返回 id 与 chunk_id，兼容前端不同字段读取
+                "id": chunk.id,
+                "chunk_id": chunk.id,
                 "chunk_index": chunk.chunk_index,
                 "content_preview": chunk.content[:settings.CONTENT_PREVIEW_LENGTH] + "..." if len(chunk.content) > settings.CONTENT_PREVIEW_LENGTH else chunk.content,
                 "chunk_type": chunk.chunk_type,
                 "char_count": len(chunk.content),
+                "version": safe_version,
+                "created_at": chunk.created_at.isoformat() if getattr(chunk, 'created_at', None) else None,
+                "last_modified_at": last_modified_iso,
                 "meta": meta_dict,  # ✅ 新增：返回 meta 字段，包含表格数据 table_data
             })
         
@@ -604,6 +663,8 @@ async def update_chunk_content(
     """更新块内容 - 根据文档修改功能设计实现"""
     try:
         logger.info(f"API请求: 更新块内容 document_id={document_id}, chunk_id={chunk_id}")
+        # 避免函数体内局部 import 造成变量遮蔽
+        import json as _json
         
         # 验证文档是否存在
         document = db.query(Document).filter(Document.id == document_id).first()
@@ -655,38 +716,43 @@ async def update_chunk_content(
         )
         
         try:
-            # 保存当前版本 - 根据设计文档实现版本管理
+            # 保存当前版本（修改前的版本）- 根据设计文档实现版本管理
             version_service = ChunkVersionService(db)
-            # ✅ 修复：使用 chunk.meta 而不是 chunk.metadata（模型属性是 meta）
-            current_version_data = {
-                "chunk_id": chunk_id,
-                "content": chunk.content or "",
-                "metadata": chunk.meta,  # ✅ 使用 meta 属性
-                "modified_by": "user",
-                "version_comment": "修改前的版本保存"
-            }
-            cv_response = version_service.create_chunk_version(chunk_id, current_version_data)
-            # ✅ 修复：更新 chunk.chunk_version_id 指向新创建的版本
-            # ChunkVersionResponse 继承自 BaseResponseSchema，包含 id 字段
-            if cv_response and cv_response.id:
-                chunk.chunk_version_id = cv_response.id
-            else:
-                # 兜底：如果响应中没有 id，查询最新创建的版本
-                from app.models.chunk_version import ChunkVersion
-                latest_version = db.query(ChunkVersion).filter(
-                    ChunkVersion.chunk_id == chunk_id
-                ).order_by(ChunkVersion.version_number.desc()).first()
-                if latest_version:
-                    chunk.chunk_version_id = latest_version.id
-                    logger.debug(f"通过查询获取 chunk_version_id: {latest_version.id}")
-            
-            # 更新块内容
-            chunk.content = new_content
+            current_version_number = chunk.version or 1
+            current_content = chunk.content or ""
+            # ✅ 若库中未存正文，尝试从 MinIO 回灌，保证 v1 不为空
+            if not (current_content or "").strip():
+                try:
+                    from app.services.minio_storage_service import MinioStorageService
+                    import json, gzip
+                    from io import BytesIO
+                    minio = MinioStorageService()
+                    files = minio.list_files("documents/")
+                    needle = f"/{document_id}/parsed/chunks/chunks.jsonl.gz"
+                    target = None
+                    for f in files:
+                        if f.get("object_name", "").endswith(needle):
+                            target = f["object_name"]
+                            break
+                    if target:
+                        raw = minio.download_file(target)
+                        with gzip.GzipFile(fileobj=BytesIO(raw), mode='rb') as gz:
+                            for line in gz:
+                                try:
+                                    item = json.loads(line)
+                                except Exception:
+                                    continue
+                                idx = item.get('index', item.get('chunk_index'))
+                                if idx == chunk.chunk_index:
+                                    current_content = item.get('content') or ""
+                                    break
+                except Exception:
+                    pass
+            current_meta = chunk.meta or '{}'
             
             # ✅ 修复：合并传入的 metadata 和原有的 metadata，而不是替换
             # 确保 MySQL 中的 metadata 包含完整的字段（element_index_start/end, page_number, coordinates等）
-            # ✅ 修复：使用辅助函数和指定具体异常类型
-            existing_meta_dict = parse_chunk_metadata(chunk.meta)
+            existing_meta_dict = parse_chunk_metadata(current_meta)
             
             # 合并 metadata：先保留原有完整字段，再更新传入的字段
             merged_metadata = existing_meta_dict.copy() if isinstance(existing_meta_dict, dict) else {}
@@ -695,57 +761,112 @@ async def update_chunk_content(
                 merged_metadata.update(metadata)
             elif metadata:
                 # 如果传入的 metadata 是字符串，尝试解析
-                # ✅ 修复：使用辅助函数和指定具体异常类型
                 try:
                     metadata_dict = parse_chunk_metadata(metadata)
                     if isinstance(metadata_dict, dict):
                         merged_metadata.update(metadata_dict)
-                except (json.JSONDecodeError, TypeError, ValueError):
+                except (_json.JSONDecodeError, TypeError, ValueError):
                     pass
             
             # 保存合并后的 metadata
-            if merged_metadata:
-                chunk.meta = json.dumps(merged_metadata, ensure_ascii=False)
+            merged_meta_str = _json.dumps(merged_metadata, ensure_ascii=False) if merged_metadata else '{}'
             
-            # 更新版本管理字段
-            chunk.version += 1
+            # ============================================
+            # 阶段1：保存到 MySQL（所有操作在一个事务中）
+            # ============================================
+            logger.info(f"开始保存修改内容到 MySQL: document_id={document_id}, chunk_id={chunk_id}")
+            
+            # 1.1 保存修改前的版本到 ChunkVersion 表（用于历史回退）。
+            # 若此前从未入库版本（如 v1 缺失），本次调用会写入 v1。
+            # 注意：create_chunk_version 会自动计算下一个版本号（current_max + 1）
+            current_version_data = {
+                "chunk_id": chunk_id,
+                "content": current_content,
+                "metadata": current_meta,  # ✅ 保存修改前的 meta
+                "modified_by": "user",
+                "version_comment": "修改前的版本保存"
+            }
+            saved_version_response = version_service.create_chunk_version(chunk_id, current_version_data)
+            # saved_version_response.version_number 是保存后的版本号（例如：如果当前是 N，则保存为 N+1）
+            logger.debug(f"已保存修改前的版本: version_number={saved_version_response.version_number if saved_version_response else 'N/A'}")
+            
+            # 1.2 更新块内容为新内容
+            chunk.content = new_content
+            chunk.meta = merged_meta_str
+            
+            # 1.3 创建新版本记录（存储修改后的内容）
+            # ✅ 修复：新版本号应该是 saved_version_response.version_number + 1
+            # 因为 create_chunk_version 已经创建了版本 N+1（保存当前版本），新版本应该是 N+2
+            from app.models.chunk_version import ChunkVersion
+            from sqlalchemy import func
+            # 获取最大版本号（应该是刚刚创建的版本号）
+            max_version = db.query(func.max(ChunkVersion.version_number)).filter(
+                ChunkVersion.chunk_id == chunk_id
+            ).scalar() or current_version_number
+            
+            new_version_number = max_version + 1
+            
+            new_version_record = ChunkVersion(
+                chunk_id=chunk_id,
+                version_number=new_version_number,
+                content=new_content,
+                meta=merged_meta_str,  # ✅ 使用合并后的 meta
+                modified_by="user",
+                version_comment=content_data.get("version_comment") or "块级修改",
+                created_at=datetime.now()
+            )
+            db.add(new_version_record)
+            
+            # 1.4 更新版本管理字段
+            chunk.version = new_version_number
+            chunk.chunk_version_id = new_version_record.id  # ✅ 直接设置，避免二次 commit
             chunk.last_modified_at = datetime.now()
             chunk.modification_count += 1
             chunk.last_modified_by = "user"
             
-            db.commit()
+            # 1.5 创建文档版本记录（DocumentVersion）
+            from app.models.version import DocumentVersion
+            max_ver = db.query(func.max(DocumentVersion.version_number)).filter(
+                DocumentVersion.document_id == document_id,
+                DocumentVersion.is_deleted == False
+            ).scalar() or 0
+            next_ver = int(max_ver) + 1
+            doc_version = DocumentVersion(
+                document_id=document_id,
+                version_number=next_ver,
+                version_type="edit",
+                description=f"编辑分块 {chunk_id}",
+                file_path=document.file_path or "",
+                file_size=document.file_size,
+                file_hash=document.file_hash,
+            )
+            db.add(doc_version)
+            
+            # 1.6 一次性提交所有 MySQL 操作
+            try:
+                db.commit()
+                db.refresh(new_version_record)  # 刷新以获取新版本记录的 ID
+                logger.info(f"✅ MySQL 保存成功: chunk_version_id={new_version_record.id}, version={new_version_number}")
+            except Exception as mysql_err:
+                db.rollback()
+                logger.error(f"❌ MySQL 保存失败: {mysql_err}", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"保存修改内容失败: {str(mysql_err)}"
+                )
             
             # 更新操作进度
-            status_service.update_operation_progress(operation_id, 50.0, "内容已保存，开始重新向量化")
-
-            # 文档版本递增：以文档为单位记录一次修改版本
-            try:
-                from sqlalchemy import func
-                from app.models.version import DocumentVersion
-                # 计算下一个版本号
-                max_ver = db.query(func.max(DocumentVersion.version_number)).filter(
-                    DocumentVersion.document_id == document_id,
-                    DocumentVersion.is_deleted == False
-                ).scalar() or 0
-                next_ver = int(max_ver) + 1
-                ver = DocumentVersion(
-                    document_id=document_id,
-                    version_number=next_ver,
-                    version_type="edit",
-                    description=f"编辑分块 {chunk_id}",
-                    file_path=document.file_path or "",
-                    file_size=document.file_size,
-                    file_hash=document.file_hash,
-                )
-                db.add(ver)
-                db.commit()
-            except (Exception, ValueError, TypeError) as ver_err:  # ✅ 修复：指定具体异常类型
-                logger.warning(f"记录文档版本失败（不影响修改流程）: {ver_err}", exc_info=True)
+            status_service.update_operation_progress(operation_id, 50.0, "内容已保存到 MySQL，开始重新向量化")
             
             # WebSocket进度通知
             await websocket_notification_service.send_progress_notification(
-                operation_id, 50.0, "内容已保存，开始重新向量化", "user"
+                operation_id, 50.0, "内容已保存到 MySQL，开始重新向量化", "user"
             )
+            
+            # ============================================
+            # 阶段2：向量化（在 MySQL 保存成功后）
+            # ============================================
+            logger.info(f"开始向量化: document_id={document_id}, chunk_id={chunk_id}")
             
             # 增量向量化：仅对当前修改的块进行向量化并更新 OpenSearch
             try:
@@ -766,6 +887,11 @@ async def update_chunk_content(
                     chunk_meta_dict = {}
                 chunk_meta_dict["edited"] = True
                 
+                # ============================================
+                # 阶段3：更新 OpenSearch（在向量化成功后）
+                # ============================================
+                logger.info(f"开始更新 OpenSearch: document_id={document_id}, chunk_id={chunk_id}")
+                
                 osvc.index_document_chunk_sync({
                     "document_id": document_id,
                     "knowledge_base_id": document.knowledge_base_id,
@@ -778,10 +904,21 @@ async def update_chunk_content(
                     "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
                     "content_vector": content_vector,
                 })
+                logger.info(f"✅ OpenSearch 更新成功: document_id={document_id}, chunk_id={chunk_id}")
+                
+                # 更新操作进度
+                status_service.update_operation_progress(operation_id, 75.0, "已更新 OpenSearch 索引")
+                await websocket_notification_service.send_progress_notification(
+                    operation_id, 75.0, "已更新 OpenSearch 索引", "user"
+                )
+                
             except (Exception, ValueError, AttributeError) as idx_err:  # ✅ 修复：指定具体异常类型
-                logger.warning(f"增量索引更新失败（不影响返回）: {idx_err}", exc_info=True)
+                logger.warning(f"⚠️ OpenSearch 更新失败（不影响返回）: {idx_err}", exc_info=True)
             
-            # ✅ 新增：更新 MinIO 中的 chunk 内容
+            # ============================================
+            # 阶段4：更新 MinIO（在 OpenSearch 更新后）
+            # ============================================
+            logger.info(f"开始更新 MinIO: document_id={document_id}, chunk_id={chunk_id}, chunk_index={chunk.chunk_index}")
             try:
                 from app.services.minio_storage_service import MinioStorageService
                 minio_service = MinioStorageService()
@@ -791,17 +928,87 @@ async def update_chunk_content(
                     new_content=new_content,
                     chunk_meta=chunk_meta_dict
                 )
-                logger.info(f"MinIO chunk 更新成功: doc_id={document_id}, chunk_index={chunk.chunk_index}")
+                logger.info(f"✅ MinIO chunk 更新成功: doc_id={document_id}, chunk_index={chunk.chunk_index}")
+                
+                # 更新操作进度
+                status_service.update_operation_progress(operation_id, 90.0, "已更新 MinIO 存储")
+                await websocket_notification_service.send_progress_notification(
+                    operation_id, 90.0, "已更新 MinIO 存储", "user"
+                )
             except (Exception, ValueError, AttributeError) as minio_err:  # ✅ 修复：指定具体异常类型
-                logger.warning(f"MinIO chunk 更新失败（不影响修改流程）: {minio_err}", exc_info=True)
+                logger.warning(f"⚠️ MinIO chunk 更新失败（不影响修改流程）: {minio_err}", exc_info=True)
             
-            # 更新操作进度
-            status_service.update_operation_progress(operation_id, 85.0, "已更新索引和MinIO")
-            
-            # WebSocket进度通知
-            await websocket_notification_service.send_progress_notification(
-                operation_id, 85.0, "已更新索引和MinIO", "user"
-            )
+            # ============================================
+            # 阶段5：如为表格块，更新 document_tables（表格懒加载源数据）
+            # ============================================
+            try:
+                if (chunk.chunk_type or '').lower() == 'table':
+                    import json as _json
+                    from sqlalchemy import text as _sql_text
+                    table_meta = chunk_meta_dict if isinstance(chunk_meta_dict, dict) else {}
+                    table_data = table_meta.get('table_data') if isinstance(table_meta, dict) else None
+                    cells = table_data.get('cells') if isinstance(table_data, dict) else None
+                    if isinstance(cells, list) and cells:
+                        n_rows = len(cells)
+                        n_cols = max((len(r) if isinstance(r, list) else 0) for r in cells) if n_rows > 0 else 0
+                        cells_json = _json.dumps(cells, ensure_ascii=False)
+                        headers_json = None
+                        if isinstance(table_data.get('headers'), (list, dict)):
+                            headers_json = _json.dumps(table_data.get('headers'), ensure_ascii=False)
+                        table_uid = table_meta.get('table_id') or table_meta.get('table_uid')
+                        table_group_uid = table_meta.get('table_group_uid')
+
+                        if table_group_uid:
+                            # 将整表 cells 拆分写回各个分片，按 row_range 切片（如缺失则按平均/顺序切片）
+                            part_rows = db.execute(
+                                _sql_text("SELECT table_uid, part_index, row_range, n_rows FROM document_tables WHERE table_group_uid=:g ORDER BY part_index"),
+                                {"g": table_group_uid}
+                            ).fetchall()
+                            if part_rows:
+                                def parse_range(s):
+                                    try:
+                                        if s and isinstance(s, str) and '-' in s:
+                                            a,b = s.split('-',1)
+                                            return int(a), int(b)
+                                    except Exception:
+                                        pass
+                                    return None
+                                total = len(cells)
+                                for (uid, pidx, rr, pnrows) in part_rows:
+                                    rng = parse_range(rr)
+                                    if rng:
+                                        start, end = rng
+                                        start = max(0, start)
+                                        end = min(total-1, end)
+                                        slice_rows = cells[start:end+1] if end>=start else []
+                                    else:
+                                        # 兜底：按累计长度切块
+                                        # 使用 pnrows（解析时记录的该分片行数）
+                                        count = int(pnrows or 0)
+                                        # 计算已分配
+                                        assigned = db.execute(_sql_text("SELECT SUM(n_rows) FROM document_tables WHERE table_group_uid=:g AND part_index<:i"), {"g": table_group_uid, "i": pidx}).scalar() or 0
+                                        slice_rows = cells[assigned:assigned+count]
+
+                                    c_json = _json.dumps(slice_rows, ensure_ascii=False)
+                                    params = {"c": c_json, "r": len(slice_rows), "n": n_cols, "u": uid}
+                                    if headers_json is not None and pidx == 0:
+                                        db.execute(_sql_text("UPDATE document_tables SET cells_json=:c, n_rows=:r, n_cols=:n, headers_json=:h WHERE table_uid=:u"), {**params, "h": headers_json})
+                                    else:
+                                        db.execute(_sql_text("UPDATE document_tables SET cells_json=:c, n_rows=:r, n_cols=:n WHERE table_uid=:u"), params)
+                                db.commit()
+                                logger.info(f"✅ 表格组更新成功(按分片写回): group={table_group_uid}, rows={n_rows}, cols={n_cols}")
+                        elif table_uid:
+                            params = {"c": cells_json, "r": n_rows, "n": n_cols, "u": table_uid}
+                            if headers_json is not None:
+                                db.execute(_sql_text("UPDATE document_tables SET cells_json=:c, n_rows=:r, n_cols=:n, headers_json=:h WHERE table_uid=:u"), {**params, "h": headers_json})
+                            else:
+                                db.execute(_sql_text("UPDATE document_tables SET cells_json=:c, n_rows=:r, n_cols=:n WHERE table_uid=:u"), params)
+                            db.commit()
+                            logger.info(f"✅ 表格更新成功: table_uid={table_uid}, rows={n_rows}, cols={n_cols}")
+                        else:
+                            logger.warning("⚠️ 表格块缺少 table_id/table_group_uid，跳过 document_tables 更新")
+            except Exception as tbl_err:
+                logger.warning(f"⚠️ 更新 document_tables 失败（不影响修改流程）: {tbl_err}", exc_info=True)
             
             # ✅ 修复：移除未定义的 task.id
             # 按照设计文档要求的响应格式
@@ -963,6 +1170,11 @@ def restore_chunk_version(
         
         if not chunk:
             raise create_chunk_not_found_error(chunk_id)
+        
+        # ✅ 验证 URL 参数和请求体中的版本号是否一致（URL 参数优先）
+        if revert_request.target_version != version_number:
+            logger.warning(f"版本号不一致: URL={version_number}, body={revert_request.target_version}，使用 URL 参数")
+            revert_request.target_version = version_number
         
         # 执行版本回退
         version_service = ChunkVersionService(db)

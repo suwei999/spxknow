@@ -6,11 +6,15 @@ from celery import current_task
 from app.tasks.celery_app import celery_app
 from app.services.image_service import ImageService
 from app.services.vector_service import VectorService
-from app.services.unstructured_service import UnstructuredService
 from app.models.image import DocumentImage
 from app.models.document import Document
 from sqlalchemy.orm import Session
 from app.config.database import SessionLocal
+from typing import List, Dict
+from app.core.logging import logger
+from app.services.docx_service import DocxService
+import os
+
 
 @celery_app.task(bind=True)
 def process_image_task(self, image_id: int):
@@ -100,40 +104,43 @@ def batch_process_images_task(image_ids: list):
     
     return {"status": "success", "message": f"已启动 {len(image_ids)} 个图片处理任务"}
 
-@celery_app.task
-def extract_images_from_document_task(document_id: int):
-    """从文档中提取图片任务"""
+
+def extract_images_from_document_task(document_id: int) -> List[Dict]:
+    """
+    仅 DOCX：使用 DocxService 提取图片。
+    注意：若传入的文件不是 DOCX，将抛出异常。
+    """
     db = SessionLocal()
     try:
-        # 获取文档
-        document = db.query(Document).filter(Document.id == document_id).first()
-        if not document:
-            return {"status": "error", "message": "文档不存在"}
-        
-        # 使用Unstructured提取图片（同步调用）
-        unstructured_service = UnstructuredService(db)
-        images = unstructured_service.extract_images(document.file_path)
-        
-        # 创建图片记录
-        for i, image_data in enumerate(images):
-            image = DocumentImage(
-                document_id=document_id,
-                image_path=image_data.get("path", ""),
-                image_type=image_data.get("type", "unknown"),
-                metadata=image_data.get("metadata", {})
-            )
-            db.add(image)
-        
-        db.commit()
-        
-        # 启动图片处理任务
-        new_images = db.query(DocumentImage).filter(DocumentImage.document_id == document_id).all()
-        image_ids = [img.id for img in new_images]
-        
-        return batch_process_images_task.delay(image_ids)
-        
+        from app.models.document import Document
+        from app.services.minio_storage_service import MinioStorageService
+
+        doc = db.query(Document).filter(Document.id == document_id).first()
+        if not doc:
+            raise Exception(f"文档 {document_id} 不存在")
+        is_docx = (str(doc.file_type or '').lower() == 'docx' or doc.original_filename.lower().endswith('.docx'))
+        if not is_docx:
+            raise Exception("extract_images_from_document_task 仅支持 DOCX")
+
+        # 下载到临时文件
+        minio = MinioStorageService()
+        content = minio.download_file(doc.file_path)
+        import tempfile
+        tmpdir = tempfile.mkdtemp()
+        path = os.path.join(tmpdir, f"{document_id}.docx")
+        with open(path, 'wb') as f:
+            f.write(content)
+
+        parser = DocxService(db)
+        parse_result = parser.parse_document(path)
+        images = parse_result.get('images', []) or []
+        logger.info(f"DOCX 图片提取完成: {len(images)} 张")
+        return images
     except Exception as e:
-        db.rollback()
-        return {"status": "error", "message": str(e)}
+        logger.error(f"图片提取失败: {e}")
+        return []
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass

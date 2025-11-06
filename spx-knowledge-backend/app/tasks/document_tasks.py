@@ -1,5 +1,5 @@
 """
-Document Processing Tasks
+Document Processing Tasks (DOCX only, no Unstructured)
 """
 
 import os
@@ -8,7 +8,7 @@ import time
 import hashlib
 from celery import current_task
 from app.tasks.celery_app import celery_app
-from app.services.unstructured_service import UnstructuredService
+from app.services.docx_service import DocxService
 from app.services.vector_service import VectorService
 from app.services.cache_service import CacheService
 from app.services.opensearch_service import OpenSearchService
@@ -28,7 +28,7 @@ import app.models  # noqa: F401
 
 @celery_app.task(bind=True)
 def process_document_task(self, document_id: int):
-    """处理文档任务 - 根据文档处理流程设计实现"""
+    """处理文档任务（仅 DOCX，完全不使用 Unstructured）"""
     db = SessionLocal()
     document = None
     task_id = self.request.id if self else "unknown"
@@ -53,6 +53,11 @@ def process_document_task(self, document_id: int):
                    f"文件类型={document.file_type}, 文件路径={document.file_path}, "
                    f"知识库ID={document.knowledge_base_id}, 文件大小={document.file_size or '未知'} bytes")
         
+        # 仅支持 DOCX
+        is_docx = (str(document.file_type or '').lower() == 'docx' or document.original_filename.lower().endswith('.docx'))
+        if not is_docx:
+            raise Exception("当前处理流程仅支持 DOCX，请上传 Word 文档")
+        
         # 更新文档状态为解析中
         logger.debug(f"[任务ID: {task_id}] 步骤2/7: 更新文档状态为解析中")
         document.status = DOC_STATUS_PARSING
@@ -64,7 +69,7 @@ def process_document_task(self, document_id: int):
             meta={"current": 10, "total": 100, "status": "下载文件到临时目录"}
         )
         
-        # 1. 下载文件到临时目录 - 根据设计文档实现
+        # 1. 下载文件到临时目录
         logger.info(f"[任务ID: {task_id}] 步骤3/7: 开始从MinIO下载文件 (file_path={document.file_path})")
         download_start = time.time()
         
@@ -96,117 +101,30 @@ def process_document_task(self, document_id: int):
             meta={"current": 15, "total": 100, "status": "开始解析文档"}
         )
         
-        # 2. 解析文档 - 根据设计文档实现
-        logger.info(f"[任务ID: {task_id}] 步骤4/7: 开始使用Unstructured解析文档")
+        # 2. 解析文档（DOCX 本地解析）
         parse_start = time.time()
+        logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 DocxService 解析文档 (DOCX 本地解析)")
+        parser = DocxService(db)
+        parse_result = parser.parse_document(temp_file_path)
+        parse_time = time.time() - parse_start
+        text_content = parse_result.get('text_content', '')
+        elements_count = int(parse_result.get('metadata', {}).get('element_count', 0) or 0)
+        logger.info(f"[任务ID: {task_id}] 解析完成: 耗时={parse_time:.2f}秒, 提取元素数={elements_count}, 文本长度={len(text_content)} 字符")
         
-        unstructured_service = UnstructuredService(db)
-        
-        # 根据文件类型选择解析策略
-        strategy = unstructured_service._select_parsing_strategy(document.file_type)
-        logger.info(f"[任务ID: {task_id}] 解析配置: 文件类型={document.file_type}, 解析策略={strategy}, "
-                   f"临时文件={temp_file_path}")
-        
-        try:
-            parse_result = unstructured_service.parse_document(temp_file_path, strategy=strategy)
-            parse_time = time.time() - parse_start
-            text_content = parse_result.get('text_content', '')
-            # 优先从解析阶段给出的统计读取，避免因未返回 elements 列表而显示为 0
-            try:
-                elements_count = int(parse_result.get('metadata', {}).get('element_count'))
-            except Exception:
-                elements_count = 0
-            text_length = len(text_content)
-            
-            logger.info(f"[任务ID: {task_id}] Unstructured解析完成: 耗时={parse_time:.2f}秒, "
-                       f"提取元素数={elements_count}, 文本长度={text_length} 字符")
-            
-            if text_length == 0:
-                logger.warning(f"[任务ID: {task_id}] 警告: 解析结果为空，可能文档无文本内容或解析失败")
-            else:
-                logger.debug(f"[任务ID: {task_id}] 解析结果预览 (前200字符): {text_content[:200]}...")
-            
-            # 如果DOCX转换为了PDF，保存PDF到MinIO并更新数据库
-            # 注意：必须在清理临时文件之前完成，否则PDF会被删除
-            converted_pdf_path = None
-            converted_pdf_dir = None
-            if parse_result.get('is_converted_pdf') and parse_result.get('converted_pdf_path'):
-                converted_pdf_path = parse_result.get('converted_pdf_path')
-                converted_pdf_dir = os.path.dirname(converted_pdf_path) if converted_pdf_path else None
-                
-                if converted_pdf_path and os.path.exists(converted_pdf_path):
-                    logger.info(f"[任务ID: {task_id}] 检测到转换后的PDF，开始保存到MinIO: {converted_pdf_path}")
-                    try:
-                        minio = MinioStorageService()
-                        
-                        # 上传PDF到MinIO
-                        upload_result = minio.upload_pdf_file(
-                            pdf_file_path=converted_pdf_path,
-                            document_id=document.id,
-                            original_filename=os.path.splitext(document.original_filename)[0]
-                        )
-                        
-                        # 更新数据库中的converted_pdf_url
-                        document.converted_pdf_url = upload_result['object_name']
-                        db.commit()
-                        
-                        logger.info(f"[任务ID: {task_id}] PDF已保存到MinIO: {upload_result['object_name']}, "
-                                  f"数据库已更新converted_pdf_url")
-                        
-                        # PDF已成功保存，现在可以清理临时文件
-                        try:
-                            os.remove(converted_pdf_path)
-                            logger.debug(f"[任务ID: {task_id}] 已删除临时PDF文件: {converted_pdf_path}")
-                        except Exception as e:
-                            logger.warning(f"[任务ID: {task_id}] 删除临时PDF文件失败: {e}")
-                    except Exception as e:
-                        logger.error(f"[任务ID: {task_id}] 保存PDF到MinIO失败: {e}", exc_info=True)
-                        # 不影响主流程，但需要清理临时PDF
-                        try:
-                            if converted_pdf_path and os.path.exists(converted_pdf_path):
-                                os.remove(converted_pdf_path)
-                        except Exception:
-                            pass
-                else:
-                    logger.warning(f"[任务ID: {task_id}] 转换后的PDF文件不存在: {converted_pdf_path}")
-        except Exception as e:
-            logger.error(f"[任务ID: {task_id}] Unstructured解析失败: {e}", exc_info=True)
-            raise
-        
-        # 3. 清理临时文件（包括临时目录，但PDF文件已在上面处理）
+        # 3. 清理临时文件
         logger.debug(f"[任务ID: {task_id}] 步骤4.1/7: 清理临时文件")
         try:
-            # 删除原始临时文件
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
-            
-            # 清理PDF临时目录（如果存在且为空）
-            if converted_pdf_dir and os.path.isdir(converted_pdf_dir):
-                try:
-                    # 尝试删除目录内容（如果有残留）
-                    import shutil
-                    if not os.listdir(converted_pdf_dir):
-                        os.rmdir(converted_pdf_dir)
-                    else:
-                        # 如果目录不为空，尝试强制删除
-                        shutil.rmtree(converted_pdf_dir)
-                    logger.debug(f"[任务ID: {task_id}] 已清理PDF临时目录: {converted_pdf_dir}")
-                except Exception as e:
-                    logger.debug(f"[任务ID: {task_id}] 清理PDF临时目录失败（可能已被清理）: {e}")
-            
-            # 删除主临时目录
             if os.path.isdir(temp_dir):
                 try:
                     os.rmdir(temp_dir)
                 except OSError:
-                    # 如果目录不为空，可能是PDF目录还在，尝试清理
+                    import shutil
                     try:
-                        import shutil
                         shutil.rmtree(temp_dir)
                     except Exception:
                         pass
-            
-            logger.debug(f"[任务ID: {task_id}] 临时文件清理成功: {temp_file_path}")
         except Exception as e:
             logger.warning(f"[任务ID: {task_id}] 清理临时文件失败: {e}, 路径={temp_file_path}")
         
@@ -221,20 +139,30 @@ def process_document_task(self, document_id: int):
         document.processing_progress = 40.0
         db.commit()
         
-        # 创建文档分块（支持100%还原：记录element_index范围）
+        # 3. 分块（结构分块）
         chunk_start = time.time()
-        text_content = parse_result.get("text_content", "")
-        text_element_index_map = parse_result.get("text_element_index_map", [])  # 文本元素索引映射
-        logger.debug(f"[任务ID: {task_id}] 分块输入: 文本长度={len(text_content)} 字符, 文本元素映射数={len(text_element_index_map)}")
+        text_element_index_map = parse_result.get("text_element_index_map", [])
+        filtered_elements_light = parse_result.get("filtered_elements_light", [])
+
+        elements_for_chunking = None
+        if filtered_elements_light:
+            class LightElement:
+                def __init__(self, category, text, element_index):
+                    self.category = category
+                    self.text = text
+                    self.element_index = element_index
+            elements_for_chunking = [
+                LightElement(elem.get('category'), elem.get('text', ''), elem.get('element_index', i))
+                for i, elem in enumerate(filtered_elements_light)
+            ]
         
-        # 调用改进后的分块方法，传入 text_element_index_map
-        chunks_with_index = unstructured_service.chunk_text(
-            text_content, 
-            text_element_index_map=text_element_index_map
+        chunks_with_index = DocxService(db).chunk_text(
+            text_content,
+            text_element_index_map=text_element_index_map,
+            elements=elements_for_chunking
         )
         chunk_time = time.time() - chunk_start
         
-        # 兼容处理：如果是旧格式（纯字符串列表），转换为新格式
         if chunks_with_index and isinstance(chunks_with_index[0], str):
             chunks = chunks_with_index
             chunks_metadata = []
@@ -244,13 +172,9 @@ def process_document_task(self, document_id: int):
         
         logger.info(f"[任务ID: {task_id}] 文档分块完成: 耗时={chunk_time:.2f}秒, 共生成 {len(chunks)} 个分块")
         
-        if len(chunks) == 0:
-            logger.warning(f"[任务ID: {task_id}] 警告: 未生成任何分块，可能文本内容为空")
-        else:
-            total_chunk_length = sum(len(chunk) for chunk in chunks)
-            avg_chunk_length = total_chunk_length / len(chunks)
-            logger.debug(f"[任务ID: {task_id}] 分块统计: 总字符数={total_chunk_length}, 平均分块长度={avg_chunk_length:.0f} 字符")
-        
+        # 以下后续流程保持不变（合并表格块、保存DB、向量化、索引等）
+        # 原有代码从此处开始继续执行
+
         # 合并“表格块”：将 tables 融入分块序列，按 element_index 顺序排序
         logger.debug(f"[任务ID: {task_id}] 步骤5.1/7: 合并表格块并保存到数据库（含element_index）")
         tables_meta = parse_result.get('tables', [])
@@ -260,18 +184,17 @@ def process_document_task(self, document_id: int):
             element_index_start = None
             element_index_end = None
             page_number = None
-            
+            section_id = None
+            is_parent = False
             if chunks_metadata and i < len(chunks_metadata):
                 element_index_start = chunks_metadata[i].get('element_index_start')
                 element_index_end = chunks_metadata[i].get('element_index_end')
+                section_id = chunks_metadata[i].get('section_id')
+                is_parent = bool(chunks_metadata[i].get('is_parent'))
             
-            # ✅ 新增：从 text_element_index_map 中提取 page_number 和 coordinates
-            # 如果 element_index_start 和 element_index_end 都存在，查找对应的信息
             page_numbers = []
-            coordinates_list = []  # 收集所有坐标，用于计算合并坐标
-            
+            coordinates_list = []
             if text_element_index_map:
-                # 查找 element_index_start 到 element_index_end 范围内的所有信息
                 if element_index_start is not None and element_index_end is not None:
                     for map_item in text_element_index_map:
                         elem_idx = map_item.get('element_index')
@@ -279,40 +202,28 @@ def process_document_task(self, document_id: int):
                             page_num = map_item.get('page_number')
                             if page_num is not None and page_num not in page_numbers:
                                 page_numbers.append(page_num)
-                            
-                            # ✅ 收集坐标信息（用于后续计算合并坐标）
                             coords = map_item.get('coordinates')
                             if coords and isinstance(coords, dict):
-                                # 确保坐标有有效值
                                 if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
                                     coordinates_list.append(coords)
                 elif element_index_start is not None:
-                    # 只有 start，只查找对应的
                     for map_item in text_element_index_map:
                         if map_item.get('element_index') == element_index_start:
                             page_num = map_item.get('page_number')
                             if page_num is not None:
                                 page_numbers.append(page_num)
-                            
-                            # ✅ 获取起始元素的坐标
                             coords = map_item.get('coordinates')
                             if coords and isinstance(coords, dict):
                                 if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
                                     coordinates_list.append(coords)
                             break
-                
-                # 取主要的 page_number（第一个，通常是起始页码）
                 if page_numbers:
                     page_number = page_numbers[0]
-            
-            # ✅ 计算合并后的坐标（如果 chunk 跨越多个元素，合并坐标范围）
             chunk_coordinates = None
             if coordinates_list:
                 if len(coordinates_list) == 1:
-                    # 只有一个坐标，直接使用
                     chunk_coordinates = coordinates_list[0]
                 else:
-                    # 多个坐标，计算合并后的边界框
                     min_x = min(c.get('x', 0) for c in coordinates_list)
                     min_y = min(c.get('y', 0) for c in coordinates_list)
                     max_x = max((c.get('x', 0) + c.get('width', 0)) for c in coordinates_list)
@@ -323,25 +234,16 @@ def process_document_task(self, document_id: int):
                         'width': max_x - min_x,
                         'height': max_y - min_y
                     }
-            
-            # 定位排序用的 pos：优先使用 element_index_start；缺失则使用一个递增的偏移
             pos = element_index_start if element_index_start is not None else (10_000_000 + i)
-            
-            # 构建 chunk metadata（包含 page_number 和 coordinates）
             chunk_meta = {
                 'chunk_index': i,
                 'element_index_start': element_index_start,
                 'element_index_end': element_index_end,
-                # ✅ 新增：保存 page_number
                 'page_number': page_number,
-                # ✅ 新增：保存 coordinates（用于坐标重叠度计算）
-                'coordinates': chunk_coordinates
+                'coordinates': chunk_coordinates,
+                'section_id': section_id,
+                'is_parent': is_parent,
             }
-            
-            # 如果跨多页，保存 page_number_range（优化：避免重复查找）
-            if page_numbers and len(page_numbers) > 1:
-                chunk_meta['page_number_range'] = sorted(page_numbers)
-            
             merged_items.append({
                 'type': 'text',
                 'content': chunk_content,
@@ -354,8 +256,101 @@ def process_document_task(self, document_id: int):
             try:
                 tbl_index = tbl.get('element_index')
                 tbl_text = tbl.get('table_text') or ''
-                tbl_data = tbl.get('table_data')
-                # ✅ 新增：从表格元数据中获取 page_number
+                tbl_data = tbl.get('table_data') or {}
+                # ✅ 写入 document_tables 表，并生成 table_uid（UUID）
+                import uuid, json as _json
+                from sqlalchemy import text as _sql_text
+                table_uid = uuid.uuid4().hex
+                table_group_uid = table_uid  # 默认不分片时，group 与 part 相同
+                n_rows = int(tbl_data.get('rows') or 0)
+                n_cols = int(tbl_data.get('columns') or 0)
+                headers_json = _json.dumps({'rows': 1, 'content': (tbl_data.get('cells')[:1] if n_rows else [])}, ensure_ascii=False)
+                cells_list = tbl_data.get('cells') or []
+                cells_json = _json.dumps(cells_list, ensure_ascii=False)
+                spans_json = _json.dumps(tbl_data.get('spans') or [], ensure_ascii=False)
+                stats_json = _json.dumps({}, ensure_ascii=False)
+                
+                # 分片阈值（基于行数的简单切分，可后续改为基于字节/单元格计数）
+                MAX_ROWS_PER_PART = 400
+                if n_rows > MAX_ROWS_PER_PART:
+                    table_group_uid = uuid.uuid4().hex
+                    total_parts = (n_rows + MAX_ROWS_PER_PART - 1) // MAX_ROWS_PER_PART
+                    for p_idx in range(total_parts):
+                        start_row = p_idx * MAX_ROWS_PER_PART
+                        end_row = min((p_idx + 1) * MAX_ROWS_PER_PART, n_rows)
+                        part_cells = cells_list[start_row:end_row]
+                        part_cells_json = _json.dumps(part_cells, ensure_ascii=False)
+                        row_range = f"{start_row}-{end_row-1}"
+                        part_uid = uuid.uuid4().hex
+                        db.execute(
+                            _sql_text(
+                                """
+                                INSERT INTO document_tables (
+                                    table_uid, table_group_uid, document_id, element_index,
+                                    n_rows, n_cols, headers_json, cells_json, spans_json, stats_json,
+                                    part_index, part_count, row_range
+                                ) VALUES (
+                                    :table_uid, :table_group_uid, :document_id, :element_index,
+                                    :n_rows, :n_cols, :headers_json, :cells_json, :spans_json, :stats_json,
+                                    :part_index, :part_count, :row_range
+                                )
+                                """
+                            ),
+                            {
+                                "table_uid": part_uid,
+                                "table_group_uid": table_group_uid,
+                                "document_id": document_id,
+                                "element_index": tbl_index,
+                                "n_rows": end_row - start_row,
+                                "n_cols": n_cols,
+                                "headers_json": headers_json,
+                                "cells_json": part_cells_json,
+                                "spans_json": spans_json,
+                                "stats_json": stats_json,
+                                "part_index": p_idx,
+                                "part_count": total_parts,
+                                "row_range": row_range,
+                            }
+                        )
+                    # 写入表块：改为第一分片的 uid，且在 meta 中补充 group_uid 与 part 信息
+                    first_part_uid = db.execute(
+                        _sql_text("SELECT table_uid FROM document_tables WHERE table_group_uid=:g AND part_index=0 LIMIT 1"),
+                        {"g": table_group_uid}
+                    ).fetchone()[0]
+                    table_uid = first_part_uid
+                    n_rows = min(n_rows, MAX_ROWS_PER_PART)
+                else:
+                    db.execute(
+                        _sql_text(
+                            """
+                            INSERT INTO document_tables (
+                                table_uid, table_group_uid, document_id, element_index,
+                                n_rows, n_cols, headers_json, cells_json, spans_json, stats_json,
+                                part_index, part_count, row_range
+                            ) VALUES (
+                                :table_uid, :table_group_uid, :document_id, :element_index,
+                                :n_rows, :n_cols, :headers_json, :cells_json, :spans_json, :stats_json,
+                                0, 1, NULL
+                            )
+                            """
+                        ),
+                        {
+                            "table_uid": table_uid,
+                            "table_group_uid": table_group_uid,
+                            "document_id": document_id,
+                            "element_index": tbl_index,
+                            "n_rows": n_rows,
+                            "n_cols": n_cols,
+                            "headers_json": headers_json,
+                            "cells_json": cells_json,
+                            "spans_json": spans_json,
+                            "stats_json": stats_json,
+                        }
+                    )
+                # ✅ 控制表格可检索文本（TST）长度（2048字符）
+                if tbl_text and len(tbl_text) > 2048:
+                    tbl_text = tbl_text[:2048]
+                # 使用 table_uid 替代大 JSON 存入 chunk.meta
                 tbl_page_number = tbl.get('page_number')
                 merged_items.append({
                     'type': 'table',
@@ -363,15 +358,18 @@ def process_document_task(self, document_id: int):
                     'pos': tbl_index if tbl_index is not None else 9_000_000,
                     'meta': {
                         'element_index': tbl_index,
-                        'table_data': tbl_data,
-                        # ✅ 新增：保存 page_number
+                        'table_id': table_uid,
+                        'table_group_uid': table_group_uid,
+                        'n_rows': n_rows,
+                        'n_cols': n_cols,
                         'page_number': tbl_page_number
                     }
                 })
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[任务ID: {task_id}] 保存表格到 document_tables 失败: {e}")
                 continue
 
-        # 重新按 pos 排序并重建 chunk_index
+        # 重新按 pos 排序并重建 chunk_index（保持原逻辑）
         merged_items.sort(key=lambda x: (x.get('pos') is None, x.get('pos')))
         
         # ✅ 验证：检查表格是否在正确位置（基于 element_index 验证）
@@ -492,6 +490,8 @@ def process_document_task(self, document_id: int):
         store_text = getattr(settings, 'STORE_CHUNK_TEXT_IN_DB', False)
         import json
 
+        created_chunks = []  # 收集已创建的块（便于后续关系建立）
+
         for new_index, item in enumerate(merged_items):
             chunk_metadata = item['meta'] or {}
             chunk_metadata['chunk_index'] = new_index
@@ -503,10 +503,81 @@ def process_document_task(self, document_id: int):
                 meta=json.dumps(chunk_metadata, ensure_ascii=False)
             )
             db.add(chunk)
+            created_chunks.append((chunk, chunk_metadata))
             if (new_index + 1) % 50 == 0:
                 logger.debug(f"[任务ID: {task_id}] 已保存 {new_index + 1}/{len(merged_items)} 个分块到数据库")
         
         db.commit()
+        
+        # ✅ 建立父子关系（基于 section_id / is_parent）并回填 parent_chunk_id 到子块 meta
+        try:
+            # 重新查询含主键ID
+            db_chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).order_by(DocumentChunk.chunk_index).all()
+            # 构建索引: chunk_index -> row, 以及 meta 解析
+            import json as _json
+            idx_to_row = {}
+            idx_to_meta = {}
+            for row in db_chunks:
+                idx_to_row[row.chunk_index] = row
+                meta_raw = getattr(row, 'meta', None)
+                try:
+                    meta = _json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+                except Exception:
+                    meta = {}
+                idx_to_meta[row.chunk_index] = meta
+            # 按 section 分组并建立关系
+            current_section_id = None
+            current_parent_chunk_id = None
+            order_in_parent = 0
+            from sqlalchemy import text as _sql_text
+            for i in range(len(db_chunks)):
+                meta = idx_to_meta.get(i, {})
+                section_id = meta.get('section_id')
+                is_parent = bool(meta.get('is_parent'))
+                row = idx_to_row[i]
+                if section_id != current_section_id:
+                    # 新 section
+                    current_section_id = section_id
+                    current_parent_chunk_id = None
+                    order_in_parent = 0
+                if is_parent:
+                    current_parent_chunk_id = row.id
+                    order_in_parent = 0
+                    # 标记父块自身（可选，不写关系表）
+                else:
+                    if current_parent_chunk_id is not None and section_id is not None:
+                        order_in_parent += 1
+                        # 插入关系表
+                        try:
+                            db.execute(
+                                _sql_text(
+                                    """
+                                    INSERT INTO chunk_relations (document_id, relation_type, parent_chunk_id, child_chunk_id, order_in_parent)
+                                    VALUES (:document_id, :relation_type, :parent_chunk_id, :child_chunk_id, :order_in_parent)
+                                    """
+                                ),
+                                {
+                                    'document_id': document_id,
+                                    'relation_type': 'parent_child',
+                                    'parent_chunk_id': current_parent_chunk_id,
+                                    'child_chunk_id': row.id,
+                                    'order_in_parent': order_in_parent,
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"[任务ID: {task_id}] 写入 chunk_relations 失败: child={row.id}, err={e}")
+                        # 回填子块 meta 的 parent_chunk_id 与 section_id
+                        meta['parent_chunk_id'] = current_parent_chunk_id
+                        meta['section_id'] = section_id
+                        try:
+                            row.meta = _json.dumps(meta, ensure_ascii=False)
+                        except Exception:
+                            pass
+            db.commit()
+            logger.info(f"[任务ID: {task_id}] 父子关系建立完成，并已回填子块 parent_chunk_id")
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"[任务ID: {task_id}] 父子关系建立阶段失败（不影响主流程）: {e}")
         
         # ✅ 统计信息
         text_chunks = sum(1 for item in merged_items if item.get('type') == 'text')
@@ -582,7 +653,7 @@ def process_document_task(self, document_id: int):
                     image_row = img_service.create_image_from_bytes(document_id, data, image_ext=img.get('ext', '.png'), image_type=img.get('image_type'))
                     
                     # ✅ 保存 element_index 和 page_number 到图片的 metadata JSON 中（关键：用于100%还原和关联查找）
-                    element_index = img.get('element_index')
+                    # 注意：element_index 已在上面第594行获取，无需重复赋值
                     page_number = img.get('page_number')
                     if element_index is not None or page_number is not None:
                         import json
@@ -904,7 +975,7 @@ def process_document_task(self, document_id: int):
                 success_count += 1
                 
                 if (i + 1) % 10 == 0 or i == len(db_chunks) - 1:  # 每10个或最后一个记录日志
-                    logger.info(f"[任务ID: {task_id}] 向量化进度: {i+1}/{len(chunks)} "
+                    logger.info(f"[任务ID: {task_id}] 向量化进度: {i+1}/{len(db_chunks)} "
                                f"(分块ID={chunk.id}, 向量维度={len(vector)}, "
                                f"向量化耗时={vectorize_time:.2f}秒, 索引耗时={index_time:.2f}秒)")
                 else:
@@ -935,7 +1006,7 @@ def process_document_task(self, document_id: int):
             pass
         
         vectorize_total_time = time.time() - vectorize_start
-        avg_time = (vectorize_total_time / len(chunks)) if len(chunks) else 0.0
+        avg_time = (vectorize_total_time / len(db_chunks)) if len(db_chunks) else 0.0
         logger.info(f"[任务ID: {task_id}] 向量化完成: 成功={success_count}, 失败={error_count}, 总耗时={vectorize_total_time:.2f}秒, 平均耗时={avg_time:.2f}秒/分块")
         
         current_task.update_state(
@@ -949,7 +1020,7 @@ def process_document_task(self, document_id: int):
         document.processing_progress = 95.0
         db.commit()
         
-        logger.info(f"[任务ID: {task_id}] OpenSearch索引建立完成: 共索引 {len(chunks)} 个分块")
+        logger.info(f"[任务ID: {task_id}] OpenSearch索引建立完成: 共索引 {len(docs_to_index)} 个分块")
         
         # 更新文档状态为完成
         document.status = DOC_STATUS_COMPLETED
@@ -982,7 +1053,7 @@ def process_document_task(self, document_id: int):
         total_time = time.time() - download_start
         logger.info(f"[任务ID: {task_id}] ========== 文档 {document_id} 处理完成 ==========")
         logger.info(f"[任务ID: {task_id}] 处理统计: 总耗时={total_time:.2f}秒, "
-                   f"文件大小={len(file_content)} bytes, 分块数={len(chunks)}, "
+                   f"文件大小={len(file_content)} bytes, 分块数={len(chunks)}, 已索引={len(docs_to_index)}条, "
                    f"文本长度={len(text_content)} 字符")
         
         current_task.update_state(

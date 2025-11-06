@@ -14,16 +14,42 @@ export const formatFileSize = (bytes: number): string => {
 /**
  * 格式化日期时间
  */
-export const formatDateTime = (date: string | Date, format: string = 'YYYY-MM-DD HH:mm:ss'): string => {
-  const d = new Date(date)
-  
-  const year = d.getFullYear()
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  const hours = String(d.getHours()).padStart(2, '0')
-  const minutes = String(d.getMinutes()).padStart(2, '0')
-  const seconds = String(d.getSeconds()).padStart(2, '0')
-  
+export const formatDateTime = (
+  date: string | number | Date | null | undefined,
+  format: string = 'YYYY-MM-DD HH:mm:ss'
+): string => {
+  if (!date) return '-'
+  let input: Date
+
+  try {
+    // 字符串处理：兼容 "YYYY-MM-DD HH:mm:ss" / ISO / 带毫秒
+    if (typeof date === 'string') {
+      let s = date.trim()
+      if (!s) return '-'
+      // 若包含空格而不含 T，则替换为空格为 T，避免 new Date 无法解析
+      if (s.includes(' ') && !s.includes('T')) {
+        s = s.replace(' ', 'T')
+      }
+      // 如果没有时区信息，按本地时间处理
+      input = new Date(s)
+    } else if (typeof date === 'number') {
+      input = new Date(date)
+    } else {
+      input = new Date(date)
+    }
+  } catch {
+    return '-'
+  }
+
+  if (isNaN(input.getTime())) return '-'
+
+  const year = input.getFullYear()
+  const month = String(input.getMonth() + 1).padStart(2, '0')
+  const day = String(input.getDate()).padStart(2, '0')
+  const hours = String(input.getHours()).padStart(2, '0')
+  const minutes = String(input.getMinutes()).padStart(2, '0')
+  const seconds = String(input.getSeconds()).padStart(2, '0')
+
   return format
     .replace('YYYY', String(year))
     .replace('MM', month)

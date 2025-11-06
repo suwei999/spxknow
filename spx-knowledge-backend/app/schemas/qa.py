@@ -75,7 +75,8 @@ class KnowledgeBaseListResponse(BaseModel):
 class QASessionCreate(BaseModel):
     """创建问答会话请求"""
     knowledge_base_id: int
-    session_name: str
+    # 必填：没有用户体系时，名称用于唯一标识
+    session_name: str = Field(..., min_length=1)
     search_type: SearchType = SearchType.HYBRID
     max_sources: int = Field(default=10, ge=1, le=50)
     similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -94,6 +95,8 @@ class QASessionResponse(BaseModel):
     last_question: Optional[str] = None
     last_activity: Optional[datetime] = None
     created_at: datetime
+    # ✅ 历史问答列表（用于会话详情）
+    questions: Optional[List[Dict[str, Any]]] = None
 
 class QASessionListResponse(BaseModel):
     """问答会话列表响应"""

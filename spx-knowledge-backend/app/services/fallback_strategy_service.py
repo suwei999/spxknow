@@ -573,7 +573,8 @@ class FallbackStrategyService:
 
 请基于知识库内容提供准确、详细的回答，并在回答中明确引用来源信息。如果知识库内容不足以回答问题，请说明。"""
 
-            answer = await self.ollama_service.generate_answer(prompt)
+            # 使用 generate_text 方法
+            answer = await self.ollama_service.generate_text(prompt)
             return answer
             
         except Exception as e:
@@ -636,7 +637,8 @@ class FallbackStrategyService:
 
 请结合知识库内容和你的知识提供全面的回答。如果知识库内容不足，请用你的知识补充。请明确标注哪些信息来自知识库，哪些是你的补充。"""
 
-            answer = await self.ollama_service.generate_answer(prompt)
+            # 使用 generate_text 方法
+            answer = await self.ollama_service.generate_text(prompt)
             return answer
             
         except Exception as e:
@@ -670,7 +672,8 @@ class FallbackStrategyService:
 
 请基于你的知识提供一般性的回答和建议。如果参考信息有用，可以简单提及。请明确说明这是基于一般知识的回答。"""
 
-            answer = await self.ollama_service.generate_answer(prompt)
+            # 使用 generate_text 方法
+            answer = await self.ollama_service.generate_text(prompt)
             return answer
             
         except Exception as e:

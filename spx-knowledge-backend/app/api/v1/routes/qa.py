@@ -162,8 +162,13 @@ def create_qa_session(
         
         service = QAService(db)
         result = service.create_qa_session(session_data)
-        
-        logger.info(f"API响应: 成功创建会话 {result.session_id}")
+
+        # 兼容服务层返回 Pydantic 模型或 dict
+        try:
+            sid = getattr(result, 'session_id', None) or (result.get('session_id') if isinstance(result, dict) else None)
+        except Exception:
+            sid = None
+        logger.info(f"API响应: 成功创建会话 {sid if sid else '[unknown]'}")
         return result
         
     except Exception as e:
@@ -219,7 +224,12 @@ def get_qa_session_detail(
                 detail="会话不存在"
             )
         
-        logger.info(f"API响应: 成功获取会话详情 {result.session_name}")
+        # 兼容 dict / 模型
+        try:
+            sname = getattr(result, 'session_name', None) or (result.get('session_name') if isinstance(result, dict) else None)
+        except Exception:
+            sname = None
+        logger.info(f"API响应: 成功获取会话详情 {sname if sname else '[unknown]'}")
         return result
         
     except HTTPException:
@@ -271,7 +281,7 @@ async def ask_multimodal_question(
     input_type: str = "text",
     include_history: bool = True,
     max_history: int = settings.QA_DEFAULT_MAX_HISTORY,
-    similarity_threshold: float = settings.QA_DEFAULT_SIMILARITY_THRESHOLD,
+    similarity_threshold: float = settings.SEARCH_VECTOR_THRESHOLD,
     max_sources: int = settings.QA_DEFAULT_MAX_SOURCES,
     search_type: str = "hybrid",
     db: Session = Depends(get_db)
@@ -349,7 +359,7 @@ async def search_images(
     session_id: str,
     image_file: UploadFile = File(...),
     search_type: str = "image-to-image",
-    similarity_threshold: float = settings.QA_DEFAULT_SIMILARITY_THRESHOLD,
+    similarity_threshold: float = settings.SEARCH_VECTOR_THRESHOLD,
     max_results: int = settings.QA_DEFAULT_MAX_RESULTS,
     knowledge_base_id: Optional[int] = None,
     db: Session = Depends(get_db)

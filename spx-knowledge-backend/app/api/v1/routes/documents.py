@@ -295,6 +295,8 @@ async def get_document_chunks(
         except Exception:
             content_map = {}
 
+        from sqlalchemy import func
+        from app.models.chunk_version import ChunkVersion
         for c in rows:
             idx = getattr(c, 'chunk_index', None)
             content = getattr(c, 'content', None)
@@ -311,18 +313,44 @@ async def get_document_chunks(
                         logger.debug(f"[表格调试] 块 #{idx} (ID={c.id}): meta_dict={meta_dict}")
                         if meta_dict and isinstance(meta_dict, dict):
                             table_data = meta_dict.get('table_data')
-                            logger.debug(f"[表格调试] 块 #{idx}: table_data={table_data}")
+                            table_group_uid = meta_dict.get('table_group_uid')
+                            table_id = meta_dict.get('table_id')
+                            
+                            # ✅ 新设计：表格数据通过 API 懒加载，meta 中只存储 table_group_uid 或 table_id
                             if table_data:
                                 logger.debug(f"[表格调试] 块 #{idx}: table_data.html={bool(table_data.get('html'))}, "
                                            f"table_data.cells={bool(table_data.get('cells'))}, "
                                            f"rows={table_data.get('rows', 0)}, "
                                            f"columns={table_data.get('columns', 0)}")
+                            elif table_group_uid or table_id:
+                                # ✅ 有懒加载标识符，这是正常的，不需要警告
+                                logger.debug(f"[表格调试] 块 #{idx}: 使用懒加载方式，table_group_uid={table_group_uid}, table_id={table_id}")
                             else:
-                                logger.warning(f"[表格调试] ⚠️ 块 #{idx} (ID={c.id}): meta 中缺少 table_data！meta_dict 内容: {meta_dict.keys() if isinstance(meta_dict, dict) else 'N/A'}")
+                                # ⚠️ 既没有 table_data，也没有懒加载标识符，这才是问题
+                                logger.warning(f"[表格调试] ⚠️ 块 #{idx} (ID={c.id}): meta 中既缺少 table_data，也缺少 table_group_uid/table_id！meta_dict 内容: {meta_dict.keys() if isinstance(meta_dict, dict) else 'N/A'}")
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"[表格调试] 解析块 #{idx} 的 meta 失败: {e}, meta_raw={c.meta[:100] if c.meta else None}")
                     meta_dict = {}
             
+            # 计算版本与修改时间兜底
+            try:
+                max_ver = db.query(func.max(ChunkVersion.version_number)).filter(
+                    ChunkVersion.chunk_id == c.id
+                ).scalar() or 0
+            except Exception:
+                max_ver = 0
+            safe_version = max(int(getattr(c, 'version', 0) or 0), int(max_ver)) or 1
+            latest_ver = None
+            if max_ver:
+                try:
+                    latest_ver = db.query(ChunkVersion).filter(
+                        ChunkVersion.chunk_id == c.id,
+                        ChunkVersion.version_number == int(max_ver)
+                    ).first()
+                except Exception:
+                    latest_ver = None
+            modified_dt = getattr(c, 'last_modified_at', None) or (getattr(latest_ver, 'created_at', None) if latest_ver else None) or getattr(c, 'created_at', None)
+
             items.append({
                 "id": c.id,
                 "document_id": c.document_id,
@@ -331,6 +359,8 @@ async def get_document_chunks(
                 "chunk_type": getattr(c, "chunk_type", "text"),
                 "char_count": len(content or getattr(c, "content", "") or ""),
                 "created_at": getattr(c, "created_at", None),
+                "version": safe_version,
+                "last_modified_at": modified_dt,
                 "meta": meta_dict,  # ✅ 新增：返回 meta 字段，包含表格数据 table_data
             })
         return {"code": 0, "message": "ok", "data": {"list": items, "total": len(items), "page": page, "size": size}}
@@ -555,6 +585,12 @@ async def get_document_preview(
                                         length=os.path.getsize(screen_pdf),
                                         content_type='application/pdf'
                                     )
+                                # 写回数据库：记录转换后的PDF对象键
+                                try:
+                                    doc.converted_pdf_url = preview_object_screen
+                                    db.commit()
+                                except Exception:
+                                    db.rollback()
                                 preview_url = minio.client.presigned_get_object(minio.bucket_name, preview_object_screen, expires=timedelta(hours=1))
                                 return {"code": 0, "message": "ok", "data": {"preview_url": preview_url, "content_type": "application/pdf", "original_url": original_url}}
 
@@ -567,6 +603,12 @@ async def get_document_preview(
                                 length=os.path.getsize(pdf_path),
                                 content_type='application/pdf'
                             )
+                        # 写回数据库：记录转换后的PDF对象键
+                        try:
+                            doc.converted_pdf_url = preview_object
+                            db.commit()
+                        except Exception:
+                            db.rollback()
                         preview_url = minio.client.presigned_get_object(minio.bucket_name, preview_object, expires=timedelta(hours=1))
                         return {"code": 0, "message": "ok", "data": {"preview_url": preview_url, "content_type": "application/pdf", "original_url": original_url}}
             except Exception as conv_e:

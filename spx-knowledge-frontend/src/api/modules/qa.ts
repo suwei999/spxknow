@@ -17,7 +17,7 @@ export const getKnowledgeBaseDetail = (kbId: number) => {
 }
 
 // 创建问答会话
-export const createQASession = (data: { knowledge_base_id: number; title?: string }) => {
+export const createQASession = (data: { knowledge_base_id: number; session_name: string }) => {
   return request({
     url: '/qa/sessions',
     method: 'post',

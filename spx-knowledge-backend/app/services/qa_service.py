@@ -174,6 +174,24 @@ class QAService:
         """创建问答会话 - 根据设计文档实现，使用MySQL持久化"""
         try:
             logger.info(f"创建问答会话，知识库ID: {session_data.knowledge_base_id}")
+
+            # 校验名称
+            name = (session_data.session_name or "").strip()
+            if not name:
+                raise CustomException(
+                    code=ErrorCode.VALIDATION_ERROR,
+                    message="会话名称不能为空"
+                )
+            # 唯一性：全局唯一（无用户体系）
+            exists = self.db.query(QASession).filter(
+                QASession.session_name == name,
+                QASession.status == "active"
+            ).first()
+            if exists:
+                raise CustomException(
+                    code=ErrorCode.VALIDATION_ERROR,
+                    message="会话名称已存在，请更换名称"
+                )
             
             # 生成会话ID
             session_id = str(uuid.uuid4())
@@ -181,7 +199,7 @@ class QAService:
             # 创建会话记录
             db_session = QASession(
                 session_id=session_id,
-                session_name=session_data.session_name,
+                session_name=name,
                 knowledge_base_id=session_data.knowledge_base_id,
                 query_method=session_data.search_type,
                 search_config={
@@ -275,7 +293,7 @@ class QAService:
             # 获取问题列表
             questions = self.db.query(QAQuestion).filter(
                 QAQuestion.session_id == session_id
-            ).order_by(QAQuestion.created_at.desc()).limit(10).all()
+            ).order_by(QAQuestion.created_at.desc()).limit(settings.QA_DEFAULT_MAX_RESULTS).all()
             
             session_dict["questions"] = [
                 {
@@ -385,9 +403,9 @@ class QAService:
         session_id: str,
         processed_input: Dict[str, Any],
         include_history: bool = True,
-        max_history: int = 5,
-        similarity_threshold: float = 0.7,
-        max_sources: int = 10,
+        max_history: int = settings.QA_DEFAULT_MAX_HISTORY,
+        similarity_threshold: float = settings.SEARCH_VECTOR_THRESHOLD,
+        max_sources: int = settings.QA_DEFAULT_MAX_SOURCES,
         search_type: str = "hybrid"
     ) -> QAMultimodalQuestionResponse:
         """多模态问答 - 根据设计文档实现"""
@@ -455,11 +473,11 @@ class QAService:
                 "source_count": len(citations)
             }
             
-            # 存储历史记录
+            # 存储历史记录到OpenSearch（暂时没有用户概念，user_id设为空字符串）
             await self.history_service.store_qa_history(
                 question_id=question_id,
                 session_id=session_id,
-                user_id="user",  # TODO: 从认证信息获取
+                user_id="",  # 暂时没有用户概念，设为空字符串
                 knowledge_base_id=session_info["knowledge_base_id"],
                 question_content=question_content,
                 answer_content=answer_content,
@@ -467,6 +485,28 @@ class QAService:
                 processing_info=processing_info,
                 quality_assessment=quality_assessment
             )
+            
+            # 存储历史记录到MySQL的QAQuestion表（用于会话详情查询）
+            try:
+                qa_question = QAQuestion(
+                    question_id=question_id,
+                    session_id=session_id,
+                    question_content=question_content,
+                    answer_content=answer_content,
+                    similarity_score=quality_assessment.get("overall_score", 0.0),
+                    answer_quality=str(quality_assessment.get("overall_score", 0.0)),  # 转换为字符串（模型字段为String类型）
+                    input_type=processed_input["input_type"],
+                    source_info=source_info,
+                    processing_info=processing_info,
+                    created_at=datetime.now()
+                )
+                self.db.add(qa_question)
+                self.db.commit()  # 确保立即提交
+                logger.info(f"问答记录已保存到MySQL，问题ID: {question_id}")
+            except Exception as e:
+                self.db.rollback()  # 回滚事务
+                logger.error(f"保存问答记录到MySQL失败: {e}", exc_info=True)
+                # 不中断流程，继续执行
             
             # 更新会话信息 - 更新MySQL数据库
             db_session = self.db.query(QASession).filter(QASession.session_id == session_id).first()
@@ -507,8 +547,8 @@ class QAService:
         session_id: str,
         processed_image: Dict[str, Any],
         search_type: str = "image-to-image",
-        similarity_threshold: float = 0.7,
-        max_results: int = 10,
+        similarity_threshold: float = settings.SEARCH_VECTOR_THRESHOLD,
+        max_results: int = settings.QA_DEFAULT_MAX_RESULTS,
         knowledge_base_id: Optional[int] = None
     ) -> QAImageSearchResponse:
         """图片搜索 - 根据设计文档实现"""
@@ -549,7 +589,7 @@ class QAService:
                 search_type=search_type,
                 results=results,
                 results_count=len(results),
-                search_time=0.5,  # TODO: 实际计算搜索时间
+                search_time=0.0,  # TODO: 可按实际测量赋值
                 similarity_threshold=similarity_threshold
             )
             
@@ -594,12 +634,12 @@ class QAService:
             
             # 执行检索
             search_results = await self._perform_search(
-                question_content, {}, "hybrid", 10
+                question_content, {}, "hybrid", settings.QA_DEFAULT_MAX_SOURCES
             )
             
             # 生成流式答案
             async for chunk in self._generate_streaming_answer(
-                question_content, search_results
+                question_content, search_results, session_info
             ):
                 yield chunk
             
@@ -648,7 +688,7 @@ class QAService:
             # 3. 执行向量搜索
             results = await self.opensearch_service.search_document_vectors(
                 query_vector=question_vector,
-                similarity_threshold=0.7,
+                similarity_threshold=settings.SEARCH_VECTOR_THRESHOLD,
                 limit=max_sources,
                 knowledge_base_id=kb_id
             )
@@ -1077,15 +1117,28 @@ class QAService:
     async def _generate_streaming_answer(
         self,
         question_content: str,
-        search_results: List[Dict[str, Any]]
+        search_results: List[Dict[str, Any]],
+        session_info: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """生成流式答案"""
         try:
             # 构建上下文
             context = self._build_knowledge_context(search_results)
             
-            # 生成答案提示
-            prompt = f"""基于以下知识库内容回答用户问题：
+            # 获取LLM模型配置
+            model = settings.OLLAMA_MODEL
+            if session_info and session_info.get("llm_config"):
+                model = session_info["llm_config"].get("model", model)
+            
+            # 构建消息列表
+            messages = [
+                {
+                    "role": "system",
+                    "content": "你是一个智能知识库助手，基于提供的知识库内容回答用户问题。请确保回答准确、详细，并明确引用来源信息。"
+                },
+                {
+                    "role": "user",
+                    "content": f"""基于以下知识库内容回答用户问题：
 
 知识库内容：
 {context}
@@ -1093,31 +1146,38 @@ class QAService:
 用户问题：{question_content}
 
 请基于知识库内容提供准确、详细的回答。"""
-
-            # 模拟流式生成
-            answer_chunks = [
-                "根据知识库内容，",
-                "我可以为您提供以下信息：",
-                "\n\n1. 首先，",
-                "这个问题涉及到多个方面。",
-                "\n\n2. 其次，",
-                "需要特别注意以下几点。",
-                "\n\n3. 最后，",
-                "建议您参考相关文档获取更多详细信息。"
+                }
             ]
             
-            for chunk in answer_chunks:
-                yield {
-                    "type": "content_chunk",
-                    "data": {
-                        "content": chunk,
-                        "timestamp": datetime.now().isoformat()
+            # 调用Ollama流式API
+            try:
+                async for chunk_content in self.ollama_service.stream_chat_completion(messages, model):
+                    yield {
+                        "type": "content_chunk",
+                        "data": {
+                            "content": chunk_content,
+                            "timestamp": datetime.now().isoformat()
+                        }
                     }
-                }
-                await asyncio.sleep(0.1)  # 模拟生成延迟
+            except Exception as e:
+                logger.error(f"Ollama流式生成失败，降级到非流式: {e}")
+                # 降级到非流式生成
+                answer = await self.ollama_service.chat_completion(messages, model)
+                # 将答案分块返回
+                chunk_size = 10
+                for i in range(0, len(answer), chunk_size):
+                    chunk = answer[i:i+chunk_size]
+                    yield {
+                        "type": "content_chunk",
+                        "data": {
+                            "content": chunk,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    }
+                    await asyncio.sleep(0.05)
             
         except Exception as e:
-            logger.error(f"生成流式答案失败: {e}")
+            logger.error(f"生成流式答案失败: {e}", exc_info=True)
             yield {
                 "type": "error",
                 "data": {"message": str(e)}

@@ -40,42 +40,44 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = ""
     REDIS_DB: int = 0
     
-    # OpenSearch配置（统一仅使用 OPENSEARCH_URL）
+    # OpenSearch配置
     OPENSEARCH_URL: str = "http://localhost:9200"
     OPENSEARCH_USERNAME: str = ""
     OPENSEARCH_PASSWORD: str = ""
     OPENSEARCH_USE_SSL: bool = False
     OPENSEARCH_VERIFY_CERTS: bool = False
+    # OpenSearch 索引与参数（可配置，去除硬编码）
+    DOCUMENT_INDEX_NAME: str = "documents"
+    IMAGE_INDEX_NAME: str = "images"
+    QA_INDEX_NAME: str = "qa_history"
+    OPENSEARCH_NUMBER_OF_SHARDS: int = 3
+    OPENSEARCH_NUMBER_OF_REPLICAS: int = 1
+    TEXT_ANALYZER: str = "ik_max_word"
+    HNSW_EF_CONSTRUCTION: int = 128
+    HNSW_M: int = 24
+    KNN_NUM_CANDIDATES_FACTOR: int = 2
     
-    # MinIO配置（与 docker-compose 保持一致：ROOT_USER/ROOT_PASSWORD）
+    # MinIO配置
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ROOT_USER: str = "minioadmin"
     MINIO_ROOT_PASSWORD: str = "minioadmin"
     MINIO_BUCKET_NAME: str = "spx-knowledge-base"
     MINIO_SECURE: bool = False
     
-    # Ollama配置
+    # 向量模型配置
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_API_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama2"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
-    # 图片向量配置（默认本地CLIP ViT-B/32，512维）
-    OLLAMA_IMAGE_MODEL: str = "local"  # 兼容旧字段，不通过Ollama
     IMAGE_EMBEDDING_MODEL: str = "clip_vit_b32"
     CLIP_MODEL_NAME: str = "ViT-B-32"
-    # 本地权重与缓存默认目录（位于项目根目录 models/clip/ 下）
     CLIP_MODELS_DIR: str = os.path.join(_PROJECT_ROOT, "models", "clip")
-    # 本地权重路径（若不存在将自动创建目录并允许首轮下载到该路径所在目录）
     CLIP_PRETRAINED_PATH: str = os.path.join(CLIP_MODELS_DIR, "ViT-B-32-openclip.pt")
-    # 模型本地缓存目录（OpenCLIP/HF 缓存）
     CLIP_CACHE_DIR: str = os.path.join(CLIP_MODELS_DIR, "cache")
+    # Hugging Face 缓存目录（可选，默认使用系统默认位置）
+    HF_HOME: Optional[str] = None  # 如果为 None，则使用 ~/.cache/huggingface
 
-    # 图片处理流水线模式：memory | temp
-    # memory：优先走内存管道（BytesIO/数组），失败自动回退到临时文件
-    # temp：始终使用临时文件
-    IMAGE_PIPELINE_MODE: str = "memory"
-
-    # 调试时是否保留临时文件（仅当使用临时文件路径时有效）
+    IMAGE_PIPELINE_MODE: str = "memory"  # memory|temp
     DEBUG_KEEP_TEMP_FILES: bool = False
     
     # QA系统配置
@@ -111,76 +113,90 @@ class Settings(BaseSettings):
     QA_HISTORY_DEFAULT_PAGE_SIZE: int = 20
     QA_HISTORY_MAX_PAGE_SIZE: int = 100
     
-    # 向量维度配置
-    TEXT_EMBEDDING_DIMENSION: int = 768
+    # 向量维度
+    TEXT_EMBEDDING_DIMENSION: int = 1024
     IMAGE_EMBEDDING_DIMENSION: int = 512
-    # 文本向量模型可接受的最大字符数（用于分块与预处理上限对齐）
     TEXT_EMBED_MAX_CHARS: int = 1024
     
-    # 实体识别配置
+    # Rerank模型配置
+    RERANK_ENABLED: bool = True  # 是否启用rerank模型
+    # 推荐中英文支持较好的模型：bge-reranker-v2-m3（多语言支持）或 bge-reranker-large（中英文效果更好）
+    RERANK_MODEL_NAME: str = "BAAI/bge-reranker-v2-m3"  # rerank模型名称（支持中英文，多语言）
+    RERANK_MODEL_PATH: Optional[str] = None  # 本地模型路径（如果设置，优先使用本地路径；如果为None，则从HuggingFace下载）
+    RERANK_TOP_K: int = 5  # rerank后返回的结果数量（默认5个）
+    RERANK_DEVICE: str = "cpu"  # rerank模型运行设备（cpu/cuda，如果配置为cuda但GPU不可用，会自动降级到cpu）
+    RERANK_MIN_SCORE: float = 0.2  # rerank 后端最小得分过滤（0-1）
+    # 混合搜索向量权重 α（关键词权重为 1-α）
+    SEARCH_HYBRID_ALPHA: float = 0.6
+
+    # 文本向量检索参数
+    SEARCH_VECTOR_THRESHOLD: float = 0.3  # 向量相似度默认阈值
+    SEARCH_VECTOR_TOPK: int = 5  # 向量检索默认返回数量（与 RERANK_TOP_K 保持一致）
+    # 精确搜索字段列表（用于 multi_match type=phrase），为空则默认 content
+    SEARCH_EXACT_FIELDS: List[str] = ["content"]
+    
+    # 实体/意图阈值
     ENTITY_PERSON_CONFIDENCE: float = 0.8
     ENTITY_PLACE_CONFIDENCE: float = 0.7
-    
-    # 意图识别配置
     INTENT_FACTUAL_CONFIDENCE: float = 0.8
     INTENT_OPERATION_CONFIDENCE: float = 0.8
     INTENT_COMPARISON_CONFIDENCE: float = 0.7
     INTENT_DEFAULT_CONFIDENCE: float = 0.5
     
-    # 图片搜索配置
+    # 图片搜索阈值
     IMAGE_SEARCH_DEFAULT_CONFIDENCE: float = 0.8
     IMAGE_SEARCH_MULTIMODAL_CONFIDENCE: float = 0.7
     IMAGE_SEARCH_DEFAULT_CONFIDENCE_FALLBACK: float = 0.5
 
-    # 内容预览配置
+    # 内容预览
     CONTENT_PREVIEW_LENGTH: int = 100
     
-    # 批量操作配置
+    # 批量操作
     MAX_BATCH_OPERATION_SIZE: int = 10
     
-    # 缓存配置
+    # 缓存
     CACHE_TTL_SECONDS: int = 3600
     CACHE_MAX_SIZE: int = 1000
     CACHE_CLEANUP_INTERVAL: int = 300
     
-    # 内容验证配置
+    # 文本质量阈值
     MAX_NEWLINE_RATIO: float = 0.5
     MAX_SPECIAL_CHAR_RATIO: float = 0.1
     MIN_CHINESE_RATIO: float = 0.3
     MIN_ENGLISH_RATIO: float = 0.3
     
-    # 降级策略置信度调整
+    # 降级策略置信度
     FALLBACK_CONFIDENCE_BOOST: float = 0.2
     FALLBACK_DEFAULT_CONFIDENCE: float = 0.5
     
-    # 文件验证配置
-    FILE_HEADER_READ_SIZE: int = 1024  # 读取文件头的大小（字节）
+    # 文件验证
+    FILE_HEADER_READ_SIZE: int = 1024
     
-    # 安全配置
+    # 安全
     SECRET_KEY: str = "your-secret-key-here"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
-    # 日志配置
+    # 日志
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     LOG_FILE: str = "logs/app.log"
     
-    # 环境配置
+    # 环境
     ENVIRONMENT: str = "development"
     
-    # ClamAV配置
-    CLAMAV_ENABLED: bool = True  # 是否启用ClamAV病毒扫描
-    CLAMAV_SOCKET_PATH: Optional[str] = None  # Socket路径，None表示自动检测。优先级最高
-    CLAMAV_TCP_HOST: Optional[str] = "localhost"  # TCP方式的主机，可用于远程ClamAV服务器
-    CLAMAV_TCP_PORT: int = 3310  # TCP方式的端口
-    CLAMAV_SCAN_TIMEOUT: int = 60  # 扫描超时时间（秒）
-    CLAMAV_USE_TCP: bool = False  # 是否优先使用TCP方式（用于远程调用）
+    # ClamAV
+    CLAMAV_ENABLED: bool = True
+    CLAMAV_SOCKET_PATH: Optional[str] = None
+    CLAMAV_TCP_HOST: Optional[str] = "localhost"
+    CLAMAV_TCP_PORT: int = 3310
+    CLAMAV_SCAN_TIMEOUT: int = 60
+    CLAMAV_USE_TCP: bool = False
     
-    # 文件上传配置
-    MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100MB
-    ALLOWED_FILE_TYPES: List[str] = [".pdf", ".docx", ".txt", ".md", ".html"]
+    # 上传
+    MAX_FILE_SIZE: int = 100 * 1024 * 1024
+    ALLOWED_FILE_TYPES: List[str] = [".docx"]  # 仅支持 DOCX
     
-    # 文档处理配置
+    # 文档处理
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
     MAX_CHUNKS_PER_DOCUMENT: int = 1000
@@ -188,59 +204,16 @@ class Settings(BaseSettings):
     VECTORIZATION_TIMEOUT: int = 600
     OLLAMA_TIMEOUT: int = 300
     
-    # Unstructured配置
-    UNSTRUCTURED_PDF_STRATEGY: str = "hi_res"
-    UNSTRUCTURED_PDF_OCR_LANGUAGES: List[str] = ["eng", "chi_sim"]
-    UNSTRUCTURED_PDF_EXTRACT_IMAGES: bool = True
-    UNSTRUCTURED_PDF_IMAGE_TYPES: List[str] = ["Image", "Table"]
-    UNSTRUCTURED_DOCX_STRATEGY: str = "fast"
-    UNSTRUCTURED_DOCX_EXTRACT_IMAGES: bool = True
-    UNSTRUCTURED_PPTX_STRATEGY: str = "fast"
-    UNSTRUCTURED_PPTX_EXTRACT_IMAGES: bool = True
-    UNSTRUCTURED_HTML_STRATEGY: str = "fast"
-    UNSTRUCTURED_HTML_EXTRACT_IMAGES: bool = True
-    UNSTRUCTURED_TXT_ENCODING: str = "utf-8"
-    # 统一的语言优先级配置（供 Unstructured 解析使用）
-    UNSTRUCTURED_LANGUAGES: List[str] = ["zh", "en"]
-    
-    # 文档内容过滤配置（提升解析质量 - 文档降噪处理）
-    ENABLE_TOC_DETECTION: bool = True  # 启用目录识别（将误识别为表格的目录转换为文本）
-    ENABLE_HEADER_FOOTER_FILTER: bool = True  # 启用页眉页脚过滤（排除页眉页脚内容）
-    ENABLE_BLANK_CONTENT_FILTER: bool = True  # 启用空白内容过滤（排除空白页、纯空白字符）
-    ENABLE_NOISE_TEXT_FILTER: bool = True  # 启用噪声文本过滤（排除OCR错误、碎片文本等）
-    ENABLE_COPYRIGHT_FILTER: bool = True  # 启用版权声明过滤（排除版权页内容）
-    ENABLE_WATERMARK_FILTER: bool = True  # 启用水印过滤（排除水印文字）
-    ENABLE_COVER_PAGE_FILTER: bool = True  # 启用封面/封底页过滤（排除封面封底内容）
-    ENABLE_FOOTNOTE_FILTER: bool = False  # 启用脚注/页边注释过滤（默认关闭，因为某些脚注可能有用）
-    ENABLE_DUPLICATE_DETECTION: bool = True  # 启用重复内容检测（排除重复的段落或标题）
-
-    # 文档预处理/转换（参照 Dify 流程）
-    ENABLE_DOCX_REPAIR: bool = True  # 解析前修复主文档关系并清洗无效关系
-    ENABLE_OFFICE_TO_PDF: bool = True  # 修复仍失败时，尝试 LibreOffice 转 PDF 再解析
-    SOFFICE_PATH: str = "soffice"  # LibreOffice 可执行文件路径（可在 .env 中覆盖）
-
-    # 设备与性能（自动检测 CPU/GPU/版本）
-    UNSTRUCTURED_AUTO_DEVICE: bool = True  # 自动选择 cpu/cuda，并按需调整策略
-
-    # 外部可执行程序路径（可选覆盖）
-    POPPLER_PATH: Optional[str] = None  # 如 C:\tools\poppler\bin
-    TESSERACT_PATH: Optional[str] = None  # 如 C:\Program Files\Tesseract-OCR
-    TESSDATA_PREFIX: Optional[str] = None  # 如 C:\Program Files\Tesseract-OCR\tessdata
-    
-    # Unstructured模型配置（本地模型路径，优先使用本地模型）
-    # 模型目录结构：models/unstructured/yolo_x_layout/yolox_10.05.onnx
-    UNSTRUCTURED_MODELS_DIR: str = os.path.join(_PROJECT_ROOT, "models", "unstructured")
-    # Hugging Face缓存目录（用于存储从HF下载的模型，如果未设置则使用 UNSTRUCTURED_MODELS_DIR）
-    HF_HOME: Optional[str] = None  # 默认None，将设置为 UNSTRUCTURED_MODELS_DIR
-    # 是否允许从Hugging Face自动下载模型（如果本地不存在）
-    UNSTRUCTURED_AUTO_DOWNLOAD_MODEL: bool = True  # 默认允许自动下载，优先使用本地模型，本地没有则联网下载
-    
     # 分块存储策略
-    STORE_CHUNK_TEXT_IN_DB: bool = False  # 轻量模式：仅存元信息到 MySQL，全文分块归档到 MinIO
-    
+    STORE_CHUNK_TEXT_IN_DB: bool = False
+
+    # 兼容历史环境变量（忽略未使用但不报错）
+    SOFFICE_PATH: Optional[str] = None  # 旧的 libreoffice 路径，当前未使用
+
     class Config:
         env_file = _ENV_FILE
         env_file_encoding = "utf-8"
         case_sensitive = True
+        extra = "ignore"  # 忽略未声明的环境变量，避免启动失败
 
 settings = Settings()

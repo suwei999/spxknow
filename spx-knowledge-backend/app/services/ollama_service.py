@@ -79,3 +79,75 @@ class OllamaService:
         except Exception as e:
             print(f"Ollama聊天完成错误: {e}")
             return ""
+    
+    async def generate_answer(self, prompt: str, model: str = settings.OLLAMA_MODEL) -> str:
+        """生成答案（generate_text的别名，用于兼容）"""
+        try:
+            return await self.generate_text(prompt, model)
+        except Exception as e:
+            print(f"Ollama生成答案错误: {e}")
+            return ""
+    
+    async def stream_chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        model: str = settings.OLLAMA_MODEL
+    ):
+        """流式聊天完成"""
+        import asyncio
+        from typing import AsyncGenerator
+        
+        try:
+            # 在线程池中执行同步请求，避免阻塞事件循环
+            loop = asyncio.get_event_loop()
+            
+            def _make_stream_request():
+                """在线程池中执行的同步请求"""
+                response = requests.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "stream": True
+                    },
+                    stream=True,
+                    timeout=300
+                )
+                response.raise_for_status()
+                return response
+            
+            # 在线程池中执行请求
+            response = await loop.run_in_executor(None, _make_stream_request)
+            
+            # 在线程池中读取流式响应
+            def _read_stream():
+                """在线程池中读取流式数据"""
+                chunks = []
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line.decode('utf-8'))
+                            content = data.get("message", {}).get("content", "")
+                            done = data.get("done", False)
+                            chunks.append((content, done))
+                            if done:
+                                break
+                        except json.JSONDecodeError:
+                            continue
+                return chunks
+            
+            # 在线程池中读取流
+            chunks = await loop.run_in_executor(None, _read_stream)
+            
+            # 异步yield结果
+            for content, done in chunks:
+                if content:
+                    yield content
+                if done:
+                    break
+                    
+        except Exception as e:
+            import traceback
+            print(f"Ollama流式聊天完成错误: {e}")
+            print(traceback.format_exc())
+            yield f"错误: {str(e)}"

@@ -5,26 +5,38 @@ Search Schemas
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from app.schemas.base import BaseResponseSchema
+from app.schemas.base import BaseSchema, BaseResponseSchema
 
 class SearchRequest(BaseModel):
     """搜索请求模式"""
     query: str
     knowledge_base_id: Optional[int] = None
-    search_type: str = "hybrid"  # vector, keyword, hybrid
+    category_id: Optional[int] = None
+    search_type: str = "hybrid"  # vector, keyword, hybrid, exact
     limit: int = 10
+    similarity_threshold: Optional[float] = None  # 向量相似度阈值（可覆盖默认配置）
+    min_rerank_score: Optional[float] = None  # rerank 最小得分（0-1），后端过滤
     offset: int = 0
     filters: Optional[Dict[str, Any]] = None  # 过滤条件
     sort_by: Optional[str] = None  # 排序方式
     sort_order: Optional[str] = "desc"  # 排序顺序
 
-class SearchResponse(BaseResponseSchema):
+class SearchResponse(BaseSchema):
     """搜索响应模式"""
     document_id: int
     chunk_id: Optional[int] = None
     content: str
     score: float
     metadata: Optional[dict] = None
+    # Rerank相关信息（可选）
+    rerank_score: Optional[float] = None
+    has_image_ocr: Optional[bool] = None
+    image_ocr_count: Optional[int] = None
+    # 新增：返回块类型与表格结构（与编辑页保持一致）
+    chunk_type: Optional[str] = None
+    cells: Optional[List[List[str]]] = None
+    matrix: Optional[List[List[str]]] = None
+    table: Optional[Dict[str, Any]] = None
 
 class SearchSuggestionRequest(BaseModel):
     """搜索建议请求模式"""

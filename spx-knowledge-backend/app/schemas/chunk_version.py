@@ -27,7 +27,13 @@ class ChunkVersionResponse(BaseResponseSchema):
     chunk_id: int
     version_number: int
     content: str
-    metadata: Optional[str] = None
+    # ✅ 从 ORM 中的字段名 `meta` 读取，避免与 SQLAlchemy Base.metadata 冲突
+    metadata: Optional[str] = Field(
+        default=None,
+        description="版本元数据",
+        validation_alias='meta',
+        serialization_alias='meta',
+    )
     modified_by: Optional[str] = None
     version_comment: Optional[str] = None
     created_at: datetime

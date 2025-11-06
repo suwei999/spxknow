@@ -82,8 +82,10 @@
                 :key="version.id"
                 :timestamp="formatDateTime(version.created_at)"
               >
-                <el-tag>{{ version.version_number }}</el-tag>
-                <p>{{ version.description }}</p>
+                <div :class="['version-line', getVersionType(version)]">
+                  <el-tag class="ver-tag" size="large">{{ version.version_number }}</el-tag>
+                  <span class="version-desc" :title="version.description || '—'">{{ version.description || '—' }}</span>
+                </div>
               </el-timeline-item>
             </el-timeline>
           </template>
@@ -280,6 +282,14 @@ const getStatusText = (status: string) => {
   return map[status] || status
 }
 
+// 版本类型：用于颜色标注
+const getVersionType = (v: any): string => {
+  const desc = String(v?.description || '')
+  if (/回退|恢复|revert/i.test(desc)) return 'revert'
+  if (/编辑|修改|变更|edit|update/i.test(desc)) return 'edit'
+  return 'init'
+}
+
 onMounted(() => {
   loadDetail()
 })
@@ -307,6 +317,72 @@ onMounted(() => {
     background: #f9f9f9;
     border-radius: 4px;
     min-height: 300px;
+  }
+
+  /* 版本历史时间轴可读性增强 */
+  :deep(.el-timeline-item__timestamp) {
+    color: #cbd5e1;
+    font-size: 13px;
+  }
+  .version-line {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    .version-desc {
+      color: #e2e8f0;
+      font-size: 16px;
+      font-weight: 500;
+      letter-spacing: .2px;
+    }
+    :deep(.ver-tag) {
+      font-size: 14px;
+      padding: 6px 12px;
+    }
+  }
+
+  /* ===== 科技感增强样式（时间轴） ===== */
+  :deep(.el-timeline) {
+    padding-left: 8px;
+  }
+  /* 竖线：渐变+微弱发光 */
+  :deep(.el-timeline-item__tail) {
+    border-left: none !important;
+    width: 3px;
+    background: linear-gradient(180deg, rgba(64,158,255,0.85), rgba(56,189,248,0.65));
+    box-shadow: 0 0 8px rgba(64,158,255,0.45);
+  }
+  /* 节点：霓虹点 */
+  :deep(.el-timeline-item__node) {
+    background: radial-gradient(circle at 30% 30%, #4a90e2, #2563eb);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2), 0 0 12px rgba(56,189,248,0.5);
+    border: none;
+  }
+  /* 版本号标签：渐变胶囊 + 轻微发光 */
+  .version-line :deep(.ver-tag) {
+    background: linear-gradient(135deg, #3b82f6, #06b6d4) !important;
+    color: #eaf6ff !important;
+    border: none !important;
+    box-shadow: 0 2px 10px rgba(59,130,246,0.35) !important;
+    border-radius: 999px !important;
+  }
+  /* 颜色区分：回退=红橙、编辑=蓝青、初始=紫蓝 */
+  .version-line.revert :deep(.ver-tag) {
+    background: linear-gradient(135deg, #ef4444, #f59e0b) !important;
+    box-shadow: 0 2px 10px rgba(239,68,68,0.35) !important;
+  }
+  .version-line.edit :deep(.ver-tag) {
+    background: linear-gradient(135deg, #3b82f6, #06b6d4) !important;
+  }
+  .version-line.init :deep(.ver-tag) {
+    background: linear-gradient(135deg, #8b5cf6, #3b82f6) !important;
+  }
+  /* 文本悬浮高亮 */
+  .version-line {
+    transition: transform .15s ease, filter .15s ease;
+  }
+  .version-line:hover {
+    transform: translateX(2px);
+    filter: brightness(1.05);
   }
 
   .preview-frame {

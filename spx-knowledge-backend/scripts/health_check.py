@@ -12,8 +12,9 @@ def check_database():
     """检查数据库连接"""
     try:
         from app.config.database import engine
+        from sqlalchemy import text
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.execute(text("SELECT 1"))
         print("数据库连接正常")
         return True
     except Exception as e:

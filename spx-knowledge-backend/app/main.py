@@ -9,6 +9,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.v1.router import api_router
 from app.api.v1.routes import websocket as ws_routes
+from app.api.routes import query as query_routes
+from app.api.routes import tables as tables_routes
 from app.core.exceptions import setup_exception_handlers
 from app.core.logging import logger
 from app.config.settings import settings
@@ -93,9 +95,40 @@ app.middleware("http")(logging_middleware)
 
 # 注册API路由 - 按照设计文档要求使用 /api 前缀
 app.include_router(api_router, prefix="/api")
+# 新增查询上下文路由
+app.include_router(query_routes.router, prefix="/api")
+# 新增表格懒加载路由
+app.include_router(tables_routes.router, prefix="/api")
 
 # 兼容前端 WebSocket 直接连接 /ws/... 的路径（不走 /api 前缀）
 app.include_router(ws_routes.router, prefix="/ws")
+
+# 兼容性图片代理（无 /api 前缀的场景）
+from fastapi import HTTPException
+from app.services.minio_storage_service import MinioStorageService
+from app.core.logging import logger
+from fastapi import Response
+
+@app.get("/images/file")
+async def compat_image_proxy(object: str):
+    try:
+        minio = MinioStorageService()
+        data = minio.download_file(object)
+        lower = object.lower()
+        if lower.endswith((".jpg", ".jpeg")):
+            content_type = "image/jpeg"
+        elif lower.endswith(".png"):
+            content_type = "image/png"
+        elif lower.endswith(".gif"):
+            content_type = "image/gif"
+        elif lower.endswith(".webp"):
+            content_type = "image/webp"
+        else:
+            content_type = "application/octet-stream"
+        return Response(content=data, media_type=content_type)
+    except Exception as e:
+        logger.error(f"兼容图片代理错误: {e}", exc_info=True)
+        raise HTTPException(status_code=404, detail="图片不存在或无法访问")
 
 # 设置异常处理器
 setup_exception_handlers(app)

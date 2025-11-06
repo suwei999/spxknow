@@ -20,7 +20,7 @@ class VectorService:
         # 统一使用 OLLAMA_BASE_URL
         self.ollama_url = settings.OLLAMA_BASE_URL
         self.embedding_model = settings.OLLAMA_EMBEDDING_MODEL
-        self.image_model = settings.OLLAMA_IMAGE_MODEL  # TODO: 添加图片模型配置
+        # 图片向量默认走本地CLIP，不依赖 Ollama
     
     def generate_embedding(self, text: str) -> List[float]:
         """生成文本嵌入向量。
@@ -37,7 +37,50 @@ class VectorService:
             )
             response.raise_for_status()
             result = response.json()
-            embedding = result.get("embedding", [])
+            # 兼容不同返回格式
+            embedding = (
+                result.get("embedding")
+                if isinstance(result, dict)
+                else result
+            )
+            if embedding is None:
+                embedding = []
+            raw_type = type(embedding).__name__
+            logger.info(f"[Embedding] raw type: {raw_type}")
+            # 统一为 List[float]
+            try:
+                # 字符串 -> JSON / split
+                if isinstance(embedding, str):
+                    import json as _json
+                    try:
+                        embedding = _json.loads(embedding)
+                    except Exception:
+                        # 尝试按逗号/空格切分
+                        parts = [p for p in embedding.replace("[", "").replace("]", "").replace("\n", " ").split(",") if p.strip()]
+                        if len(parts) <= 1:
+                            parts = [p for p in embedding.split() if p.strip()]
+                        embedding = [float(p) for p in parts]
+                # numpy -> list
+                try:
+                    import numpy as _np
+                    if isinstance(embedding, _np.ndarray):
+                        embedding = embedding.tolist()
+                except Exception:
+                    pass
+                # 元素转 float
+                if isinstance(embedding, list):
+                    embedding = [float(x) for x in embedding]
+            except Exception as _ve:
+                logger.warning(f"向量格式修正失败，将视为无向量: {_ve}")
+                embedding = []
+            # 记录规范化后的关键信息
+            try:
+                preview = embedding[:5] if isinstance(embedding, list) else []
+                logger.info(
+                    f"[Embedding] normalized dim={len(embedding) if isinstance(embedding, list) else 0}, first5={preview}"
+                )
+            except Exception:
+                pass
             if not embedding:
                 logger.warning("Ollama返回空向量，降级为无向量索引")
                 return []

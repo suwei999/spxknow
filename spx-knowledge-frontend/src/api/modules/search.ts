@@ -7,6 +7,7 @@ export const search = (params: {
   knowledge_base_id?: number
   category_id?: number
   similarity_threshold?: number
+  min_rerank_score?: number
   page?: number
   size?: number
 }) => {
@@ -22,6 +23,7 @@ export const vectorSearch = (params: {
   query: string
   knowledge_base_id?: number
   similarity_threshold?: number
+  min_rerank_score?: number
   page?: number
   size?: number
 }) => {
@@ -113,6 +115,53 @@ export const similarSearch = (data: { document_id: number; chunk_id?: number; si
     url: '/search/similar',
     method: 'post',
     data
+  })
+}
+
+// 图片搜索 - 以图搜图
+export const searchByImage = (file: File, params?: {
+  similarity_threshold?: number
+  limit?: number
+  knowledge_base_id?: number
+}) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  
+  // 构建查询参数（URL查询参数）
+  const queryParams = new URLSearchParams()
+  if (params?.similarity_threshold !== undefined && params.similarity_threshold !== null) {
+    queryParams.append('similarity_threshold', params.similarity_threshold.toString())
+  }
+  if (params?.limit !== undefined && params.limit !== null) {
+    queryParams.append('limit', params.limit.toString())
+  }
+  if (params?.knowledge_base_id !== undefined && params.knowledge_base_id !== null) {
+    queryParams.append('knowledge_base_id', params.knowledge_base_id.toString())
+  }
+  
+  const url = queryParams.toString() 
+    ? `/images/search-by-image?${queryParams.toString()}`
+    : '/images/search-by-image'
+  
+  return request({
+    url,
+    method: 'post',
+    data: formData
+    // 注意：不要手动设置 Content-Type，让浏览器自动设置（包括 boundary）
+  })
+}
+
+// 图片搜索 - 以文搜图
+export const searchByTextForImages = (params: {
+  query_text: string
+  similarity_threshold?: number
+  limit?: number
+  knowledge_base_id?: number
+}) => {
+  return request({
+    url: '/images/search-by-text',
+    method: 'post',
+    data: params
   })
 }
 

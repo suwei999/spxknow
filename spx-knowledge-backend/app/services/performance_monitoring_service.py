@@ -91,7 +91,8 @@ class PerformanceMonitoringService:
             logger.debug("收集应用指标")
             
             # 数据库连接数
-            db_connections = self.db.execute("SELECT COUNT(*) FROM information_schema.processlist").scalar()
+            from sqlalchemy import text
+            db_connections = self.db.execute(text("SELECT COUNT(*) FROM information_schema.processlist")).scalar()
             
             # Redis连接数
             redis_info = self.redis_client.info()

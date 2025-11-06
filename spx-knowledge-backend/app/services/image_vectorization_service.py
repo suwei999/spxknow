@@ -8,8 +8,6 @@ import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from PIL import Image
 import torch
-import torchvision.transforms as transforms
-from torchvision.models import resnet50, vit_b_16
 import open_clip
 import cv2
 from app.core.logging import logger
@@ -20,6 +18,9 @@ from app.utils.download_progress import (
     log_download_error,
     setup_hf_download_progress
 )
+
+# 彻底移除对 torchvision 的导入，避免因环境不兼容导致应用启动失败
+# 如果后续需要 ResNet/ViT，可在具备兼容环境时再按需引入
 
 class ImageVectorizationService:
     """图片向量化服务 - 严格按照设计文档实现"""
@@ -35,6 +36,31 @@ class ImageVectorizationService:
         try:
             logger.info("开始初始化视觉模型")
             from app.config.settings import settings as _settings
+            
+            # ⚠️ 重要：在检查模型之前就设置 HF_HOME，确保 open_clip 能找到缓存
+            # 优先使用 settings.py 中配置的 HF_HOME，否则使用系统默认位置
+            # 关键修复：如果配置了 CLIP_CACHE_DIR，应该优先使用配置的缓存目录作为 HF_HOME
+            if _settings.HF_HOME:
+                # 如果明确配置了 HF_HOME，使用配置的值
+                hf_home = _settings.HF_HOME
+                logger.info(f"📁 使用配置的 HF_HOME: {hf_home}")
+            else:
+                # 如果没有配置 HF_HOME，但配置了 CLIP_CACHE_DIR，优先使用 CLIP_CACHE_DIR 的父目录
+                # 这样 open_clip 和 huggingface_hub 都会优先使用配置的缓存目录
+                if _settings.CLIP_CACHE_DIR:
+                    # 将 HF_HOME 设置为 CLIP_CACHE_DIR 的父目录（通常是 models/clip）
+                    # 或者直接设置为 CLIP_CACHE_DIR（如果希望 HF 缓存直接放在这里）
+                    hf_home = os.path.dirname(_settings.CLIP_CACHE_DIR)  # 例如：F:\spxknowlage\spx-knowledge-backend\models\clip
+                    logger.info(f"📁 未配置 HF_HOME，使用 CLIP_CACHE_DIR 的父目录作为 HF_HOME: {hf_home}")
+                else:
+                    # 最后才使用系统默认位置
+                    hf_home = os.path.expanduser("~/.cache/huggingface")
+                    logger.info(f"📁 使用系统默认 HF_HOME: {hf_home}")
+            
+            # ⚠️ 关键：强制设置 HF_HOME 环境变量，确保 open_clip 和 huggingface_hub 使用配置的目录
+            os.environ["HF_HOME"] = hf_home  # 使用 = 而不是 setdefault，确保覆盖任何默认值
+            logger.info(f"✅ 已设置 HF_HOME 环境变量: {hf_home}")
+            
             # 仅初始化CLIP，避免下载其他模型
             logger.info("初始化CLIP模型")
             # 准备本地目录（首次运行自动创建）
@@ -45,7 +71,10 @@ class ImageVectorizationService:
                 logger.info(f"✅ CLIP缓存目录已准备: {_settings.CLIP_CACHE_DIR}")
             except Exception as e:
                 logger.warning(f"创建CLIP目录失败: {e}")
-            os.environ.setdefault('OPENCLIP_CACHE', _settings.CLIP_CACHE_DIR)
+            
+            # ⚠️ 关键：设置 OPENCLIP_CACHE 环境变量，确保 open_clip 使用配置的缓存目录
+            os.environ["OPENCLIP_CACHE"] = _settings.CLIP_CACHE_DIR  # 使用 = 而不是 setdefault，确保覆盖
+            logger.info(f"✅ 已设置 OPENCLIP_CACHE 环境变量: {_settings.CLIP_CACHE_DIR}")
 
             # 检查本地权重文件是否存在
             model_name = getattr(_settings, 'CLIP_MODEL_NAME', 'ViT-B-32')
@@ -55,6 +84,7 @@ class ImageVectorizationService:
             # open_clip 库下载的模型可能缓存在 OPENCLIP_CACHE 目录中
             model_found = False
             model_location = None
+            hf_cache_model_path = None  # Hugging Face Hub 缓存中的模型路径
             
             def _check_clip_model_in_directory(directory, desc=""):
                 """在指定目录中查找 CLIP 模型文件"""
@@ -98,40 +128,69 @@ class ImageVectorizationService:
                 if cached_model:
                     model_found = True
                     model_location = cached_model
-                    # open_clip 会自动使用缓存，不需要指定路径
+                    # open_clip 会自动使用缓存，不需要指定路径；但需强制离线避免探测网络
                     pretrained_arg = "laion2b_s34b_b79k"
                     logger.info(f"✅ 在 CLIP 缓存目录中发现模型: {cached_model}")
                     logger.info(f"💡 open_clip 库将自动使用缓存中的模型，无需重新下载")
                     logger.info(f"🔧 正在从缓存加载 CLIP 模型: {model_name}")
                 else:
-                    # 3. 检查 Hugging Face 默认缓存位置（open_clip 可能使用 HF Hub）
+                    # 3. 检查 Hugging Face 缓存位置（open_clip 可能使用 HF Hub）
+                    # ⚠️ 关键修复：优先检查已设置的 HF_HOME（即配置的缓存目录），而不是系统默认位置
                     try:
-                        hf_default_cache = os.path.expanduser("~/.cache/huggingface")
-                        cached_model = _check_clip_model_in_directory(hf_default_cache, "HF默认缓存")
+                        # 使用已设置的 HF_HOME（已经在前面设置为配置的目录）
+                        hf_cache_dir = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+                        cached_model = _check_clip_model_in_directory(hf_cache_dir, "HF缓存目录（配置的）")
                         if cached_model:
                             model_found = True
                             model_location = cached_model
+                            hf_cache_model_path = cached_model
                             pretrained_arg = "laion2b_s34b_b79k"
-                            logger.info(f"✅ 在 HF 默认缓存目录中发现 CLIP 模型: {cached_model}")
+                            logger.info(f"✅ 在配置的 HF 缓存目录中发现 CLIP 模型: {cached_model}")
                             logger.info(f"💡 open_clip 库将自动使用缓存中的模型，无需重新下载")
                             logger.info(f"🔧 正在从缓存加载 CLIP 模型: {model_name}")
+                        else:
+                            # 如果配置的目录中没有，再检查系统默认位置（作为最后的备选）
+                            default_hf_cache = os.path.expanduser("~/.cache/huggingface")
+                            if default_hf_cache != hf_cache_dir:
+                                cached_model = _check_clip_model_in_directory(default_hf_cache, "HF缓存目录（系统默认）")
+                                if cached_model:
+                                    logger.warning(f"⚠️ 在系统默认缓存目录中发现模型，但配置的缓存目录中未找到: {cached_model}")
+                                    logger.warning(f"⚠️ 建议将模型复制到配置的缓存目录: {_settings.CLIP_CACHE_DIR}")
+                                    logger.warning(f"⚠️ 注意：系统将优先使用配置的缓存目录，不会使用系统默认缓存中的模型")
+                                    logger.warning(f"⚠️ 如果希望使用系统默认缓存，请在 settings.py 中配置 HF_HOME 指向: {default_hf_cache}")
+                                    # 注意：这里不设置 model_found = True，因为希望优先使用配置的目录
+                                    # 如果用户希望使用系统默认缓存，可以手动配置 HF_HOME 指向默认位置
                     except Exception as e:
-                        logger.debug(f"检查 HF 默认缓存目录时出错: {e}")
+                        logger.debug(f"检查 HF 缓存目录时出错: {e}")
                 
                 # 如果模型不存在，才记录下载开始
                 if not model_found:
                     logger.info(f"⚠️ 本地CLIP模型权重不存在: {_settings.CLIP_PRETRAINED_PATH}")
                     logger.info(f"⚠️ CLIP缓存目录中未发现模型: {_settings.CLIP_CACHE_DIR}")
+                    logger.info("🌐 将允许联网下载模型（本地模型不存在）")
+                    
+                    # ✅ 重要：确保离线模式环境变量未设置，允许下载
+                    # 清除任何可能阻止下载的离线模式设置
+                    if "HF_HUB_OFFLINE" in os.environ:
+                        old_offline = os.environ.pop("HF_HUB_OFFLINE", None)
+                        logger.debug(f"已清除 HF_HUB_OFFLINE={old_offline}，允许下载")
+                    if "TRANSFORMERS_OFFLINE" in os.environ:
+                        old_transformers = os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                        logger.debug(f"已清除 TRANSFORMERS_OFFLINE={old_transformers}，允许下载")
+                    if "HF_DATASETS_OFFLINE" in os.environ:
+                        old_datasets = os.environ.pop("HF_DATASETS_OFFLINE", None)
+                        logger.debug(f"已清除 HF_DATASETS_OFFLINE={old_datasets}，允许下载")
                     
                     # 设置 Hugging Face 下载进度显示
                     try:
                         # 启用 Hugging Face Hub 的进度显示
-                        os.environ.setdefault('HF_HUB_DISABLE_PROGRESS_BARS', '0')
+                        os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '0'
                         # 尝试设置 tqdm 进度条
                         from huggingface_hub.utils import disable_progress_bars
                         disable_progress_bars(False)
-                    except Exception:
-                        pass
+                        logger.debug("✅ 已启用 Hugging Face 下载进度显示")
+                    except Exception as e:
+                        logger.debug(f"启用下载进度显示失败: {e}")
                     
                     # 记录下载开始信息
                     log_download_start(
@@ -144,11 +203,117 @@ class ImageVectorizationService:
                     logger.info(f"🔧 正在下载并加载 CLIP 模型: {model_name}, pretrained={pretrained_arg}")
                     logger.info(f"💾 下载后的模型将保存到缓存目录: {_settings.CLIP_CACHE_DIR}")
             
+            # 如果已找到本地/缓存模型，强制开启离线模式，避免任何网络探测
+            if model_found:
+                # 设置多个离线模式环境变量，确保所有库都遵守离线模式
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                os.environ["HF_DATASETS_OFFLINE"] = "1"
+                # 强制 Hugging Face Hub 使用本地文件，禁止网络连接
+                os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+                logger.info("🌐 已启用 HF 离线模式（发现本地/缓存模型，禁止联网探测）")
+                logger.info(f"📍 模型位置: {model_location}")
+                
+                # ⚠️ 如果使用的是 Hugging Face Hub 缓存的模型，确保 HF_HOME 指向正确位置
+                # 注意：如果模型在系统默认缓存中，但我们希望使用配置的缓存目录，这里不应该修改 HF_HOME
+                if hf_cache_model_path:
+                    # 检查模型路径是否在配置的缓存目录中
+                    configured_hf_home = os.environ.get("HF_HOME", "")
+                    if hf_cache_model_path.startswith(_settings.CLIP_CACHE_DIR) or hf_cache_model_path.startswith(configured_hf_home):
+                        # 模型已经在配置的目录中，不需要修改 HF_HOME
+                        logger.debug(f"✅ 模型已在配置的缓存目录中，无需修改 HF_HOME")
+                    else:
+                        # 模型在系统默认缓存中，但我们已经设置了 HF_HOME 指向配置的目录
+                        # 这里不应该修改，因为我们已经强制使用配置的目录
+                        logger.warning(f"⚠️ 发现模型在系统默认缓存中: {hf_cache_model_path}")
+                        logger.warning(f"⚠️ 但已配置使用: {configured_hf_home}")
+                        logger.warning(f"⚠️ 建议将模型复制到配置的缓存目录: {_settings.CLIP_CACHE_DIR}")
+                        logger.warning(f"⚠️ 当前将继续使用配置的缓存目录，模型下载将保存到配置的目录")
+
             # 尝试加载模型，如果是下载过程，捕获下载相关错误
             try:
-                clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
-                    model_name, pretrained=pretrained_arg, device=self.device
-                )
+                # 如果找到本地模型，在调用 open_clip 之前再次确认离线模式设置
+                if model_found:
+                    # 确保所有离线模式环境变量都已设置（在调用前再次确认）
+                    os.environ["HF_HUB_OFFLINE"] = "1"
+                    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                    os.environ["HF_DATASETS_OFFLINE"] = "1"
+                    # 强制 Hugging Face Hub 使用本地文件，禁止任何网络连接
+                    os.environ["HF_HUB_DISABLE_EXPERIMENTAL_WARNING"] = "1"
+                    
+                    # ✅ 关键修复：使用多种方式强制禁用网络连接
+                    try:
+                        # 方法1: 使用 huggingface_hub 的 offline_mode（如果支持）
+                        try:
+                            from huggingface_hub import offline_mode
+                            offline_mode(True)
+                            logger.info("✅ 已启用 huggingface_hub.offline_mode(True)")
+                        except (ImportError, AttributeError):
+                            pass
+                        
+                        # 方法2: 使用环境变量强制离线（已设置）
+                        # 方法3: 临时禁用 Hugging Face 相关的网络请求（仅限 huggingface.co）
+                        try:
+                            import requests
+                            from urllib.parse import urlparse
+                            # 保存原始的 get 和 head 方法
+                            original_get = requests.get
+                            original_head = requests.head
+                            
+                            def disabled_get(url, *args, **kwargs):
+                                """禁用 Hugging Face 相关的网络请求"""
+                                if isinstance(url, str):
+                                    parsed = urlparse(url)
+                                    if 'huggingface.co' in parsed.netloc or 'hf.co' in parsed.netloc:
+                                        raise ConnectionError(f"网络连接已禁用（离线模式），拒绝访问: {url}")
+                                # 对于非 Hugging Face 的请求，允许通过
+                                return original_get(url, *args, **kwargs)
+                            
+                            def disabled_head(url, *args, **kwargs):
+                                """禁用 Hugging Face 相关的 HEAD 请求"""
+                                if isinstance(url, str):
+                                    parsed = urlparse(url)
+                                    if 'huggingface.co' in parsed.netloc or 'hf.co' in parsed.netloc:
+                                        raise ConnectionError(f"网络连接已禁用（离线模式），拒绝访问: {url}")
+                                # 对于非 Hugging Face 的请求，允许通过
+                                return original_head(url, *args, **kwargs)
+                            
+                            # 临时替换 requests 方法，仅禁用 Hugging Face 相关请求
+                            requests.get = disabled_get
+                            requests.head = disabled_head
+                            logger.info("✅ 已临时禁用 Hugging Face 网络连接（仅用于模型加载）")
+                            
+                            # 加载模型
+                            try:
+                                clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+                                    model_name, pretrained=pretrained_arg, device=self.device
+                                )
+                                logger.info("✅ 成功从本地缓存加载 CLIP 模型（未联网）")
+                            finally:
+                                # 恢复原始的 requests 方法
+                                requests.get = original_get
+                                requests.head = original_head
+                                logger.debug("✅ 已恢复 requests 网络连接")
+                        except Exception as req_err:
+                            logger.warning(f"禁用 Hugging Face 网络连接失败，使用标准离线模式: {req_err}")
+                            # 回退到标准加载方式（依赖环境变量）
+                            clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+                                model_name, pretrained=pretrained_arg, device=self.device
+                            )
+                    except Exception as offline_err:
+                        logger.warning(f"强制离线模式设置失败，回退到标准方式: {offline_err}")
+                        # 最后的回退：使用标准加载方式
+                        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+                            model_name, pretrained=pretrained_arg, device=self.device
+                        )
+                else:
+                    # ✅ 模型不存在，允许下载（不设置离线模式）
+                    logger.info("🌐 允许联网下载（本地模型不存在）")
+                    logger.info(f"📥 正在从 Hugging Face 下载模型: {pretrained_arg}")
+                    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+                        model_name, pretrained=pretrained_arg, device=self.device
+                    )
+                    logger.info("✅ 模型下载完成")
                 
                 # 如果是从网络下载的（模型不在缓存中），记录成功
                 if not model_found:
@@ -233,6 +398,57 @@ class ImageVectorizationService:
             raise CustomException(
                 code=ErrorCode.VECTOR_GENERATION_FAILED,
                 message=f"CLIP向量化失败: {str(e)}"
+            )
+    
+    def generate_clip_text_embedding(self, text: str) -> List[float]:
+        """使用CLIP文本编码器生成文本向量（512维）
+        
+        Args:
+            text: 输入文本（如用户查询文本）
+            
+        Returns:
+            512维向量列表
+        """
+        try:
+            logger.info(f"开始CLIP文本向量化: {text[:50]}...")
+            
+            # 检查CLIP模型是否已加载
+            if 'clip' not in self.models:
+                raise CustomException(
+                    code=ErrorCode.VECTOR_GENERATION_FAILED,
+                    message="CLIP模型未初始化"
+                )
+            
+            clip_model = self.models['clip']
+            
+            # 对文本进行tokenize
+            # open_clip.tokenize 返回的是 torch.Tensor，需要移动到device
+            text_tokens = open_clip.tokenize([text]).to(self.device)
+            
+            # 使用CLIP文本编码器
+            with torch.no_grad():
+                text_features = clip_model.encode_text(text_tokens)
+                # 归一化特征向量（与图像向量处理方式一致）
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                embedding = text_features.cpu().numpy().flatten().tolist()
+            
+            if not embedding or len(embedding) != 512:
+                logger.error(f"CLIP文本向量生成失败或维度不正确: {len(embedding) if embedding else 0}")
+                raise CustomException(
+                    code=ErrorCode.VECTOR_GENERATION_FAILED,
+                    message=f"CLIP文本向量生成失败或维度不正确: 期望512维，实际{len(embedding) if embedding else 0}维"
+                )
+            
+            logger.info(f"CLIP文本向量化完成，向量维度: {len(embedding)}")
+            return embedding
+            
+        except CustomException:
+            raise
+        except Exception as e:
+            logger.error(f"CLIP文本向量化错误: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.VECTOR_GENERATION_FAILED,
+                message=f"CLIP文本向量化失败: {str(e)}"
             )
     
     def generate_resnet_embedding(self, image_path: str) -> List[float]:

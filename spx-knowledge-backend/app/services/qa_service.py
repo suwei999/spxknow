@@ -16,8 +16,9 @@ from app.models.qa_question import QAQuestion, QAStatistics
 from app.services.opensearch_service import OpenSearchService
 from app.services.ollama_service import OllamaService
 from app.services.multimodal_processing_service import MultimodalProcessingService
-from app.services.fallback_strategy_service import FallbackStrategyService
 from app.services.qa_history_service import QAHistoryService
+from app.services.search_service import SearchService
+from app.schemas.search import SearchRequest
 from app.schemas.qa import (
     QASessionCreate, QASessionResponse, QASessionListResponse,
     QAMultimodalQuestionResponse, QAImageSearchResponse,
@@ -33,8 +34,8 @@ class QAService:
         self.opensearch_service = OpenSearchService()
         self.ollama_service = OllamaService(db)
         self.multimodal_service = MultimodalProcessingService(db)
-        self.fallback_service = FallbackStrategyService(db)
         self.history_service = QAHistoryService(db)
+        self.search_service = SearchService(db)
     
     # 1. 知识库选择功能
     
@@ -204,12 +205,10 @@ class QAService:
                 query_method=session_data.search_type,
                 search_config={
                     "max_sources": session_data.max_sources,
-                    "similarity_threshold": session_data.similarity_threshold
+                    "similarity_threshold": session_data.similarity_threshold,
+                    "search_type": session_data.search_type
                 },
-                llm_config={
-                    "model": session_data.llm_model,
-                    "temperature": session_data.temperature
-                },
+                llm_config={},
                 question_count=0,
                 status="active",
                 last_activity_time=datetime.now()
@@ -365,6 +364,9 @@ class QAService:
             # 更新配置
             if config_update.search_type:
                 db_session.query_method = config_update.search_type
+                search_config = db_session.search_config or {}
+                search_config["search_type"] = config_update.search_type
+                db_session.search_config = search_config
             if config_update.max_sources:
                 search_config = db_session.search_config or {}
                 search_config["max_sources"] = config_update.max_sources
@@ -373,14 +375,6 @@ class QAService:
                 search_config = db_session.search_config or {}
                 search_config["similarity_threshold"] = config_update.similarity_threshold
                 db_session.search_config = search_config
-            if config_update.llm_model:
-                llm_config = db_session.llm_config or {}
-                llm_config["model"] = config_update.llm_model
-                db_session.llm_config = llm_config
-            if config_update.temperature:
-                llm_config = db_session.llm_config or {}
-                llm_config["temperature"] = config_update.temperature
-                db_session.llm_config = llm_config
             
             self.db.commit()
             self.db.refresh(db_session)
@@ -410,7 +404,19 @@ class QAService:
     ) -> QAMultimodalQuestionResponse:
         """多模态问答 - 根据设计文档实现"""
         try:
-            logger.info(f"执行多模态问答，会话ID: {session_id}")
+            logger.info(
+                "[QA] exec multimodal QA session=%s input_type=%s search_type=%s "
+                "threshold=%s max_sources=%s include_history=%s max_history=%s text_len=%s image=%s",
+                session_id,
+                processed_input.get("input_type"),
+                search_type,
+                similarity_threshold,
+                max_sources,
+                include_history,
+                max_history,
+                len((processed_input.get("text_data") or {}).get("cleaned_text", "")) if processed_input else 0,
+                "yes" if processed_input.get("image_data") else "no"
+            )
             
             # 获取会话信息 - 从MySQL数据库
             db_session = self.db.query(QASession).filter(
@@ -436,55 +442,99 @@ class QAService:
             question_content = self._build_question_content(processed_input)
             
             # 执行检索
+            session_search_config = (db_session.search_config or {}) if db_session else {}
             search_results = await self._perform_search(
-                question_content, processed_input, search_type, max_sources
+                question_content,
+                processed_input,
+                search_type,
+                max_sources,
+                similarity_threshold=similarity_threshold,
+                min_rerank_score=session_search_config.get("min_rerank_score") if isinstance(session_search_config, dict) else None
             )
             
             # 降级策略处理
-            fallback_result = await self.fallback_service.evaluate_relevance_and_decide_strategy(
-                search_results, question_content, processed_input
-            )
-            
-            # 生成答案
-            answer_content = fallback_result["processing_result"]["answer"]
-            answer_type = fallback_result["processing_result"]["answer_type"]
-            confidence = fallback_result["processing_result"]["confidence"]
-            citations = fallback_result["processing_result"]["citations"]
+            answer_type = "knowledge_base"
+            confidence = 0.85
+            citations = self._build_citations_from_results(search_results)
+
+            kb_context = self._build_knowledge_context(search_results)
+            # 如果检索为空，仍尝试调用模型回答
+            if not kb_context.strip():
+                answer_type = "llm_only"
+                confidence = 0.5
+                llm_model = session_info.get("llm_config", {}).get("model") or settings.OLLAMA_MODEL
+                raw_answer = await self.ollama_service.chat_completion(
+                    [
+                        {"role": "system", "content": "你是企业知识库问答助手，请尽可能给出准确、可靠的答案。"},
+                        {"role": "user", "content": question_content}
+                    ],
+                    model=llm_model
+                ) or ""
+                answer_content = self._post_process_llm_answer(raw_answer)
+            else:
+                llm_model = session_info.get("llm_config", {}).get("model") or settings.OLLAMA_MODEL
+                raw_answer = await self.ollama_service.generate_text(
+                    self._build_kb_prompt(question_content, kb_context),
+                    model=llm_model
+                ) or ""
+                answer_content = self._post_process_llm_answer(raw_answer)
+
+            if not answer_content.strip():
+                answer_type = "no_info"
+                confidence = 0.0
+                answer_content = "抱歉，知识库中没有找到相关答案。"
+                citations = []
             
             # 构建来源信息
             source_info = self._build_source_info(citations)
             
             # 构建处理信息
             processing_info = {
-                "input_type": processed_input["input_type"],
+                "input_type": processed_input.get("input_type"),
                 "search_type": search_type,
                 "similarity_threshold": similarity_threshold,
                 "max_sources": max_sources,
-                "processing_steps": processed_input["processing_steps"],
-                "fallback_strategy": fallback_result["strategy"]
+                "processing_steps": processed_input.get("processing_steps"),
+                "answer_strategy": answer_type,
+                "retrieved_count": len(search_results)
             }
             
-            # 构建质量评估
+            # 构建质量评估（基于最终回答类型）
+            if answer_type == "knowledge_base":
+                relevance_level = "high"
+            elif answer_type == "llm_only":
+                relevance_level = "medium"
+            else:
+                relevance_level = "none"
             quality_assessment = {
-                "overall_score": fallback_result["relevance_score"],
-                "relevance_level": fallback_result["relevance_level"],
+                "overall_score": confidence,
+                "relevance_level": relevance_level,
                 "confidence": confidence,
                 "answer_length": len(answer_content),
                 "source_count": len(citations)
             }
             
             # 存储历史记录到OpenSearch（暂时没有用户概念，user_id设为空字符串）
-            await self.history_service.store_qa_history(
-                question_id=question_id,
-                session_id=session_id,
-                user_id="",  # 暂时没有用户概念，设为空字符串
-                knowledge_base_id=session_info["knowledge_base_id"],
-                question_content=question_content,
-                answer_content=answer_content,
-                source_info=source_info,
-                processing_info=processing_info,
-                quality_assessment=quality_assessment
-            )
+            try:
+                await self.history_service.store_qa_history(
+                    question_id=question_id,
+                    session_id=session_id,
+                    user_id="",  # 暂时没有用户概念，设为空字符串
+                    knowledge_base_id=session_info["knowledge_base_id"],
+                    question_content=question_content,
+                    answer_content=answer_content,
+                    source_info=source_info,
+                    processing_info=processing_info,
+                    quality_assessment=quality_assessment
+                )
+            except Exception as history_err:
+                logger.error(
+                    "[QA] store history failed question=%s session=%s err=%s",
+                    question_id,
+                    session_id,
+                    history_err,
+                    exc_info=True
+                )
             
             # 存储历史记录到MySQL的QAQuestion表（用于会话详情查询）
             try:
@@ -536,7 +586,7 @@ class QAService:
         except Exception as e:
             logger.error(f"多模态问答失败: {e}", exc_info=True)
             raise CustomException(
-                code=ErrorCode.MULTIMODAL_QA_FAILED,
+                code=ErrorCode.SEARCH_FAILED,
                 message=f"多模态问答失败: {str(e)}"
             )
     
@@ -634,7 +684,12 @@ class QAService:
             
             # 执行检索
             search_results = await self._perform_search(
-                question_content, {}, "hybrid", settings.QA_DEFAULT_MAX_SOURCES
+                question_content,
+                {"session_id": session_id},
+                "hybrid",
+                settings.QA_DEFAULT_MAX_SOURCES,
+                similarity_threshold=settings.SEARCH_VECTOR_THRESHOLD,
+                min_rerank_score=None
             )
             
             # 生成流式答案
@@ -670,38 +725,53 @@ class QAService:
         question_content: str,
         processed_input: Dict[str, Any],
         search_type: str,
-        max_sources: int
+        max_sources: int,
+        similarity_threshold: Optional[float] = None,
+        min_rerank_score: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         """执行检索"""
         try:
-            # 实现实际的检索逻辑 - 使用OpenSearch
-            from app.services.vector_service import VectorService
-            
-            # 1. 生成问题向量
-            vector_service = VectorService(self.db)
-            question_vector = vector_service.generate_embedding(question_content)
-            
-            # 2. 从会话获取知识库ID
-            db_session = self.db.query(QASession).filter(QASession.session_id == processed_input.get("session_id")).first()
+            # 关联会话，获取知识库等信息
+            session_id = processed_input.get("session_id")
+            db_session = None
+            if session_id:
+                db_session = self.db.query(QASession).filter(QASession.session_id == session_id).first()
             kb_id = db_session.knowledge_base_id if db_session else None
-            
-            # 3. 执行向量搜索
-            results = await self.opensearch_service.search_document_vectors(
-                query_vector=question_vector,
-                similarity_threshold=settings.SEARCH_VECTOR_THRESHOLD,
+            session_search_config = (db_session.search_config if db_session else {}) or {}
+
+            # 构建搜索请求，复用 SearchService 逻辑（与搜索页保持一致）
+            req = SearchRequest(
+                query=question_content,
+                knowledge_base_id=kb_id,
+                search_type=search_type or "hybrid",
                 limit=max_sources,
-                knowledge_base_id=kb_id
+                similarity_threshold=similarity_threshold if similarity_threshold is not None else session_search_config.get("similarity_threshold"),
+                min_rerank_score=min_rerank_score
             )
             
-            # 转换结果格式，并查找关联图片
+            results = await self.search_service.search(req)
+
+            # SearchService 返回 SearchResponse，如果是 pydantic 对象，转换为 dict
             formatted_results = []
             from app.services.document_service import DocumentService
             from app.models.chunk import DocumentChunk
             import json
             
+            doc_service = DocumentService(self.db)
+            
             for hit in results:
-                document_id = hit.get("_source", {}).get("document_id")
-                chunk_id = hit.get("_source", {}).get("chunk_id")
+                data = hit.dict() if hasattr(hit, "dict") else dict(hit)
+                meta = data.get("metadata") or {}
+                document_id = data.get("document_id")
+                chunk_id = data.get("chunk_id")
+                similarity_score = (
+                    data.get("rerank_score")
+                    or meta.get("rerank_score")
+                    or data.get("score")
+                    or meta.get("knn_score")
+                    or meta.get("bm25_score")
+                    or 0.0
+                )
                 
                 # 查找关联图片
                 associated_images = []
@@ -713,7 +783,6 @@ class QAService:
                         ).first()
                         
                         if chunk:
-                            doc_service = DocumentService(self.db)
                             images = doc_service.get_images_for_chunk(document_id, chunk)
                             
                             # 格式化图片信息
@@ -738,16 +807,21 @@ class QAService:
                         logger.warning(f"查找文本块关联图片失败: {e}")
                 
                 formatted_results.append({
-                    "content": hit.get("_source", {}).get("content", ""),
-                    "similarity_score": hit.get("_score", 0),
-                    "document_id": document_id,
-                    "document_title": hit.get("_source", {}).get("document_title", ""),
-                    "knowledge_base_name": hit.get("_source", {}).get("knowledge_base_name", ""),
-                    "chunk_index": hit.get("_source", {}).get("chunk_index", 0),
-                    "page_number": hit.get("_source", {}).get("page_number", 0),
-                    "url_link": hit.get("_source", {}).get("url_link", ""),
+                    "content": data.get("content", ""),
+                    "similarity_score": similarity_score,
+                    "document_id": str(document_id) if document_id is not None else "",
+                    "document_title": meta.get("document_title") or "",
+                    "knowledge_base_name": meta.get("knowledge_base_name", ""),
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "page_number": meta.get("page_number", 0),
+                    "url_link": meta.get("url_link", ""),
+                    "chunk_id": chunk_id,
                     # ✅ 新增：关联图片信息
-                    "associated_images": associated_images
+                    "associated_images": associated_images,
+                    "metadata": meta,
+                    "table": data.get("table") or meta.get("table"),
+                    "matrix": data.get("matrix"),
+                    "cells": data.get("cells") or meta.get("cells"),
                 })
             
             return formatted_results
@@ -1131,6 +1205,11 @@ class QAService:
                 model = session_info["llm_config"].get("model", model)
             
             # 构建消息列表
+            if context.strip():
+                user_prompt = self._build_kb_prompt(question_content, context)
+            else:
+                user_prompt = question_content
+
             messages = [
                 {
                     "role": "system",
@@ -1138,14 +1217,7 @@ class QAService:
                 },
                 {
                     "role": "user",
-                    "content": f"""基于以下知识库内容回答用户问题：
-
-知识库内容：
-{context}
-
-用户问题：{question_content}
-
-请基于知识库内容提供准确、详细的回答。"""
+                    "content": user_prompt
                 }
             ]
             
@@ -1182,13 +1254,128 @@ class QAService:
                 "type": "error",
                 "data": {"message": str(e)}
             }
+
+    def _post_process_llm_answer(self, answer: str) -> str:
+        """清洗LLM返回的答案，去掉<think>等头脑风暴标记并格式化"""
+        if not answer:
+            return ""
+
+        cleaned = answer.strip()
+
+        # 去掉<think>...</think>结构
+        lower = cleaned.lower()
+        think_start = lower.find("<think>")
+        think_end = lower.find("</think>")
+        if think_start != -1 and think_end != -1:
+            front = cleaned[:think_start]
+            tail = cleaned[think_end + len("</think>") :]
+            cleaned = (front + tail).strip()
+
+        # 如果仍包含裸的<think>起始标签（无闭合），也一并去掉
+        cleaned = cleaned.replace("<think>", "").replace("</think>", "")
+
+        # 规范中文段落，保证可读性
+        cleaned = cleaned.replace("\r\n", "\n")
+        while "\n\n\n" in cleaned:
+            cleaned = cleaned.replace("\n\n\n", "\n\n")
+
+        return cleaned.strip()
     
+    def _extract_result_text(self, result: Dict[str, Any]) -> str:
+        """提取检索结果的文本内容（支持表格数据）"""
+        def _serialize_matrix(matrix: Any) -> str:
+            lines: List[str] = []
+            if isinstance(matrix, list):
+                for row in matrix:
+                    if isinstance(row, (list, tuple)):
+                        lines.append(" | ".join(str(cell) for cell in row))
+                    elif isinstance(row, dict):
+                        lines.append(" | ".join(f"{k}:{v}" for k, v in row.items()))
+                    else:
+                        lines.append(str(row))
+            elif isinstance(matrix, dict):
+                lines.append(" | ".join(f"{k}:{v}" for k, v in matrix.items()))
+            else:
+                lines.append(str(matrix))
+            return "\n".join(lines).strip()
+
+        text = (result.get("content") or "").strip()
+        if text:
+            return text
+
+        metadata = result.get("metadata") or {}
+        for key in ("content", "text", "summary"):
+            meta_text = (metadata.get(key) or "").strip()
+            if meta_text:
+                return meta_text
+
+        table = result.get("table") or metadata.get("table")
+        if table:
+            headers = table.get("headers") or []
+            rows = table.get("rows") or table.get("data") or []
+            lines: List[str] = []
+            if headers:
+                lines.append(" | ".join(str(h) for h in headers))
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict):
+                        if headers:
+                            lines.append(" | ".join(str(row.get(h, "")) for h in headers))
+                        else:
+                            lines.append(" | ".join(f"{k}:{v}" for k, v in row.items()))
+                    elif isinstance(row, (list, tuple)):
+                        lines.append(" | ".join(str(cell) for cell in row))
+                    else:
+                        lines.append(str(row))
+            return "\n".join(lines).strip()
+
+        for matrix_key in ("matrix", "cells"):
+            matrix = result.get(matrix_key) or metadata.get(matrix_key)
+            if matrix:
+                serialized = _serialize_matrix(matrix)
+                if serialized:
+                    return serialized
+
+        return ""
+
     def _build_knowledge_context(self, search_results: List[Dict[str, Any]]) -> str:
         """构建知识库上下文"""
         context_parts = []
         for i, result in enumerate(search_results[:5]):
-            context_parts.append(f"[来源{i+1}]\n{result['content']}\n")
+            snippet = self._extract_result_text(result)
+            if not snippet:
+                continue
+            context_parts.append(f"[来源{i+1}]\n{snippet}\n")
         return "\n".join(context_parts)
+
+    def _build_citations_from_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """根据检索结果构建引用信息"""
+        citations: List[Dict[str, Any]] = []
+        for idx, result in enumerate(search_results[:settings.QA_DEFAULT_MAX_SOURCES], start=1):
+            snippet = self._extract_result_text(result)
+            citations.append({
+                "document_id": result.get("document_id"),
+                "document_title": result.get("document_title") or f"文档{idx}",
+                "knowledge_base_name": result.get("knowledge_base_name") or "",
+                "content_snippet": (snippet or "")[:200],
+                "content": snippet,
+                "similarity_score": result.get("similarity_score", 0.0),
+                "position_info": {
+                    "chunk_index": result.get("chunk_index"),
+                    "page_number": result.get("page_number")
+                },
+                "associated_images": result.get("associated_images", [])
+            })
+        return citations
+
+    def _build_kb_prompt(self, question_content: str, kb_context: str) -> str:
+        """构建知识库回答提示词"""
+        return (
+            "基于以下知识库内容回答用户问题：\n\n"
+            f"知识库内容：\n{kb_context}\n\n"
+            f"用户问题：{question_content}\n\n"
+            "请基于知识库内容提供准确、详细的回答，并在回答中引用来源（例如：来源1）。"
+        )
     
     def _session_to_dict(self, session: QASession) -> dict:
         """将QASession对象转换为字典"""
@@ -1197,8 +1384,10 @@ class QAService:
             "session_name": session.session_name,
             "knowledge_base_id": session.knowledge_base_id,
             "knowledge_base_name": f"知识库{session.knowledge_base_id}",
+            "search_type": session.query_method or "hybrid",
             "search_config": session.search_config or {},
-            "llm_config": session.llm_config or {},
+            # LLM 模型配置统一从全局 settings 读取，此处不返回数据库中的旧缓存
+            "llm_config": {},
             "question_count": session.question_count,
             "last_question": session.last_question,
             "last_activity": session.last_activity_time.isoformat() if session.last_activity_time else None,

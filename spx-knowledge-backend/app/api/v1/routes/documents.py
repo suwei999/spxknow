@@ -2,7 +2,7 @@
 Document API Routes
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from typing import List, Optional
 import json
 from app.schemas.document import DocumentCreate, DocumentUpdate, DocumentResponse, DocumentUploadRequest
@@ -626,16 +626,157 @@ async def get_document_preview(
 async def get_chunk_content_from_opensearch(
     doc_id: int,
     chunk_id: int,
+    source: str = Query("db", description="优先数据源: db 或 os"),
+    db: Session = Depends(get_db)
 ):
-    """从 OpenSearch 读取指定块内容（不走数据库/MinIO）。"""
+    """优先从数据库读取块内容，必要时回退至 OpenSearch。"""
     try:
+        from app.models.chunk import DocumentChunk
+
+        def load_meta(raw_meta):
+            if not raw_meta:
+                return {}
+            try:
+                return json.loads(raw_meta) if isinstance(raw_meta, str) else raw_meta
+            except (json.JSONDecodeError, TypeError):
+                return {}
+
+        def build_image_fields(meta_dict: dict):
+            image_path = meta_dict.get('image_path')
+            image_id = meta_dict.get('image_id')
+            image_url = None
+            if image_path:
+                from datetime import timedelta
+                minio = MinioStorageService()
+                try:
+                    image_url = minio.client.presigned_get_object(minio.bucket_name, image_path, expires=timedelta(hours=1))
+                except Exception:
+                    image_url = f"/{image_path}"
+            return image_id, image_path, image_url
+
+        def load_textual_content_from_archive(document_id: int, chunk_index: int) -> str:
+            """当数据库未存储正文时，从 MinIO 归档中补齐文本/表格内容。"""
+            if chunk_index is None:
+                return ""
+            try:
+                doc = db.query(Document).filter(Document.id == document_id).first()
+                if not doc:
+                    return ""
+                created = getattr(doc, "created_at", None) or datetime.datetime.utcnow()
+                year = created.strftime("%Y")
+                month = created.strftime("%m")
+                object_name = f"documents/{year}/{month}/{document_id}/parsed/chunks/chunks.jsonl.gz"
+                minio = MinioStorageService()
+                obj = minio.client.get_object(minio.bucket_name, object_name)
+                try:
+                    with gzip.GzipFile(fileobj=obj, mode="rb") as gz:
+                        for line in gz:
+                            try:
+                                data = json.loads(line.decode("utf-8"))
+                            except Exception:
+                                continue
+                            idx = data.get("index")
+                            if idx is None:
+                                idx = data.get("chunk_index")
+                            if idx is None:
+                                continue
+                            if int(idx) == int(chunk_index):
+                                return data.get("content") or ""
+                finally:
+                    try:
+                        obj.close()
+                        obj.release_conn()
+                    except Exception:
+                        pass
+            except Exception as archive_err:
+                logger.debug(f"MinIO 归档读取 chunk_index={chunk_index} 失败: {archive_err}")
+            return ""
+
+        def build_payload(chunk_type: str, content_value: str, meta_dict: dict, extra: dict = None):
+            payload = {
+                "chunk_id": chunk_id,
+                "chunk_type": chunk_type,
+                "content": content_value,
+                "char_count": len(content_value),
+                "meta": meta_dict or {}
+            }
+            if extra:
+                payload.update(extra)
+            return {"code": 0, "message": "ok", "data": payload}
+
+        # 1. 默认走数据库（也是唯一包含 MinIO 信息的权威源）
+        if source.lower() != "os":
+            chunk = db.query(DocumentChunk).filter(
+                DocumentChunk.id == chunk_id,
+                DocumentChunk.document_id == doc_id
+            ).first()
+            if chunk:
+                meta_dict = load_meta(chunk.meta)
+                chunk_type = (chunk.chunk_type or "text").lower()
+                content = chunk.content or ""
+                extra_fields = {
+                    "chunk_index": getattr(chunk, 'chunk_index', None),
+                    "document_id": chunk.document_id
+                }
+
+                if chunk_type == 'image':
+                    image_id, image_path, image_url = build_image_fields(meta_dict)
+                    if image_url:
+                        content = image_url
+                    extra_fields.update({
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "image_url": image_url,
+                    })
+                else:
+                    if not content:
+                        archive_content = load_textual_content_from_archive(chunk.document_id, extra_fields["chunk_index"])
+                        if archive_content:
+                            content = archive_content
+
+                return build_payload(chunk_type, content, meta_dict, extra_fields)
+
+        # 2. 若显式要求读取 OpenSearch 或数据库缺失，再访问 OS
         osvc = OpenSearchService()
-        # OpenSearch 文档 id 规则为 chunk_{chunk_id}
-        res = osvc.client.get(index=osvc.document_index, id=f"chunk_{chunk_id}")
-        source = res.get("_source", {}) if isinstance(res, dict) else {}
-        if not source or int(source.get("document_id", 0)) != int(doc_id):
-            return {"code": 1, "message": "未找到该块或文档不匹配", "data": None}
-        return {"code": 0, "message": "ok", "data": {"chunk_id": chunk_id, "content": source.get("content", ""), "chunk_type": source.get("chunk_type", "text"), "char_count": len(source.get("content", "") or "")}}
+        source_doc = {}
+        try:
+            res = osvc.client.get(index=osvc.document_index, id=f"chunk_{chunk_id}")
+            source_doc = res.get("_source", {}) if isinstance(res, dict) else {}
+        except Exception as e:
+            logger.debug(f"OpenSearch 未找到 chunk_{chunk_id}: {e}")
+            source_doc = {}
+
+        if source_doc and int(source_doc.get("document_id", 0)) == int(doc_id):
+            chunk_type = (source_doc.get("chunk_type", "text") or "text").lower()
+            metadata = source_doc.get("metadata") or {}
+            content = source_doc.get("content", "") or ""
+            extra_fields = {}
+            chunk_index = None
+            try:
+                chunk_index = int(metadata.get("chunk_index", metadata.get("index")))
+            except Exception:
+                chunk_index = metadata.get("chunk_index") or metadata.get("index")
+            if chunk_index is not None:
+                extra_fields["chunk_index"] = chunk_index
+                extra_fields["document_id"] = doc_id
+
+            if chunk_type == "image":
+                image_id, image_path, image_url = build_image_fields(metadata)
+                if image_url:
+                    content = image_url
+                extra_fields.update({
+                    "image_id": image_id,
+                    "image_path": image_path,
+                    "image_url": image_url,
+                })
+            else:
+                if not content and chunk_index is not None:
+                    archive_content = load_textual_content_from_archive(doc_id, chunk_index)
+                    if archive_content:
+                        content = archive_content
+            return build_payload(chunk_type, content, metadata, extra_fields)
+
+        return {"code": 1, "message": "未找到该块或文档不匹配", "data": None}
     except Exception as e:
         logger.error(f"读取OpenSearch块内容失败: {e}")
         return {"code": 1, "message": f"读取失败: {str(e)}"}

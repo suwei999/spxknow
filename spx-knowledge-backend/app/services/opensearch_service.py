@@ -4,6 +4,7 @@ OpenSearch Service
 """
 
 from typing import List, Optional, Dict, Any
+import asyncio
 import json
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from opensearchpy.helpers import bulk as os_bulk
@@ -20,6 +21,7 @@ class OpenSearchService:
         self.document_index = settings.DOCUMENT_INDEX_NAME
         self.image_index = settings.IMAGE_INDEX_NAME
         self.qa_index = settings.QA_INDEX_NAME
+        self.qa_answer_index = getattr(settings, "QA_ANSWER_INDEX_NAME", "qa_answers")
         self._ensure_indices_exist()
     
     def _create_client(self) -> OpenSearch:
@@ -104,6 +106,10 @@ class OpenSearchService:
             # 创建问答历史索引
             if not self.client.indices.exists(index=self.qa_index):
                 self._create_qa_index()
+
+            # 创建问答答案索引
+            if not self.client.indices.exists(index=self.qa_answer_index):
+                self._create_qa_answer_index()
             
             logger.info("OpenSearch索引检查完成")
             
@@ -113,6 +119,50 @@ class OpenSearchService:
                 code=ErrorCode.OPENSEARCH_INDEX_FAILED,
                 message=f"OpenSearch索引创建失败: {str(e)}"
             )
+
+    async def index_exists(self, index: str) -> bool:
+        """异步检查索引是否存在"""
+        loop = asyncio.get_running_loop()
+
+        def _exists() -> bool:
+            return bool(self.client.indices.exists(index=index))
+
+        try:
+            return await loop.run_in_executor(None, _exists)
+        except Exception as e:
+            logger.error(f"[OpenSearch] index_exists error index={index}: {e}")
+            raise
+
+    async def create_index(self, index: str, mapping: Dict[str, Any]) -> bool:
+        """异步创建索引（若不存在）"""
+        loop = asyncio.get_running_loop()
+
+        def _create() -> bool:
+            if self.client.indices.exists(index=index):
+                return True
+            self.client.indices.create(index=index, body=mapping)
+            return True
+
+        try:
+            return await loop.run_in_executor(None, _create)
+        except Exception as e:
+            logger.error(f"[OpenSearch] create_index error index={index}: {e}")
+            raise
+
+    async def index_document(self, index: str, doc_id: str, document: Dict[str, Any]) -> bool:
+        """异步写入文档"""
+        loop = asyncio.get_running_loop()
+
+        def _index() -> bool:
+            resp = self.client.index(index=index, id=doc_id, body=document, refresh=True)
+            result = resp.get("result")
+            return result in ("created", "updated")
+
+        try:
+            return await loop.run_in_executor(None, _index)
+        except Exception as e:
+            logger.error(f"[OpenSearch] index_document error index={index} id={doc_id}: {e}")
+            raise
     
     def _create_document_index(self):
         """创建文档内容索引 - 根据设计文档实现"""
@@ -289,27 +339,134 @@ class OpenSearchService:
         """创建问答历史索引 - 根据设计文档实现"""
         try:
             logger.info(f"创建问答历史索引: {self.qa_index}")
-            
+
+            from app.config.settings import settings as _settings
+
             index_mapping = {
                 "settings": {
-                    "number_of_shards": 3,
+                    "number_of_shards": 1,
                     "number_of_replicas": 1,
-                    # 关键：开启 KNN（用于 image_vector）
-                    "index.knn": True
+                    "index.knn": True,
+                    "analysis": {
+                        "analyzer": {
+                            "ik_max_word": {
+                                "type": "ik_max_word"
+                            }
+                        }
+                    }
                 },
                 "mappings": {
                     "properties": {
+                        "question_id": {"type": "keyword"},
                         "session_id": {"type": "keyword"},
-                        "question_id": {"type": "integer"},
-                        "question_text": {"type": "text"},
-                        "answer_text": {"type": "text"},
+                        "user_id": {"type": "keyword"},
                         "knowledge_base_id": {"type": "integer"},
-                        "query_method": {"type": "keyword"},
-                        "relevance_score": {"type": "float"},
+                        "question_content": {
+                            "type": "text",
+                            "analyzer": "ik_max_word",
+                            "fields": {
+                                "keyword": {"type": "keyword"}
+                            }
+                        },
+                        "answer_content": {
+                            "type": "text",
+                            "analyzer": "ik_max_word",
+                            "fields": {
+                                "keyword": {"type": "keyword"}
+                            }
+                        },
+                        "source_info": {"type": "object"},
+                        "processing_info": {"type": "object"},
+                        "quality_assessment": {"type": "object"},
+                        "user_feedback": {"type": "object"},
                         "created_at": {"type": "date"},
+                        "updated_at": {"type": "date"},
                         "question_vector": {
                             "type": "knn_vector",
-                            "dimension": 768,
+                            "dimension": _settings.TEXT_EMBEDDING_DIMENSION,
+                            "method": {
+                                "name": "hnsw",
+                                "space_type": "cosinesimil",
+                                "engine": "nmslib"
+                            }
+                        },
+                        "answer_vector": {
+                            "type": "knn_vector",
+                            "dimension": _settings.TEXT_EMBEDDING_DIMENSION,
+                            "method": {
+                                "name": "hnsw",
+                                "space_type": "cosinesimil",
+                                "engine": "nmslib"
+                            }
+                        },
+                        "question_type": {"type": "keyword"},
+                        "answer_quality": {"type": "float"},
+                        "keywords": {"type": "keyword"}
+                    }
+                }
+            }
+
+            self.client.indices.create(index=self.qa_index, body=index_mapping)
+            logger.info(f"问答历史索引创建成功: {self.qa_index}")
+
+        except Exception as e:
+            logger.error(f"创建问答历史索引失败: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.OPENSEARCH_INDEX_FAILED,
+                message=f"问答历史索引创建失败: {str(e)}"
+            )
+
+    def _create_qa_answer_index(self):
+        """创建问答答案索引"""
+        try:
+            logger.info(f"创建问答答案索引: {self.qa_answer_index}")
+
+            from app.config.settings import settings as _settings
+
+            index_mapping = {
+                "settings": {
+                    "number_of_shards": 1,
+                    "number_of_replicas": 1,
+                    "index.knn": True,
+                    "analysis": {
+                        "analyzer": {
+                            "ik_max_word": {"type": "ik_max_word"}
+                        }
+                    }
+                },
+                "mappings": {
+                    "properties": {
+                        "question_id": {"type": "keyword"},
+                        "session_id": {"type": "keyword"},
+                        "knowledge_base_id": {"type": "integer"},
+                        "question_content": {
+                            "type": "text",
+                            "analyzer": "ik_max_word",
+                            "fields": {"keyword": {"type": "keyword"}}
+                        },
+                        "answer_content": {
+                            "type": "text",
+                            "analyzer": "ik_max_word",
+                            "fields": {"keyword": {"type": "keyword"}}
+                        },
+                        "created_at": {"type": "date"},
+                        "updated_at": {"type": "date"},
+                        "answer_strategy": {"type": "keyword"},
+                        "confidence": {"type": "float"},
+                        "keywords": {"type": "keyword"},
+                        "source_ids": {"type": "keyword"},
+                        "question_vector": {
+                            "type": "knn_vector",
+                            "dimension": _settings.TEXT_EMBEDDING_DIMENSION,
+                            "method": {
+                                "name": "hnsw",
+                                "space_type": "cosinesimil",
+                                "engine": "nmslib"
+                            }
+                        },
+                        "answer_vector": {
+                            "type": "knn_vector",
+                            "dimension": _settings.TEXT_EMBEDDING_DIMENSION,
                             "method": {
                                 "name": "hnsw",
                                 "space_type": "cosinesimil",
@@ -319,15 +476,15 @@ class OpenSearchService:
                     }
                 }
             }
-            
-            self.client.indices.create(index=self.qa_index, body=index_mapping)
-            logger.info(f"问答历史索引创建成功: {self.qa_index}")
-            
+
+            self.client.indices.create(index=self.qa_answer_index, body=index_mapping)
+            logger.info(f"问答答案索引创建成功: {self.qa_answer_index}")
+
         except Exception as e:
-            logger.error(f"创建问答历史索引失败: {e}", exc_info=True)
+            logger.error(f"创建问答答案索引失败: {e}", exc_info=True)
             raise CustomException(
                 code=ErrorCode.OPENSEARCH_INDEX_FAILED,
-                message=f"问答历史索引创建失败: {str(e)}"
+                message=f"问答答案索引创建失败: {str(e)}"
             )
     
     async def index_document_chunk(self, chunk_data: Dict[str, Any]) -> bool:
@@ -680,31 +837,32 @@ class OpenSearchService:
                 )
             
             # 构建搜索查询（使用 OpenSearch k-NN plugin 标准语法）
-            # 重要：k 值应该略大于 limit，以便有足够的候选进行阈值过滤
-            # 但不要设置过大，避免召回过多不相关的结果
-            # 策略：k = limit * 2，但不超过 50（避免召回过多低分结果）
-            k_value = min(limit * 2, 50) if limit else 50
-            body = {
-                "size": k_value,  # 先召回更多候选，后续按阈值过滤
+            # 重要：k 值应该略大于 limit，并配置 num_candidates 提升召回稳定性
+            # 经验策略：
+            # - k = max(limit * 2, 20)，最多 100，保证返回结果数量充足
+            # - num_candidates = max(k * 3, 60)，最多 300，提升 HNSW 搜索的稳定性
+            if limit:
+                k_value = max(limit * 2, 20)
+            else:
+                k_value = 40
+            k_value = min(k_value, 100)
+            logger.info(
+                f"[Image KNN] limit={limit}, k={k_value}, "
+                f"similarity_threshold={similarity_threshold}"
+            )
+            knn_payload: Dict[str, Any] = {
+                "vector": query_vector,
+                "k": k_value
+            }
+            
+            body: Dict[str, Any] = {
+                "size": k_value,
                 "query": {
                     "knn": {
-                        "image_vector": {
-                            "vector": query_vector,
-                            "k": k_value
-                        }
+                        "image_vector": knn_payload
                     }
                 }
             }
-            
-            # 添加过滤条件
-            filters = []
-            if knowledge_base_id:
-                filters.append({"term": {"knowledge_base_id": knowledge_base_id}})
-            if exclude_image_id:
-                filters.append({"bool": {"must_not": {"term": {"image_id": exclude_image_id}}}})
-            
-            if filters:
-                body["query"]["knn"]["image_vector"]["filter"] = {"bool": {"must": filters}}
             
             # 强制标准 JSON 序列化-反序列化，确保 query_vector 是数组而不是字符串
             try:
@@ -728,18 +886,26 @@ class OpenSearchService:
                 score = hit["_score"]
                 # 严格按阈值过滤：只有 >= threshold 的结果才保留
                 if score >= similarity_threshold:
+                    source = hit["_source"]
+                    # 额外在 Python 层过滤知识库与排除图片
+                    if knowledge_base_id is not None and source.get("knowledge_base_id") != knowledge_base_id:
+                        filtered_count += 1
+                        continue
+                    if exclude_image_id and source.get("image_id") == exclude_image_id:
+                        filtered_count += 1
+                        continue
                     result = {
-                        "image_id": hit["_source"]["image_id"],
-                        "document_id": hit["_source"]["document_id"],
-                        "knowledge_base_id": hit["_source"]["knowledge_base_id"],
-                        "image_path": hit["_source"]["image_path"],
+                        "image_id": source["image_id"],
+                        "document_id": source["document_id"],
+                        "knowledge_base_id": source["knowledge_base_id"],
+                        "image_path": source["image_path"],
                         "similarity_score": score,
-                        "image_type": hit["_source"].get("image_type"),
-                        "page_number": hit["_source"].get("page_number"),
-                        "coordinates": hit["_source"].get("coordinates"),
-                        "ocr_text": hit["_source"].get("ocr_text", ""),
-                        "description": hit["_source"].get("description", ""),
-                        "source_document": str(hit["_source"].get("document_id", ""))  # 转换为字符串，TODO: 获取文档名称
+                        "image_type": source.get("image_type"),
+                        "page_number": source.get("page_number"),
+                        "coordinates": source.get("coordinates"),
+                        "ocr_text": source.get("ocr_text", ""),
+                        "description": source.get("description", ""),
+                        "source_document": str(source.get("document_id", ""))  # 转换为字符串，TODO: 获取文档名称
                     }
                     results.append(result)
                 else:

@@ -321,7 +321,18 @@ const editorOptions = {
 }
 
 const chunksTable = computed(() => {
-  return (chunks.value || []).map((chunk: any) => ({
+  const keyword = searchKeyword.value.trim().toLowerCase()
+  const list = chunks.value || []
+  const filtered = keyword
+    ? list.filter((chunk: any) => {
+        const idx = String(chunk?.chunk_index ?? '').toLowerCase()
+        const type = String(chunk?.chunk_type ?? '').toLowerCase()
+        const content = String(chunk?.content ?? '').toLowerCase()
+        return idx.includes(keyword) || type.includes(keyword) || content.includes(keyword)
+      })
+    : list
+
+  return filtered.map((chunk: any) => ({
     ...chunk,
     index: chunk.chunk_index,
   }))
@@ -331,7 +342,11 @@ const loadChunks = async () => {
   try {
     const res = await getDocumentChunks(props.documentId, { page: 1, size: 1000, include_content: true } as any)
     const data = (res as any)?.data
-    chunks.value = Array.isArray(data) ? data : (data?.list || data?.chunks || [])
+    const rawChunks = Array.isArray(data) ? data : (data?.list || data?.chunks || [])
+    chunks.value = rawChunks.filter((chunk: any) => {
+      const type = (chunk?.chunk_type || '').toLowerCase()
+      return type !== 'image'
+    })
     
     // ✅ 调试：检查表格块的数据
     const tableChunks = chunks.value.filter((c: any) => c.chunk_type === 'table')
@@ -532,6 +547,10 @@ const initializeTableData = async (chunk: any) => {
 }
 
 const onRowClick = async (data: any) => {
+  const type = (data?.chunk_type || '').toLowerCase()
+  if (type === 'image') {
+    return
+  }
   // 同一个列表数据：直接使用左侧已加载的块数据，避免重复请求
   const chunkId = data.id || data.chunk_id
   if (!chunkId) return

@@ -1,8 +1,137 @@
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Iterable, Tuple
+import zipfile
+import tempfile
+import shutil
+import re
+
 from sqlalchemy.orm import Session
 
 from app.core.logging import logger
+
+
+NAMESPACES = {
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
+}
+
+
+def _clear_element(paragraphs: List[Any]) -> None:
+    if not paragraphs:
+        return
+    for para in list(paragraphs):
+        if para.text and para.text.strip():
+            para.text = ''
+        if para.runs:
+            for run in para.runs:
+                run.text = ''
+
+
+def _clear_tables(tables: List[Any]) -> None:
+    if not tables:
+        return
+    for table in list(tables):
+        for row in table.rows:
+            for cell in row.cells:
+                cell.text = ''
+
+
+def _is_toc_line(text: str) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return True
+    lower = stripped.lower()
+    if lower.startswith('目录') or lower.startswith('table of contents'):
+        return True
+    # 匹配形如“章节名 ...... 12”的目录项，兼容中文省略号与圆点
+    if re.search(r"[\.·\u2026]{2,}\s*\d+$", stripped):
+        return True
+    return False
+
+
+def _is_toc_paragraph(paragraph: Any) -> bool:
+    """综合段落样式、内容与 XML 指令判断是否为目录条目"""
+    try:
+        style_name = getattr(getattr(paragraph, 'style', None), 'name', '') or ''
+        if style_name and style_name.upper().startswith('TOC'):
+            return True
+    except Exception:
+        pass
+
+    try:
+        runs_text = ''.join((run.text or '') for run in getattr(paragraph, 'runs', []) if getattr(run, 'text', None))
+    except Exception:
+        runs_text = ''
+
+    text = (paragraph.text or '').strip() if hasattr(paragraph, 'text') else ''
+    combined_text = (runs_text or text).strip()
+    if _is_toc_line(combined_text):
+        return True
+
+    try:
+        xml_repr = paragraph._p.xml  # type: ignore[attr-defined]
+        if xml_repr and 'TOC' in xml_repr.upper():
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _flatten_table_text(table: Any) -> str:
+    lines: List[str] = []
+    try:
+        for row in table.rows:
+            cells = []
+            for cell in row.cells:
+                cell_text = (cell.text or '').strip()
+                if cell_text:
+                    cells.append(cell_text)
+            if cells:
+                lines.append(' '.join(cells))
+    except Exception:
+        return ''
+    return ' '.join(lines).strip()
+
+
+def _is_toc_table(table: Any) -> bool:
+    text = _flatten_table_text(table)
+    if not text:
+        return False
+    normalized = text.replace(' ', '').lower()
+    if normalized.startswith('目录') or normalized.startswith('tableofcontents'):
+        return True
+    if re.search(r"[\.·\u2026]{2,}\s*\d+", text):
+        dot_matches = re.findall(r"[\.·\u2026]{2,}\s*\d+", text)
+        if len(dot_matches) >= 2:
+            return True
+    return False
+
+
+def _remove_toc_content_controls(doc: Any) -> int:
+    removed = 0
+    try:
+        nsmap = doc._element.nsmap  # type: ignore[attr-defined]
+        toc_nodes = list(doc._element.xpath('.//w:sdt', namespaces=nsmap))  # type: ignore[attr-defined]
+        for sdt in toc_nodes:
+            try:
+                text_nodes = sdt.xpath('.//w:t/text()', namespaces=nsmap)  # type: ignore[attr-defined]
+                combined = ''.join(text_nodes).strip()
+                normalized = combined.replace(' ', '').lower()
+                if normalized.startswith('目录') or normalized.startswith('tableofcontents') or 'toc' in normalized:
+                    parent = sdt.getparent()
+                    if parent is not None:
+                        parent.remove(sdt)
+                        removed += 1
+            except Exception:
+                continue
+    except Exception:
+        return removed
+    return removed
 
 
 class DocxService:
@@ -19,6 +148,96 @@ class DocxService:
     def __init__(self, db: Session):
         self.db = db
 
+    @staticmethod
+    def has_embedded_images(file_path: str) -> bool:
+        try:
+            if not os.path.exists(file_path):
+                return False
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                for name in zf.namelist():
+                    if name.startswith('word/media/'):
+                        return True
+        except Exception as exc:
+            logger.debug(f"[DOCX] 检查图片失败: {exc}")
+        return False
+
+    @staticmethod
+    def sanitize_docx(file_path: str) -> str:
+        try:
+            from docx import Document  # type: ignore
+        except Exception as exc:
+            logger.warning(f"[DOCX] sanitize_docx 导入 python-docx 失败: {exc}")
+            return file_path
+
+        try:
+            doc = Document(file_path)
+        except Exception as exc:
+            logger.warning(f"[DOCX] sanitize_docx 打开失败: {exc}")
+            return file_path
+
+        try:
+            for section in doc.sections:
+                _clear_element(section.header.paragraphs)
+                _clear_element(section.footer.paragraphs)
+                if hasattr(section.header, 'tables'):
+                    _clear_tables(section.header.tables)
+                if hasattr(section.footer, 'tables'):
+                    _clear_tables(section.footer.tables)
+        except Exception as exc:
+            logger.debug(f"[DOCX] sanitize_docx 清理页眉页脚失败: {exc}")
+
+        try:
+            processed = 0
+            max_scan = min(len(doc.paragraphs), 200)
+            idx = 0
+            while idx < max_scan and idx < len(doc.paragraphs):
+                para = doc.paragraphs[idx]
+                if _is_toc_paragraph(para):
+                    doc._element.body.remove(para._element)
+                    processed += 1
+                    max_scan = min(len(doc.paragraphs), 200)
+                    continue
+                idx += 1
+            if processed:
+                logger.debug(f"[DOCX] sanitize_docx 移除目录段落 {processed} 条")
+        except Exception as exc:
+            logger.debug(f"[DOCX] sanitize_docx 清理目录失败: {exc}")
+
+        # 清理以表格呈现的目录
+        try:
+            removed_tables = 0
+            for tbl in list(doc.tables):
+                if _is_toc_table(tbl):
+                    parent = tbl._element.getparent()
+                    if parent is not None:
+                        parent.remove(tbl._element)
+                        removed_tables += 1
+            if removed_tables:
+                logger.debug(f"[DOCX] sanitize_docx 移除目录表格 {removed_tables} 个")
+        except Exception as exc:
+            logger.debug(f"[DOCX] sanitize_docx 清理目录表格失败: {exc}")
+
+        # 清理内容控件形式的目录（Word 自动目录常见形式）
+        try:
+            removed_controls = _remove_toc_content_controls(doc)
+            if removed_controls:
+                logger.debug(f"[DOCX] sanitize_docx 移除目录内容控件 {removed_controls} 个")
+        except Exception as exc:
+            logger.debug(f"[DOCX] sanitize_docx 清理目录内容控件失败: {exc}")
+
+        try:
+            tmp_dir = tempfile.mkdtemp(prefix='docx_sanitized_')
+            sanitized_path = os.path.join(tmp_dir, os.path.basename(file_path))
+            doc.save(sanitized_path)
+            return sanitized_path
+        except Exception as exc:
+            logger.warning(f"[DOCX] sanitize_docx 保存失败: {exc}")
+            try:
+                shutil.rmtree(tmp_dir)
+            except Exception:
+                pass
+            return file_path
+
     def parse_document(self, file_path: str) -> Dict[str, Any]:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -30,197 +249,291 @@ class DocxService:
         logger.info(f"[DOCX] 开始本地解析: {file_path}")
         doc = Document(file_path)
 
-        text_content_parts: List[str] = []
-        tables: List[Dict[str, Any]] = []
-        images: List[Dict[str, Any]] = []
+        ordered_elements: List[Dict[str, Any]] = []
         text_element_index_map: List[Dict[str, Any]] = []
         filtered_elements_light: List[Dict[str, Any]] = []
+        text_content_parts: List[str] = []
+        images_payload: List[Dict[str, Any]] = []
+        tables: List[Dict[str, Any]] = []
+        images_binary: List[Dict[str, Any]] = []
 
         element_index = 0
-        # 用于记录图片的 element_index（key: 图片的 rId，value: element_index）
-        image_element_index_map: Dict[str, int] = {}
+        doc_order = 0
 
-        # 按照文档实际顺序遍历段落与表格
+        def _join_text_segments(segments: Iterable[str]) -> str:
+            return ' '.join(seg.strip() for seg in segments if seg and seg.strip())
+
+        def _append_text_segment(text: str, style_name: str) -> None:
+            nonlocal element_index, doc_order
+            normalized = (text or '').strip()
+            if not normalized:
+                return
+            lower_style = (style_name or '').lower()
+            is_title = False
+            if style_name:
+                if style_name.startswith('Heading') or 'title' in lower_style or '标题' in lower_style:
+                    is_title = True
+            category = 'Title' if is_title else 'NarrativeText'
+            element_index += 1
+            ordered_elements.append({
+                'type': 'text',
+                'text': normalized,
+                'style': style_name or '',
+                'category': category,
+                'element_index': element_index,
+                'doc_order': doc_order,
+                'length': len(normalized),
+            })
+            text_content_parts.append(normalized)
+            filtered_elements_light.append({
+                'category': category,
+                'text': normalized,
+                'element_index': element_index,
+                'doc_order': doc_order,
+            })
+            text_element_index_map.append({
+                'element_index': element_index,
+                'element_type': category,
+                'doc_order': doc_order,
+                'page_number': None,
+                'coordinates': None,
+            })
+            doc_order += 1
+
+        def _append_image_segment(r_id: str) -> None:
+            nonlocal element_index, doc_order
+            if not r_id:
+                return
+            part = doc.part.related_parts.get(r_id)
+            if not part:
+                return
+            data = part.blob
+            if not data:
+                return
+            element_index += 1
+            image_ext = os.path.splitext(part.partname)[1] or ''
+            image_meta = {
+                'data': data,
+                'bytes': data,
+                'element_index': element_index,
+                'doc_order': doc_order,
+                'page_number': None,
+                'coordinates': None,
+                'rId': r_id,
+                'image_ext': image_ext,
+            }
+            images_payload.append(image_meta)
+            images_binary.append({
+                'binary': data,
+                'element_index': element_index,
+                'page_number': None,
+                'doc_order': doc_order,
+            })
+            ordered_elements.append({
+                'type': 'image',
+                'element_index': element_index,
+                'doc_order': doc_order,
+                'rId': r_id,
+                'image_ext': image_ext,
+            })
+            doc_order += 1
+
+        def _iter_paragraph_segments(paragraph) -> Iterable[Tuple[str, str]]:
+            try:
+                run_elements = paragraph._p.xpath('./w:r | ./w:hyperlink | ./w:fldSimple', namespaces=NAMESPACES)
+            except Exception:
+                try:
+                    run_elements = paragraph._p.xpath('./w:r | ./w:hyperlink | ./w:fldSimple')
+                except Exception:
+                    run_elements = list(paragraph._p.iterchildren())
+
+            for run in run_elements:
+                targets = []
+                if run.tag == qn('w:hyperlink'):
+                    try:
+                        targets = run.xpath('.//w:r', namespaces=NAMESPACES)
+                    except Exception:
+                        try:
+                            targets = run.xpath('.//w:r')
+                        except Exception:
+                            targets = list(run.iterchildren())
+                elif run.tag == qn('w:fldSimple'):
+                    try:
+                        targets = run.xpath('.//w:r', namespaces=NAMESPACES)
+                    except Exception:
+                        try:
+                            targets = run.xpath('.//w:r')
+                        except Exception:
+                            targets = list(run.iterchildren())
+                else:
+                    targets = [run]
+
+                for r in targets:
+                    try:
+                        text_nodes = r.xpath('.//w:t', namespaces=NAMESPACES)
+                    except Exception:
+                        try:
+                            text_nodes = r.xpath('.//w:t')
+                        except Exception:
+                            text_nodes = []
+                    texts = [t.text for t in text_nodes if t.text]
+                    if texts:
+                        yield ('text', ''.join(texts))
+                    try:
+                        blips = r.xpath('.//a:blip', namespaces=NAMESPACES)
+                    except Exception:
+                        try:
+                            blips = r.xpath('.//a:blip')
+                        except Exception:
+                            blips = []
+                    for blip in blips:
+                        r_id = blip.get(qn('r:embed'))
+                        if r_id:
+                            yield ('image', r_id)
+
         try:
             from docx.oxml.ns import qn  # type: ignore
             from docx.text.paragraph import Paragraph  # type: ignore
             from docx.table import Table as DxTable  # type: ignore
 
-            def iter_block_items(d):
-                body = d.element.body
+            def iter_block_items(document):
+                body = document.element.body
                 for child in body.iterchildren():
                     tag = child.tag
                     if tag == qn('w:p'):
-                        yield 'paragraph', Paragraph(child, d)
+                        yield 'paragraph', Paragraph(child, document)
                     elif tag == qn('w:tbl'):
-                        yield 'table', DxTable(child, d)
+                        yield 'table', DxTable(child, document)
 
             for kind, item in iter_block_items(doc):
                 if kind == 'paragraph':
-                    p = item
-                    
-                    # ✅ 检查段落中是否包含图片（内联图片）
-                    try:
-                        if hasattr(p, 'runs'):
-                            for run in p.runs:
-                                if hasattr(run, 'inline_shapes'):
-                                    for shape in run.inline_shapes:
-                                        if hasattr(shape, 'image') and hasattr(shape.image, 'rId'):
-                                            rId = shape.image.rId
-                                            # 记录图片的 element_index（图片应该紧跟当前段落）
-                                            image_element_index_map[rId] = element_index
-                                            logger.debug(f"[DOCX] 在段落 element_index={element_index} 发现图片 rId={rId}")
-                    except Exception as e:
-                        logger.debug(f"[DOCX] 检查段落图片失败（可忽略）: {e}")
-                    
-                    text = (p.text or '').strip()
-                    if not text:
-                        continue
-                    style_name = getattr(getattr(p, 'style', None), 'name', '') or ''
-                    is_title = (style_name.startswith('Heading') or 'Title' in style_name)
-                    category = 'Title' if is_title else 'NarrativeText'
-
-                    text_content_parts.append(text)
-                    filtered_elements_light.append({
-                        'category': category,
-                        'text': text,
-                        'element_index': element_index,
-                    })
-                    text_element_index_map.append({
-                        'element_index': element_index,
-                        'element_type': category,
-                    })
-                    element_index += 1
-                else:
-                    # 表格
-                    t = item
+                    style_name = getattr(getattr(item, 'style', None), 'name', '') or ''
+                    text_segments: List[str] = []
+                    for seg_type, payload in _iter_paragraph_segments(item):
+                        if seg_type == 'text':
+                            text_segments.append(payload)
+                        elif seg_type == 'image':
+                            if text_segments:
+                                _append_text_segment(_join_text_segments(text_segments), style_name)
+                                text_segments = []
+                            _append_image_segment(payload)
+                    if text_segments:
+                        _append_text_segment(_join_text_segments(text_segments), style_name)
+                elif kind == 'table':
                     cells: List[List[str]] = []
-                    try:
-                        for r in t.rows:
-                            row_vals: List[str] = []
-                            for c in r.cells:
-                                val = ' '.join((c.text or '').split()).strip()
-                                row_vals.append(val)
-                            if row_vals:
-                                cells.append(row_vals)
-                    except Exception as e:
-                        logger.warning(f"解析表格失败: {e}")
-
-                    rows = len(cells)
-                    cols = len(cells[0]) if rows > 0 else 0
-                    table_text = '\n'.join('\t'.join(str(x or '') for x in row) for row in cells) if rows else ''
-
+                    for row in item.rows:
+                        row_values: List[str] = []
+                        for cell in row.cells:
+                            cell_text_segments: List[str] = []
+                            for paragraph in cell.paragraphs:
+                                cell_text_segments.append(paragraph.text or '')
+                            cell_text = _join_text_segments(cell_text_segments)
+                            row_values.append(cell_text)
+                        if any((val or '').strip() for val in row_values):
+                            cells.append(row_values)
+                    if not cells:
+                        continue
+                    table_data = {
+                        'cells': cells,
+                        'rows': len(cells),
+                        'columns': len(cells[0]) if cells and cells[0] else 0,
+                        'structure': 'docx_extracted',
+                        'html': None,
+                    }
+                    table_text = '\n'.join('\t'.join(str(cell or '') for cell in row) for row in cells)
+                    element_index += 1
                     tables.append({
                         'element_index': element_index,
-                        'table_data': {
-                            'cells': cells,
-                            'rows': rows,
-                            'columns': cols,
-                            'structure': 'docx_extracted',
-                            'html': None,
-                        },
+                        'table_data': table_data,
+                        'table_text': table_text,
+                        'page_number': None,
+                        'doc_order': doc_order,
+                    })
+                    ordered_elements.append({
+                        'type': 'table',
+                        'element_index': element_index,
+                        'doc_order': doc_order,
+                        'table_data': table_data,
                         'table_text': table_text,
                         'page_number': None,
                     })
-
                     filtered_elements_light.append({
                         'category': 'Table',
                         'text': table_text,
                         'element_index': element_index,
+                        'doc_order': doc_order,
                     })
-                    element_index += 1
-        except Exception as e:
-            logger.warning(f"按顺序遍历段落/表格失败，降级为原始遍历（可能顺序不准确）: {e}")
-            # 回退：原有逻辑（段落后表格）
-            for p in doc.paragraphs:
-                text = (p.text or '').strip()
-                if not text:
+                    doc_order += 1
+        except Exception as exc:
+            logger.warning(f"按顺序遍历段落/表格失败，降级为基础解析: {exc}")
+            for paragraph in doc.paragraphs:
+                text_value = (paragraph.text or '').strip()
+                if not text_value:
                     continue
-                style_name = getattr(getattr(p, 'style', None), 'name', '') or ''
-                is_title = (style_name.startswith('Heading') or 'Title' in style_name)
-                category = 'Title' if is_title else 'NarrativeText'
-                text_content_parts.append(text)
-                filtered_elements_light.append({'category': category, 'text': text, 'element_index': element_index})
-                text_element_index_map.append({'element_index': element_index, 'element_type': category})
-                element_index += 1
-            for t in getattr(doc, 'tables', []):
+                style_name = getattr(getattr(paragraph, 'style', None), 'name', '') or ''
+                _append_text_segment(text_value, style_name)
+            for table in getattr(doc, 'tables', []):
                 cells: List[List[str]] = []
-                try:
-                    for r in t.rows:
-                        row_vals: List[str] = []
-                        for c in r.cells:
-                            val = ' '.join((c.text or '').split()).strip()
-                            row_vals.append(val)
-                        if row_vals:
-                            cells.append(row_vals)
-                except Exception:
-                    pass
-                rows = len(cells)
-                cols = len(cells[0]) if rows > 0 else 0
-                table_text = '\n'.join('\t'.join(str(x or '') for x in row) for row in cells) if rows else ''
-                tables.append({'element_index': element_index, 'table_data': {'cells': cells, 'rows': rows, 'columns': cols, 'structure': 'docx_extracted', 'html': None}, 'table_text': table_text, 'page_number': None})
-                filtered_elements_light.append({'category': 'Table', 'text': table_text, 'element_index': element_index})
+                for row in table.rows:
+                    row_values = [(_join_text_segments([cell.text])) for cell in row.cells]
+                    if any((val or '').strip() for val in row_values):
+                        cells.append(row_values)
+                if not cells:
+                    continue
+                table_data = {
+                    'cells': cells,
+                    'rows': len(cells),
+                    'columns': len(cells[0]) if cells and cells[0] else 0,
+                    'structure': 'docx_extracted',
+                    'html': None,
+                }
+                table_text = '\n'.join('\t'.join(str(cell or '') for cell in row) for row in cells)
                 element_index += 1
+                tables.append({
+                    'element_index': element_index,
+                    'table_data': table_data,
+                    'table_text': table_text,
+                    'page_number': None,
+                    'doc_order': doc_order,
+                })
+                ordered_elements.append({
+                    'type': 'table',
+                    'element_index': element_index,
+                    'doc_order': doc_order,
+                    'table_data': table_data,
+                    'table_text': table_text,
+                    'page_number': None,
+                })
+                filtered_elements_light.append({
+                    'category': 'Table',
+                    'text': table_text,
+                    'element_index': element_index,
+                    'doc_order': doc_order,
+                })
+                doc_order += 1
 
-        # 解析图片（关系遍历，并关联 element_index）
-        try:
-            from docx.opc.constants import RELATIONSHIP_TYPE as RT  # type: ignore
-            for rel_id, rel in doc.part.rels.items():
-                if "image" in rel.target_ref or rel.reltype in [
-                    RT.IMAGE,
-                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
-                ]:
-                    try:
-                        part = rel.target_part
-                        data = part.blob
-                        if data:
-                            # ✅ 从映射中获取图片的 element_index
-                            img_element_index = image_element_index_map.get(rel_id)
-                            # 如果没找到，使用当前 element_index（图片作为独立元素）
-                            if img_element_index is None:
-                                img_element_index = element_index
-                                element_index += 1
-                                logger.debug(f"[DOCX] 图片 rId={rel_id} 未找到关联段落，分配 element_index={img_element_index}")
-                            else:
-                                logger.debug(f"[DOCX] 图片 rId={rel_id} 关联到 element_index={img_element_index}")
-                            
-                            images.append({
-                                'data': data,
-                                'bytes': data,
-                                'element_index': img_element_index,  # ✅ 现在有正确的 element_index
-                                'page_number': None,
-                                'rId': rel_id,  # 保存关系ID用于调试
-                            })
-                    except Exception as e:
-                        logger.warning(f"提取图片失败: {e}")
-            
-            # ✅ 如果还有未分配的图片（通过其他方式发现的），分配 element_index
-            for img in images:
-                if img.get('element_index') is None:
-                    img['element_index'] = element_index
-                    element_index += 1
-                    logger.debug(f"[DOCX] 为未关联图片分配 element_index={img['element_index']}")
-                    
-            logger.info(f"[DOCX] 图片解析完成: 共 {len(images)} 张，element_index 映射: {image_element_index_map}")
-        except Exception as e:
-            logger.debug(f"图片关系解析失败(可忽略): {e}")
+        metadata = {
+            'element_count': len(ordered_elements),
+            'images_count': len(images_payload),
+            'filter_stats': {},
+        }
 
         parse_result: Dict[str, Any] = {
             'text_content': ('\n'.join(text_content_parts)).strip(),
             'tables': tables,
-            'images': images,
-            'images_binary': [{'binary': im.get('data'), 'element_index': im.get('element_index'), 'page_number': im.get('page_number')} for im in images],
+            'images': images_payload,
+            'images_binary': images_binary,
+            'ordered_elements': ordered_elements,
             'text_element_index_map': text_element_index_map,
             'filtered_elements_light': filtered_elements_light,
-            'metadata': {
-                'element_count': len(filtered_elements_light),
-                'filter_stats': {},
-                'images_count': len(images),
-            },
+            'metadata': metadata,
             'is_converted_pdf': False,
             'converted_pdf_path': None,
         }
-        logger.info(f"[DOCX] 解析完成: 元素={len(filtered_elements_light)}, 表格={len(tables)}, 图片={len(images)}")
+        logger.info(
+            f"[DOCX] 解析完成: 元素={len(ordered_elements)}, 文本={sum(1 for e in ordered_elements if e['type']=='text')}, "
+            f"表格={sum(1 for e in ordered_elements if e['type']=='table')}, 图片={len(images_payload)}"
+        )
         return parse_result
 
     # ============== 分块（复用结构式分块逻辑） ==============

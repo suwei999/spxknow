@@ -54,13 +54,17 @@ export const askQuestion = (sessionId: string, data: {
   if (data.image_file) {
     formData.append('image_file', data.image_file)
   }
-  if (data.text_content) {
+  if (data.text_content !== undefined) {
     formData.append('text_content', data.text_content)
   }
   formData.append('input_type', data.input_type)
   if (data.search_type) formData.append('search_type', data.search_type)
-  if (data.similarity_threshold) formData.append('similarity_threshold', data.similarity_threshold.toString())
-  if (data.max_sources) formData.append('max_sources', data.max_sources.toString())
+  if (data.similarity_threshold !== undefined && data.similarity_threshold !== null) {
+    formData.append('similarity_threshold', data.similarity_threshold.toString())
+  }
+  if (data.max_sources !== undefined && data.max_sources !== null) {
+    formData.append('max_sources', data.max_sources.toString())
+  }
   
   return request({
     url: `/qa/sessions/${sessionId}/multimodal-questions`,

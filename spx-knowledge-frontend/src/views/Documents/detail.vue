@@ -69,8 +69,29 @@
             </el-table-column>
           </el-table>
 
-          <el-dialog v-model="chunkDialogVisible" title="分块内容" width="60%">
-            <pre class="chunk-content">{{ currentChunkContent }}</pre>
+          <el-dialog
+            v-model="chunkDialogVisible"
+            title="分块内容"
+            width="60%"
+            class="chunk-dialog"
+          >
+            <template #default>
+              <div v-if="currentChunk && currentChunk.chunk_type === 'image'">
+                <img
+                  v-if="currentChunk.image_url"
+                  class="chunk-image"
+                  :src="currentChunk.image_url"
+                  alt="分块图片"
+                />
+                <div class="chunk-meta" v-if="currentChunk.meta">
+                  <el-descriptions :column="1" size="small" border>
+                    <el-descriptions-item label="图片路径">{{ currentChunk.image_path || '—' }}</el-descriptions-item>
+                    <el-descriptions-item label="图片ID">{{ currentChunk.image_id || '—' }}</el-descriptions-item>
+                  </el-descriptions>
+                </div>
+              </div>
+              <pre v-else class="chunk-content">{{ currentChunk?.content || '' }}</pre>
+            </template>
           </el-dialog>
         </el-tab-pane>
 
@@ -151,15 +172,15 @@ const isOffice = computed(() => {
 const officeViewerUrl = computed(() => `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewUrl.value)}`)
 
 const chunkDialogVisible = ref(false)
-const currentChunkContent = ref('')
+const currentChunk = ref<any>(null)
 const versionsCount = computed(() => versions.value?.length || 0)
 const showChunk = async (row: any) => {
   try {
     const resp = await getChunkContentFromOS(documentId, row.id)
     const data = (resp as any)?.data
-    currentChunkContent.value = data?.content || ''
+    currentChunk.value = data || null
   } catch (e) {
-    currentChunkContent.value = ''
+    currentChunk.value = null
   } finally {
     chunkDialogVisible.value = true
   }
@@ -428,14 +449,102 @@ onMounted(() => {
   }
 
   .chunk-content {
+    background: #ffffff;
+    color: #1f2933;
+    font-size: 16px;
+    line-height: 1.8;
+    padding: 20px 24px;
+    border-radius: 10px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
     white-space: pre-wrap;
-    line-height: 1.6;
-    max-height: 70vh;
+    word-break: break-word;
+    max-height: 60vh;
     overflow: auto;
-    background: #111;
-    color: #ddd;
-    padding: 12px;
-    border-radius: 4px;
+  }
+
+  :deep(.chunk-content strong) {
+    color: #0f172a;
+  }
+
+  :deep(.chunk-content em) {
+    color: #2563eb;
+  }
+
+  :deep(.chunk-content mark) {
+    background: rgba(250, 204, 21, 0.35);
+    color: #92400e;
+    padding: 0 2px;
+    border-radius: 2px;
+  }
+
+  :deep(.chunk-content table) {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    background: #fff;
+  }
+
+  :deep(.chunk-content table th),
+  :deep(.chunk-content table td) {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    padding: 12px 14px;
+    text-align: left;
+    color: #1f2933;
+  }
+
+  :deep(.chunk-content table th) {
+    background: rgba(37, 99, 235, 0.12);
+    color: #0f172a;
+    font-weight: 600;
+  }
+
+  :deep(.chunk-content table tr:nth-child(even)) {
+    background: rgba(148, 163, 184, 0.08);
+  }
+
+  .chunk-dialog :deep(.el-dialog__body) {
+    background: #f8fafc;
+  }
+
+  .chunk-dialog :deep(.el-dialog__header) {
+    background: linear-gradient(135deg, #1d4ed8, #9333ea);
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+    padding: 16px 24px;
+  }
+
+  .chunk-dialog :deep(.el-dialog__title) {
+    color: #ffffff;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .chunk-dialog :deep(.el-dialog__headerbtn .el-dialog__close) {
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  .chunk-dialog :deep(.el-descriptions__cell) {
+    color: #1f2933;
+    font-size: 14px;
+  }
+
+  .chunk-dialog :deep(.el-descriptions__label) {
+    color: #475569;
+    font-weight: 600;
+  }
+
+  .chunk-image {
+    max-width: 100%;
+    max-height: 60vh;
+    display: block;
+    margin: 0 auto 16px;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+
+  .chunk-meta {
+    margin-top: 8px;
   }
 }
 </style>

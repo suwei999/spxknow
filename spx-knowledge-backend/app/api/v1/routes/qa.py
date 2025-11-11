@@ -3,7 +3,7 @@ QA API Routes
 根据知识问答系统设计文档实现
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -276,14 +276,14 @@ def delete_qa_session(
 @router.post("/sessions/{session_id}/multimodal-questions", response_model=QAMultimodalQuestionResponse)
 async def ask_multimodal_question(
     session_id: str,
-    text_content: Optional[str] = None,
+    text_content: Optional[str] = Form(None),
     image_file: Optional[UploadFile] = File(None),
-    input_type: str = "text",
-    include_history: bool = True,
-    max_history: int = settings.QA_DEFAULT_MAX_HISTORY,
-    similarity_threshold: float = settings.SEARCH_VECTOR_THRESHOLD,
-    max_sources: int = settings.QA_DEFAULT_MAX_SOURCES,
-    search_type: str = "hybrid",
+    input_type: str = Form("text"),
+    include_history: bool = Form(True),
+    max_history: int = Form(settings.QA_DEFAULT_MAX_HISTORY),
+    similarity_threshold: float = Form(settings.SEARCH_VECTOR_THRESHOLD),
+    max_sources: int = Form(settings.QA_DEFAULT_MAX_SOURCES),
+    search_type: str = Form("hybrid"),
     db: Session = Depends(get_db)
 ):
     """多模态问答接口 - 根据设计文档实现"""
@@ -324,6 +324,13 @@ async def ask_multimodal_question(
             text_content=text_content,
             image_file=image_file,
             input_type=input_type
+        )
+        logger.debug(
+            "[QA][API] processed_input summary: session=%s text_len=%s image=%s steps=%s",
+            session_id,
+            len((processed_input.get("text_data") or {}).get("cleaned_text", "")) if processed_input else 0,
+            "yes" if processed_input.get("image_data") else "no",
+            (processed_input or {}).get("processing_steps")
         )
         
         # 问答服务

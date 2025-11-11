@@ -26,6 +26,7 @@ class QAHistoryService:
         
         # OpenSearch索引配置 - 根据设计文档
         self.INDEX_NAME = settings.QA_HISTORY_INDEX_NAME
+        self.ANSWER_INDEX_NAME = getattr(settings, "QA_ANSWER_INDEX_NAME", "qa_answers")
         self.INDEX_MAPPING = {
             "mappings": {
                 "properties": {
@@ -54,20 +55,84 @@ class QAHistoryService:
                     "created_at": {"type": "date"},
                     "updated_at": {"type": "date"},
                     "question_vector": {
-                        "type": "dense_vector",
-                        "dims": settings.TEXT_EMBEDDING_DIMENSION,
-                        "index": True,
-                        "similarity": "cosine"
+                        "type": "knn_vector",
+                        "dimension": settings.TEXT_EMBEDDING_DIMENSION,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib"
+                        }
                     },
                     "answer_vector": {
-                        "type": "dense_vector",
-                        "dims": settings.TEXT_EMBEDDING_DIMENSION,
-                        "index": True,
-                        "similarity": "cosine"
+                        "type": "knn_vector",
+                        "dimension": settings.TEXT_EMBEDDING_DIMENSION,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib"
+                        }
                     },
                     "question_type": {"type": "keyword"},
                     "answer_quality": {"type": "float"},
                     "keywords": {"type": "keyword"}
+                }
+            },
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 1,
+                "analysis": {
+                    "analyzer": {
+                        "ik_max_word": {
+                            "type": "ik_max_word"
+                        }
+                    }
+                }
+            }
+        }
+        self.ANSWER_INDEX_MAPPING = {
+            "mappings": {
+                "properties": {
+                    "question_id": {"type": "keyword"},
+                    "session_id": {"type": "keyword"},
+                    "knowledge_base_id": {"type": "integer"},
+                    "question_content": {
+                        "type": "text",
+                        "analyzer": "ik_max_word",
+                        "fields": {
+                            "keyword": {"type": "keyword"}
+                        }
+                    },
+                    "answer_content": {
+                        "type": "text",
+                        "analyzer": "ik_max_word",
+                        "fields": {
+                            "keyword": {"type": "keyword"}
+                        }
+                    },
+                    "answer_strategy": {"type": "keyword"},
+                    "confidence": {"type": "float"},
+                    "source_ids": {"type": "keyword"},
+                    "keywords": {"type": "keyword"},
+                    "question_vector": {
+                        "type": "knn_vector",
+                        "dimension": settings.TEXT_EMBEDDING_DIMENSION,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib"
+                        }
+                    },
+                    "answer_vector": {
+                        "type": "knn_vector",
+                        "dimension": settings.TEXT_EMBEDDING_DIMENSION,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib"
+                        }
+                    },
+                    "created_at": {"type": "date"},
+                    "updated_at": {"type": "date"}
                 }
             },
             "settings": {
@@ -147,6 +212,26 @@ class QAHistoryService:
             
             # 4. 存储到OpenSearch
             success = await self._store_to_opensearch(question_id, history_doc)
+
+            # 5. 构建并存储答案索引文档（用于全文/语义检索）
+            answer_doc = {
+                "question_id": question_id,
+                "session_id": session_id,
+                "knowledge_base_id": knowledge_base_id,
+                "question_content": question_content,
+                "answer_content": answer_content,
+                "answer_strategy": processing_info.get("answer_strategy"),
+                "confidence": quality_assessment.get("confidence", 0.0),
+                "source_ids": [src.get("document_id") for src in source_info if src.get("document_id")],
+                "keywords": keywords,
+                "question_vector": question_vector,
+                "answer_vector": answer_vector,
+                "created_at": history_doc["created_at"],
+                "updated_at": history_doc["updated_at"]
+            }
+            answer_index_success = await self._store_to_answer_index(question_id, answer_doc)
+            if not answer_index_success:
+                logger.warning(f"问答答案索引存储失败 question_id={question_id}")
             
             if success:
                 logger.info(f"问答历史存储成功，问题ID: {question_id}")
@@ -550,6 +635,17 @@ class QAHistoryService:
         except Exception as e:
             logger.error(f"存储到OpenSearch失败: {e}")
             return False
+
+    async def _store_to_answer_index(self, question_id: str, answer_doc: Dict[str, Any]) -> bool:
+        """存储到问答答案索引"""
+        try:
+            await self._ensure_answer_index_exists()
+            return await self.opensearch_service.index_document(
+                self.ANSWER_INDEX_NAME, question_id, answer_doc
+            )
+        except Exception as e:
+            logger.error(f"存储答案索引失败: {e}")
+            return False
     
     async def _ensure_index_exists(self):
         """确保索引存在"""
@@ -562,6 +658,18 @@ class QAHistoryService:
                 logger.info(f"创建索引: {self.INDEX_NAME}")
         except Exception as e:
             logger.error(f"确保索引存在失败: {e}")
+
+    async def _ensure_answer_index_exists(self):
+        """确保问答答案索引存在"""
+        try:
+            exists = await self.opensearch_service.index_exists(self.ANSWER_INDEX_NAME)
+            if not exists:
+                await self.opensearch_service.create_index(
+                    self.ANSWER_INDEX_NAME, self.ANSWER_INDEX_MAPPING
+                )
+                logger.info(f"创建索引: {self.ANSWER_INDEX_NAME}")
+        except Exception as e:
+            logger.error(f"确保答案索引存在失败: {e}")
     
     def _build_history_query(
         self,

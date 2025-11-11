@@ -1,9 +1,59 @@
 import subprocess
 import tempfile
 import os
+import shutil
 from typing import Optional
 from app.core.logging import logger
 from app.config.settings import settings
+
+
+def _resolve_soffice_path() -> Optional[str]:
+    """优先使用配置的 LibreOffice 路径，找不到时自动尝试常见命令名称"""
+    candidates = []
+    seen = set()
+
+    if getattr(settings, "SOFFICE_PATH", None):
+        candidates.append(settings.SOFFICE_PATH)
+        seen.add(settings.SOFFICE_PATH)
+
+    for name in ("soffice", "libreoffice"):
+        if name not in seen:
+            candidates.append(name)
+            seen.add(name)
+
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    for directory in path_dirs:
+        if not directory:
+            continue
+        try:
+            for entry in os.listdir(directory):
+                lower = entry.lower()
+                if lower.startswith("libreoffice") or lower.startswith("soffice"):
+                    full_path = os.path.join(directory, entry)
+                    if os.path.isfile(full_path) or os.access(full_path, os.X_OK):
+                        if full_path not in seen:
+                            candidates.append(full_path)
+                            seen.add(full_path)
+        except OSError:
+            continue
+
+    for cand in candidates:
+        if not cand:
+            continue
+        if os.path.isabs(cand):
+            if os.path.exists(cand) and os.access(cand, os.X_OK):
+                return cand
+            continue
+        resolved = shutil.which(cand)
+        if resolved:
+            return resolved
+        candidate_path = os.path.abspath(cand)
+        if os.path.exists(candidate_path) and os.access(candidate_path, os.X_OK):
+            return candidate_path
+    return None
+
+
+SOFFICE_CMD = _resolve_soffice_path()
 
 
 def convert_docx_to_pdf(input_path: str) -> Optional[str]:
@@ -12,9 +62,15 @@ def convert_docx_to_pdf(input_path: str) -> Optional[str]:
         if not os.path.exists(input_path):
             logger.error(f"LibreOffice 转换失败，文件不存在: {input_path}")
             return None
+        global SOFFICE_CMD
+        soffice_cmd = SOFFICE_CMD or _resolve_soffice_path()
+        if not soffice_cmd:
+            logger.error("LibreOffice 转换失败: 未找到 soffice/libreoffice 可执行文件，请在 .env 中配置 SOFFICE_PATH 或确保系统 PATH 中可用")
+            return None
+        SOFFICE_CMD = soffice_cmd
         out_dir = tempfile.mkdtemp(prefix="soffice_pdf_")
         cmd = [
-            settings.SOFFICE_PATH,
+            soffice_cmd,
             "--headless",
             "--nologo",
             "--nodefault",

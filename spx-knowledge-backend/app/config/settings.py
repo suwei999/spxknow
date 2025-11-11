@@ -2,15 +2,16 @@
 Configuration Management
 """
 
-from pydantic_settings import BaseSettings
-from typing import List, Optional
 import os
+from pathlib import Path
+from typing import List, Optional
+from pydantic_settings import BaseSettings
 
 # 计算项目根目录，确保无论从哪里运行都能找到根目录下的 .env
-_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_APP_DIR = os.path.dirname(_CURRENT_DIR)
-_PROJECT_ROOT = os.path.dirname(_APP_DIR)
-_ENV_FILE = os.path.join(_PROJECT_ROOT, ".env")
+_CURRENT_DIR = Path(__file__).resolve().parent
+_APP_DIR = _CURRENT_DIR.parent
+_PROJECT_ROOT = _APP_DIR.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 class Settings(BaseSettings):
     """应用配置"""
@@ -65,17 +66,16 @@ class Settings(BaseSettings):
     MINIO_SECURE: bool = False
     
     # 向量模型配置
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_API_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_BASE_URL: str = "http://192.168.131.158:11434"
     OLLAMA_MODEL: str = "llama2"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
     IMAGE_EMBEDDING_MODEL: str = "clip_vit_b32"
     CLIP_MODEL_NAME: str = "ViT-B-32"
-    CLIP_MODELS_DIR: str = os.path.join(_PROJECT_ROOT, "models", "clip")
-    CLIP_PRETRAINED_PATH: str = os.path.join(CLIP_MODELS_DIR, "ViT-B-32-openclip.pt")
-    CLIP_CACHE_DIR: str = os.path.join(CLIP_MODELS_DIR, "cache")
-    # Hugging Face 缓存目录（可选，默认使用系统默认位置）
-    HF_HOME: Optional[str] = None  # 如果为 None，则使用 ~/.cache/huggingface
+    CLIP_MODELS_DIR: str = str((_PROJECT_ROOT / "models" / "clip").resolve())
+    CLIP_PRETRAINED_PATH: str = str((_PROJECT_ROOT / "models" / "clip" / "ViT-B-32-openclip.pt").resolve())
+    CLIP_CACHE_DIR: str = str((_PROJECT_ROOT / "models" / "clip" / "cache").resolve())
+    # Hugging Face 缓存目录（可选，默认使用项目 models/cache 目录）
+    HF_HOME: Optional[str] = str((_PROJECT_ROOT / "models" / "cache").resolve())
 
     IMAGE_PIPELINE_MODE: str = "memory"  # memory|temp
     DEBUG_KEEP_TEMP_FILES: bool = False
@@ -109,6 +109,7 @@ class Settings(BaseSettings):
     
     # 历史存储配置
     QA_HISTORY_INDEX_NAME: str = "qa_history"
+    QA_ANSWER_INDEX_NAME: str = "qa_answers"
     QA_HISTORY_CLEANUP_DAYS: int = 90
     QA_HISTORY_DEFAULT_PAGE_SIZE: int = 20
     QA_HISTORY_MAX_PAGE_SIZE: int = 100
@@ -122,7 +123,7 @@ class Settings(BaseSettings):
     RERANK_ENABLED: bool = True  # 是否启用rerank模型
     # 推荐中英文支持较好的模型：bge-reranker-v2-m3（多语言支持）或 bge-reranker-large（中英文效果更好）
     RERANK_MODEL_NAME: str = "BAAI/bge-reranker-v2-m3"  # rerank模型名称（支持中英文，多语言）
-    RERANK_MODEL_PATH: Optional[str] = None  # 本地模型路径（如果设置，优先使用本地路径；如果为None，则从HuggingFace下载）
+    RERANK_MODEL_PATH: Optional[str] = str((_PROJECT_ROOT / "models" / "rerank").resolve())  # 本地模型目录，默认指向项目 models/rerank
     RERANK_TOP_K: int = 5  # rerank后返回的结果数量（默认5个）
     RERANK_DEVICE: str = "cpu"  # rerank模型运行设备（cpu/cuda，如果配置为cuda但GPU不可用，会自动降级到cpu）
     RERANK_MIN_SCORE: float = 0.2  # rerank 后端最小得分过滤（0-1）
@@ -147,6 +148,10 @@ class Settings(BaseSettings):
     IMAGE_SEARCH_DEFAULT_CONFIDENCE: float = 0.8
     IMAGE_SEARCH_MULTIMODAL_CONFIDENCE: float = 0.7
     IMAGE_SEARCH_DEFAULT_CONFIDENCE_FALLBACK: float = 0.5
+
+    # 图片定位/关联增强
+    IMAGE_COORDS_NORMALIZE: bool = True  # 统一输出坐标为 0-1 归一化
+    IMAGE_ASSOC_RERANK_ENABLED: bool = False  # 图片↔文本关联是否启用 cross-encoder 精排（默认关闭）
 
     # 内容预览
     CONTENT_PREVIEW_LENGTH: int = 100

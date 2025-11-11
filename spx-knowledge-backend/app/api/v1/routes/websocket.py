@@ -47,16 +47,21 @@ async def documents_status_socket(websocket: WebSocket):
     try:
         await websocket.accept()
         logger.info("WebSocket连接: 文档状态推送")
-        # 初次连接发送JSON欢迎包，避免前端解析错误
-        await websocket.send_json({"type": "connected", "message": "ok"})
-        # 简单心跳/占位实现，前端可仅用于建立可用连接
+        try:
+            await websocket.send_json({"type": "connected", "message": "ok"})
+        except WebSocketDisconnect:
+            logger.info("文档状态WebSocket在发送欢迎包前断开")
+            return
+
         while True:
             try:
                 data = await websocket.receive_text()
-                # 统一返回JSON，前端按JSON解析
                 await websocket.send_json({"type": "pong", "echo": data})
             except WebSocketDisconnect:
+                logger.info("文档状态WebSocket断开连接")
                 break
+    except WebSocketDisconnect:
+        logger.info("文档状态WebSocket在握手阶段断开")
     except Exception as e:
         logger.error(f"文档状态WebSocket错误: {e}", exc_info=True)
 

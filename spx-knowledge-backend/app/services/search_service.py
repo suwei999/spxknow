@@ -260,11 +260,17 @@ class SearchService:
             candidates=enriched_results,
             top_k=top_k
         )
+        all_reranked_results = reranked_results[:]
         # 应用最小精排分（优先使用传入参数，否则使用全局配置）
         try:
             min_score = min_rerank_score if min_rerank_score is not None else float(getattr(settings, 'RERANK_MIN_SCORE', 0.0))
             logger.info(f"混合检索应用最小精排分: {min_score} (来源: {'请求参数' if min_rerank_score is not None else '全局配置'})")
             reranked_results = [r for r in reranked_results if (r.get('rerank_score') or r.get('score') or 0) >= float(min_score)]
+            if not reranked_results and all_reranked_results:
+                logger.info(
+                    "精排分阈值过滤后结果为空，回退到未过滤的精排结果（避免完全无答案）。"
+                )
+                reranked_results = all_reranked_results
         except Exception:
             pass
         
@@ -391,9 +397,18 @@ class SearchService:
                 candidates=results,
                 top_k=top_k
             )
-            # 后端最小精排分过滤
-            min_score = search_request.min_rerank_score if getattr(search_request, 'min_rerank_score', None) is not None else settings.RERANK_MIN_SCORE
-            logger.info(f"向量检索应用最小精排分: {min_score}")
+            # 后端最小精排分过滤（保护：限制到[0.0,0.99]）
+            req_min = getattr(search_request, 'min_rerank_score', None)
+            min_score = req_min if req_min is not None else settings.RERANK_MIN_SCORE
+            try:
+                min_score = float(min_score)
+            except Exception:
+                min_score = settings.RERANK_MIN_SCORE
+            if min_score < 0.0:
+                min_score = 0.0
+            if min_score >= 1.0:
+                min_score = 0.99
+            logger.info(f"向量检索应用最小精排分: {min_score} (请求值={req_min}, 默认={settings.RERANK_MIN_SCORE})")
             try:
                 reranked_results = [r for r in reranked_results if (r.get('rerank_score') or r.get('score') or 0) >= float(min_score)]
             except Exception:
@@ -450,9 +465,18 @@ class SearchService:
                 candidates=results,
                 top_k=top_k
             )
-            # 后端最小精排分过滤
-            min_score = search_request.min_rerank_score if getattr(search_request, 'min_rerank_score', None) is not None else settings.RERANK_MIN_SCORE
-            logger.info(f"关键词检索应用最小精排分: {min_score}")
+            # 后端最小精排分过滤（保护同上）
+            req_min = getattr(search_request, 'min_rerank_score', None)
+            min_score = req_min if req_min is not None else settings.RERANK_MIN_SCORE
+            try:
+                min_score = float(min_score)
+            except Exception:
+                min_score = settings.RERANK_MIN_SCORE
+            if min_score < 0.0:
+                min_score = 0.0
+            if min_score >= 1.0:
+                min_score = 0.99
+            logger.info(f"关键词检索应用最小精排分: {min_score} (请求值={req_min}, 默认={settings.RERANK_MIN_SCORE})")
             try:
                 reranked_results = [r for r in reranked_results if (r.get('rerank_score') or r.get('score') or 0) >= float(min_score)]
             except Exception:

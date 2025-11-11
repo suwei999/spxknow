@@ -105,13 +105,45 @@ class RerankService:
             model_location = None
             
             # 1. 优先检查配置的本地路径
-            if self.model_path and os.path.exists(self.model_path):
-                model_found = True
-                model_location = self.model_path
-                logger.info(f"✅ 在配置的本地路径中发现Rerank模型: {self.model_path}")
-                logger.info(f"🔧 正在从本地路径加载Rerank模型: {self.model_path}，设备: {self.device}")
-                self.model = FlagReranker(self.model_path, use_fp16=False)
-            else:
+            if self.model_path:
+                from pathlib import Path
+                local_path = Path(self.model_path).resolve()
+                if local_path.is_dir():
+                    expected_files = [
+                        "config.json",
+                        "tokenizer.json",
+                        "tokenizer_config.json",
+                        "special_tokens_map.json",
+                        "model.safetensors"
+                    ]
+
+                    candidate_dirs = [local_path]
+                    # 如果目录下只有一个子目录，尝试进入子目录（常见结构 models/rerank/<model-name>/）
+                    try:
+                        subdirs = [d for d in local_path.iterdir() if d.is_dir()]
+                        if len(subdirs) == 1:
+                            candidate_dirs.insert(0, subdirs[0])
+                        else:
+                            candidate_dirs.extend(subdirs)
+                    except Exception:
+                        pass
+
+                    for candidate in candidate_dirs:
+                        if all((candidate / fname).exists() for fname in expected_files):
+                            model_found = True
+                            model_location = str(candidate)
+                            logger.info(f"✅ 在配置的本地路径中发现Rerank模型: {model_location}")
+                            logger.info(f"🔧 正在从本地路径加载Rerank模型: {model_location}，设备: {self.device}")
+                            self.model = FlagReranker(model_location, use_fp16=False)
+                            break
+                    else:
+                        logger.warning(
+                            f"⚠️ 本地模型目录存在但未找到完整的 HuggingFace 模型文件: {local_path}，"
+                            "将继续检查缓存或下载。"
+                        )
+                else:
+                    logger.warning(f"⚠️ 配置的本地模型路径不存在: {local_path}")
+            if not model_found:
                 # 2. 检查HF缓存目录（配置的或系统默认的）
                 # FlagEmbedding 使用 huggingface_hub，会自动检查 HF_HOME 下的缓存
                 # 如果模型已下载，FlagReranker 会自动使用缓存
@@ -149,10 +181,10 @@ class RerankService:
                     logger.info(f"🔧 正在从缓存加载Rerank模型: {self.model_name}，设备: {self.device}")
                     # FlagReranker会自动使用HF_HOME下的缓存，不需要指定路径
                     self.model = FlagReranker(self.model_name, use_fp16=False)
-                else:
+                if not model_found:
                     # 4. 如果本地缓存不存在，才从网络下载
                     if self.model_path:
-                        logger.warning(f"⚠️ 配置的本地模型路径不存在: {self.model_path}")
+                        logger.warning(f"⚠️ 本地模型目录不可用: {self.model_path}，将尝试联网下载")
                     logger.info(f"⚠️ 本地缓存中未发现Rerank模型: {self.model_name}")
                     logger.info(f"🌐 将允许联网下载模型（本地模型不存在）")
                     logger.info(f"💾 下载后的模型将保存到缓存目录: {hf_home}")

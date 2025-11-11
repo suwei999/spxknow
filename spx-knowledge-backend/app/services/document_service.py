@@ -14,6 +14,7 @@ from app.services.file_validation_service import FileValidationService
 from app.services.minio_storage_service import MinioStorageService
 from app.services.duplicate_detection_service import DuplicateDetectionService
 from app.core.exceptions import CustomException, ErrorCode
+from app.config.settings import settings
 import os
 
 class DocumentService(BaseService[Document]):
@@ -289,6 +290,9 @@ class DocumentService(BaseService[Document]):
         
         # 5. 数字ID下的 images 目录（旧格式，不带年月）
         prefixes.append(f"documents/{doc_id}/")
+
+        # 6. 调试产物目录（降噪文件等）
+        prefixes.append(f"documents/debug/{doc_id}/")
         
         # 去重并排序（保证删除顺序）
         return sorted(list(dict.fromkeys(prefixes)))
@@ -556,16 +560,28 @@ class DocumentService(BaseService[Document]):
             return 0.0
         
         try:
-            # 提取坐标信息
-            chunk_x = chunk_coords.get('x', 0)
-            chunk_y = chunk_coords.get('y', 0)
-            chunk_w = chunk_coords.get('width', 0)
-            chunk_h = chunk_coords.get('height', 0)
-            
-            img_x = image_coords.get('x', 0)
-            img_y = image_coords.get('y', 0)
-            img_w = image_coords.get('width', 0)
-            img_h = image_coords.get('height', 0)
+            # 支持像素坐标与归一化坐标：若 >1 则认为是像素坐标；尝试用参考尺寸归一化
+            def _norm(c: dict, ref_w: float = None, ref_h: float = None):
+                x = c.get('x', c.get('left', 0.0))
+                y = c.get('y', c.get('top', 0.0))
+                w = c.get('width', c.get('w', 0.0))
+                h = c.get('height', c.get('h', 0.0))
+                # 若已是 0-1，直接返回；否则尝试用参考宽高做除法
+                if max(x + w, y + h, w, h) <= 1.0:
+                    return x, y, w, h
+                if ref_w and ref_h and ref_w > 0 and ref_h > 0:
+                    return x / ref_w, y / ref_h, w / ref_w, h / ref_h
+                # 无参考尺寸，退化为比值归一（避免报错）
+                return 0.0, 0.0, 0.0, 0.0
+
+            # 参考宽高（若 meta 内提供，可在调用前先填充到坐标中；这里兜底）
+            ref_chunk_w = chunk_coords.get('page_width') or chunk_coords.get('ref_width')
+            ref_chunk_h = chunk_coords.get('page_height') or chunk_coords.get('ref_height')
+            ref_img_w = image_coords.get('page_width') or image_coords.get('ref_width') or image_coords.get('width_ref')
+            ref_img_h = image_coords.get('page_height') or image_coords.get('ref_height') or image_coords.get('height_ref')
+
+            chunk_x, chunk_y, chunk_w, chunk_h = _norm(chunk_coords, ref_chunk_w, ref_chunk_h)
+            img_x, img_y, img_w, img_h = _norm(image_coords, ref_img_w, ref_img_h)
             
             # 如果没有有效的尺寸信息，返回0
             if chunk_w <= 0 or chunk_h <= 0 or img_w <= 0 or img_h <= 0:
@@ -816,7 +832,8 @@ class DocumentService(BaseService[Document]):
         document_id: int,
         image,
         min_confidence: float = 0.5,
-        return_with_confidence: bool = False
+        return_with_confidence: bool = False,
+        use_rerank: bool = False
     ) -> list:
         """
         根据图片查找关联的文本块（图片 → 文本）
@@ -964,6 +981,37 @@ class DocumentService(BaseService[Document]):
             
             # ✅ 先按置信度降序排序，再按 chunk_index 排序（保证稳定排序）
             associated_chunks.sort(key=lambda x: (-x[1], x[0].chunk_index))
+
+            # ✅ 可选：cross-encoder 精排
+            try:
+                if use_rerank or getattr(settings, 'IMAGE_ASSOC_RERANK_ENABLED', False):
+                    from app.services.rerank_service import RerankService
+                    rs = RerankService()
+                    # 构建候选文本：图片侧使用 OCR+描述，文本侧使用 content
+                    img_text = []
+                    try:
+                        ocr = image_meta.get('ocr_text') or ""
+                        desc = image_meta.get('description') or ""
+                        if ocr:
+                            img_text.append(f"[OCR] {ocr}")
+                        if desc:
+                            img_text.append(f"[描述] {desc}")
+                    except Exception:
+                        pass
+                    img_text = (" ").join(img_text) or "图片"
+                    candidates = [
+                        {"id": c.id, "content": getattr(c, 'content', '') or ''}
+                        for (c, _) in associated_chunks
+                    ]
+                    reranked = rs.rerank(query=img_text, candidates=candidates, top_k=len(candidates))
+                    score_map = {r.get('id'): r.get('rerank_score', r.get('score', 0.0)) for r in reranked}
+                    # 融合：用精排分数替换原置信度并重排
+                    associated_chunks = sorted(
+                        associated_chunks,
+                        key=lambda x: -score_map.get(x[0].id, 0.0)
+                    )
+            except Exception as e:
+                logger.warning(f"图片关联精排失败: {e}")
             
             # 根据参数决定返回格式
             if return_with_confidence:

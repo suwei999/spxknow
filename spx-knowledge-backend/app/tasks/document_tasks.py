@@ -1,6 +1,4 @@
-"""
-Document Processing Tasks (DOCX only, no Unstructured)
-"""
+"""Document Processing Tasks (DOCX / PDF, no Unstructured)"""
 
 import os
 import tempfile
@@ -9,6 +7,7 @@ import hashlib
 from celery import current_task
 from app.tasks.celery_app import celery_app
 from app.services.docx_service import DocxService
+from app.services.pdf_service import PdfService
 from app.services.vector_service import VectorService
 from app.services.cache_service import CacheService
 from app.services.opensearch_service import OpenSearchService
@@ -28,7 +27,7 @@ import app.models  # noqa: F401
 
 @celery_app.task(bind=True)
 def process_document_task(self, document_id: int):
-    """处理文档任务（仅 DOCX，完全不使用 Unstructured）"""
+    """处理文档任务（DOCX / PDF，完全不使用 Unstructured）"""
     db = SessionLocal()
     document = None
     task_id = self.request.id if self else "unknown"
@@ -53,10 +52,12 @@ def process_document_task(self, document_id: int):
                    f"文件类型={document.file_type}, 文件路径={document.file_path}, "
                    f"知识库ID={document.knowledge_base_id}, 文件大小={document.file_size or '未知'} bytes")
         
-        # 仅支持 DOCX
-        is_docx = (str(document.file_type or '').lower() == 'docx' or document.original_filename.lower().endswith('.docx'))
-        if not is_docx:
-            raise Exception("当前处理流程仅支持 DOCX，请上传 Word 文档")
+        file_suffix = (document.original_filename or '').split('.')[-1].lower()
+        file_type = (document.file_type or '').lower()
+        is_docx = file_suffix == 'docx' or file_type == 'docx'
+        is_pdf = file_suffix == 'pdf' or file_type == 'pdf'
+        if not (is_docx or is_pdf):
+            raise Exception("当前处理流程仅支持 DOCX / PDF 文档")
         
         # 更新文档状态为解析中
         logger.debug(f"[任务ID: {task_id}] 步骤2/7: 更新文档状态为解析中")
@@ -101,11 +102,42 @@ def process_document_task(self, document_id: int):
             meta={"current": 15, "total": 100, "status": "开始解析文档"}
         )
         
-        # 2. 解析文档（DOCX 本地解析）
+        # 2. 解析文档（DOCX/PDF 本地解析）
         parse_start = time.time()
-        logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 DocxService 解析文档 (DOCX 本地解析)")
-        parser = DocxService(db)
-        parse_result = parser.parse_document(temp_file_path)
+        parse_result = None
+        parser = None
+        parsed_file_path = temp_file_path
+        cleanup_paths = []
+        if is_docx:
+            sanitized_docx_path = DocxService.sanitize_docx(temp_file_path)
+            if sanitized_docx_path and os.path.exists(sanitized_docx_path):
+                parsed_file_path = sanitized_docx_path
+                if sanitized_docx_path != temp_file_path:
+                    logger.info(f"[任务ID: {task_id}] 已生成 DOCX 降噪副本供解析使用: {sanitized_docx_path}")
+                try:
+                    artifact_object = minio_service.upload_debug_artifact(
+                        document.id,
+                        "sanitized.docx",
+                        sanitized_docx_path,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                    if artifact_object:
+                        cleanup_paths.append({'type': 'minio', 'object_name': artifact_object})
+                except Exception as upload_exc:
+                        logger.warning(f"[任务ID: {task_id}] 上传降噪 DOCX 失败: {upload_exc}")
+                if sanitized_docx_path != temp_file_path:
+                    cleanup_paths.append({'type': 'local', 'path': sanitized_docx_path})
+            else:
+                parsed_file_path = temp_file_path
+                logger.debug(f"[任务ID: {task_id}] DOCX 降噪未生成新文件，继续使用原始文件解析")
+
+            logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 DocxService 解析文档 (DOCX 本地解析)")
+            parser = DocxService(db)
+        else:
+            logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 PdfService 解析文档 (PDF 本地解析)")
+            parser = PdfService(db)
+
+        parse_result = parser.parse_document(parsed_file_path)
         parse_time = time.time() - parse_start
         text_content = parse_result.get('text_content', '')
         elements_count = int(parse_result.get('metadata', {}).get('element_count', 0) or 0)
@@ -127,6 +159,49 @@ def process_document_task(self, document_id: int):
                         pass
         except Exception as e:
             logger.warning(f"[任务ID: {task_id}] 清理临时文件失败: {e}, 路径={temp_file_path}")
+
+        for artifact in cleanup_paths:
+            try:
+                if isinstance(artifact, dict):
+                    if artifact.get('type') == 'local':
+                        extra_path = artifact.get('path')
+                        if extra_path and os.path.isfile(extra_path):
+                            os.remove(extra_path)
+                        extra_dir = os.path.dirname(extra_path) if extra_path else None
+                        if extra_dir and os.path.isdir(extra_dir):
+                            try:
+                                os.rmdir(extra_dir)
+                            except OSError:
+                                import shutil
+                                try:
+                                    shutil.rmtree(extra_dir)
+                                except Exception:
+                                    pass
+                    elif artifact.get('type') == 'minio':
+                        try:
+                            bucket = minio_service.bucket_name
+                            object_name = artifact.get('object_name') or artifact.get('artifact')
+                            if object_name:
+                                minio_service.client.remove_object(bucket, object_name)
+                                logger.debug(f"[任务ID: {task_id}] 已删除 MinIO 调试产物: {object_name}")
+                        except Exception as minio_err:
+                            logger.debug(f"[任务ID: {task_id}] 删除 MinIO 调试产物失败: {minio_err}")
+                else:
+                    extra_path = artifact
+                    if extra_path and os.path.isfile(extra_path):
+                        os.remove(extra_path)
+                    extra_dir = os.path.dirname(extra_path) if extra_path else None
+                    if extra_dir and os.path.isdir(extra_dir):
+                        try:
+                            os.rmdir(extra_dir)
+                        except OSError:
+                            import shutil
+                            try:
+                                shutil.rmtree(extra_dir)
+                            except Exception:
+                                pass
+            except Exception as e:
+                logger.warning(f"[任务ID: {task_id}] 清理临时产物失败: {e}, 路径={artifact}")
         
         current_task.update_state(
             state="PROGRESS",
@@ -144,114 +219,284 @@ def process_document_task(self, document_id: int):
         text_element_index_map = parse_result.get("text_element_index_map", [])
         filtered_elements_light = parse_result.get("filtered_elements_light", [])
 
-        elements_for_chunking = None
-        if filtered_elements_light:
-            class LightElement:
-                def __init__(self, category, text, element_index):
-                    self.category = category
-                    self.text = text
-                    self.element_index = element_index
-            elements_for_chunking = [
-                LightElement(elem.get('category'), elem.get('text', ''), elem.get('element_index', i))
-                for i, elem in enumerate(filtered_elements_light)
-            ]
-        
-        chunks_with_index = DocxService(db).chunk_text(
-            text_content,
-            text_element_index_map=text_element_index_map,
-            elements=elements_for_chunking
-        )
-        chunk_time = time.time() - chunk_start
-        
-        if chunks_with_index and isinstance(chunks_with_index[0], str):
-            chunks = chunks_with_index
-            chunks_metadata = []
-        else:
-            chunks = [chunk.get('content', '') for chunk in chunks_with_index]
-            chunks_metadata = chunks_with_index
-        
-        logger.info(f"[任务ID: {task_id}] 文档分块完成: 耗时={chunk_time:.2f}秒, 共生成 {len(chunks)} 个分块")
-        
-        # 以下后续流程保持不变（合并表格块、保存DB、向量化、索引等）
-        # 原有代码从此处开始继续执行
+        if is_docx:
+            try:
+                from app.config.settings import settings as _settings
+                chunk_max = min(int(getattr(_settings, 'CHUNK_SIZE', 1000)), int(getattr(_settings, 'TEXT_EMBED_MAX_CHARS', 1024)))
+            except Exception:
+                chunk_max = 1024
 
-        # 合并“表格块”：将 tables 融入分块序列，按 element_index 顺序排序
-        logger.debug(f"[任务ID: {task_id}] 步骤5.1/7: 合并表格块并保存到数据库（含element_index）")
-        tables_meta = parse_result.get('tables', [])
-        merged_items = []
-        # 收集文本块
-        for i, chunk_content in enumerate(chunks):
-            element_index_start = None
-            element_index_end = None
-            page_number = None
-            section_id = None
-            is_parent = False
-            if chunks_metadata and i < len(chunks_metadata):
-                element_index_start = chunks_metadata[i].get('element_index_start')
-                element_index_end = chunks_metadata[i].get('element_index_end')
-                section_id = chunks_metadata[i].get('section_id')
-                is_parent = bool(chunks_metadata[i].get('is_parent'))
-            
-            page_numbers = []
-            coordinates_list = []
-            if text_element_index_map:
-                if element_index_start is not None and element_index_end is not None:
-                    for map_item in text_element_index_map:
-                        elem_idx = map_item.get('element_index')
-                        if element_index_start <= elem_idx <= element_index_end:
-                            page_num = map_item.get('page_number')
-                            if page_num is not None and page_num not in page_numbers:
-                                page_numbers.append(page_num)
-                            coords = map_item.get('coordinates')
-                            if coords and isinstance(coords, dict):
-                                if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
-                                    coordinates_list.append(coords)
-                elif element_index_start is not None:
-                    for map_item in text_element_index_map:
-                        if map_item.get('element_index') == element_index_start:
-                            page_num = map_item.get('page_number')
-                            if page_num is not None:
-                                page_numbers.append(page_num)
-                            coords = map_item.get('coordinates')
-                            if coords and isinstance(coords, dict):
-                                if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
-                                    coordinates_list.append(coords)
-                            break
-                if page_numbers:
-                    page_number = page_numbers[0]
-            chunk_coordinates = None
-            if coordinates_list:
-                if len(coordinates_list) == 1:
-                    chunk_coordinates = coordinates_list[0]
-                else:
-                    min_x = min(c.get('x', 0) for c in coordinates_list)
-                    min_y = min(c.get('y', 0) for c in coordinates_list)
-                    max_x = max((c.get('x', 0) + c.get('width', 0)) for c in coordinates_list)
-                    max_y = max((c.get('y', 0) + c.get('height', 0)) for c in coordinates_list)
-                    chunk_coordinates = {
-                        'x': min_x,
-                        'y': min_y,
-                        'width': max_x - min_x,
-                        'height': max_y - min_y
+            if chunk_max <= 0:
+                chunk_max = 1024
+
+            ordered_elements = parse_result.get('ordered_elements', []) or []
+            merged_items: List[Dict[str, Any]] = []
+            text_chunks_entries: List[Dict[str, Any]] = []
+            tables_meta = parse_result.get('tables', []) or []
+            chunks = []
+            chunks_metadata = []
+            chunk_counter = 0
+            text_buffer: List[Dict[str, Any]] = []
+            image_chunks: List[Dict[str, Any]] = []
+
+            def flush_text_buffer():
+                nonlocal text_buffer, chunk_counter
+                if not text_buffer:
+                    return
+                current_parts: List[str] = []
+                current_len = 0
+                chunk_start_idx: Optional[int] = None
+                chunk_start_order: Optional[int] = None
+                chunk_end_idx: Optional[int] = None
+                chunk_end_order: Optional[int] = None
+
+                def emit_chunk():
+                    nonlocal current_parts, current_len, chunk_start_idx, chunk_end_idx, chunk_start_order, chunk_end_order, chunk_counter
+                    content = ''.join(current_parts).strip()
+                    if not content:
+                        current_parts = []
+                        current_len = 0
+                        chunk_start_idx = None
+                        chunk_start_order = None
+                        chunk_end_idx = None
+                        chunk_end_order = None
+                        return
+                    base_order = chunk_start_order or 0
+                    pos_value = base_order * 1000 + chunk_counter
+                    chunk_meta = {
+                        'element_index_start': chunk_start_idx,
+                        'element_index_end': chunk_end_idx,
+                        'doc_order_start': chunk_start_order,
+                        'doc_order_end': chunk_end_order,
+                        'page_number': None,
+                        'coordinates': None,
+                        'chunk_index': chunk_counter,
                     }
-            pos = element_index_start if element_index_start is not None else (10_000_000 + i)
-            chunk_meta = {
-                'chunk_index': i,
-                'element_index_start': element_index_start,
-                'element_index_end': element_index_end,
-                'page_number': page_number,
-                'coordinates': chunk_coordinates,
-                'section_id': section_id,
-                'is_parent': is_parent,
-            }
-            merged_items.append({
-                'type': 'text',
-                'content': chunk_content,
-                'pos': pos,
-                'meta': chunk_meta
-            })
+                    chunk_item = {
+                        'type': 'text',
+                        'content': content,
+                        'pos': pos_value,
+                        'meta': chunk_meta,
+                    }
+                    text_chunks_entries.append(chunk_item)
+                    merged_items.append(chunk_item)
+                    chunks.append(content)
+                    chunks_metadata.append(chunk_meta)
+                    chunk_counter += 1
+                    current_parts = []
+                    current_len = 0
+                    chunk_start_idx = None
+                    chunk_start_order = None
+                    chunk_end_idx = None
+                    chunk_end_order = None
+
+                for idx, entry in enumerate(text_buffer):
+                    text_value = entry.get('text') or ''
+                    if idx < len(text_buffer) - 1:
+                        text_value = text_value + '\n'
+                    doc_order = entry.get('doc_order')
+                    element_index_entry = entry.get('element_index')
+                    pointer = 0
+                    length = len(text_value)
+                    while pointer < length:
+                        if current_len == 0:
+                            chunk_start_idx = element_index_entry
+                            chunk_start_order = doc_order
+                        remain = chunk_max - current_len
+                        take = min(remain, length - pointer)
+                        piece = text_value[pointer:pointer + take]
+                        current_parts.append(piece)
+                        current_len += take
+                        chunk_end_idx = element_index_entry
+                        chunk_end_order = doc_order
+                        pointer += take
+                        if current_len >= chunk_max:
+                            emit_chunk()
+
+                if current_parts:
+                    emit_chunk()
+
+                text_buffer = []
+
+            for element in ordered_elements:
+                elem_type = element.get('type')
+                if elem_type == 'text':
+                    text_value = (element.get('text') or '').strip()
+                    if not text_value:
+                        continue
+                    text_buffer.append({
+                        'text': text_value,
+                        'element_index': element.get('element_index'),
+                        'doc_order': element.get('doc_order'),
+                    })
+                elif elem_type == 'table':
+                    flush_text_buffer()
+                    continue
+                elif elem_type == 'image':
+                    flush_text_buffer()
+                    doc_order = element.get('doc_order') or 0
+                    elem_idx = element.get('element_index')
+                    # ✅ 验证：图片元素必须有 element_index
+                    if elem_idx is None:
+                        logger.warning(
+                            f"[任务ID: {task_id}] ⚠️ 图片元素缺少 element_index: doc_order={doc_order}, "
+                            f"element_keys={list(element.keys())}"
+                        )
+                    image_chunk = {
+                        'type': 'image',
+                        'content': '',
+                        'pos': doc_order * 1000,
+                        'meta': {
+                            'element_index': elem_idx,
+                            'doc_order': doc_order,
+                            'rId': element.get('rId'),
+                            'image_id': None,
+                            'image_path': None,
+                        }
+                    }
+                    merged_items.append(image_chunk)
+                    image_chunks.append(image_chunk)
+                    if elem_idx is not None:
+                        logger.debug(
+                            f"[任务ID: {task_id}] 创建图片分块: element_index={elem_idx}, doc_order={doc_order}, pos={doc_order * 1000}"
+                        )
+            flush_text_buffer()
+            merged_items.sort(key=lambda item: item.get('pos', 0))
+            # 去重：确保每个 element_index 仅生成一个 image/table 块
+            deduped_items: List[Dict[str, Any]] = []
+            used_table_indices = set()
+            used_image_indices = set()
+            for item in merged_items:
+                item_type = item.get('type')
+                meta = item.get('meta') or {}
+                elem_idx = meta.get('element_index')
+                if item_type == 'table' and elem_idx is not None:
+                    key = (elem_idx, item.get('pos'))
+                    if key in used_table_indices:
+                        continue
+                    used_table_indices.add(key)
+                elif item_type == 'image' and elem_idx is not None:
+                    if elem_idx in used_image_indices:
+                        continue
+                    used_image_indices.add(elem_idx)
+                deduped_items.append(item)
+            merged_items = deduped_items
+
+            chunk_time = time.time() - chunk_start
+            logger.info(f"[任务ID: {task_id}] DOCX 顺序分块完成: 耗时={chunk_time:.2f}秒, 文本块={len(text_chunks_entries)}, 表格={sum(1 for m in merged_items if m.get('type')=='table')}")
+        else:
+            elements_for_chunking = None
+            if filtered_elements_light:
+                class LightElement:
+                    def __init__(self, category, text, element_index):
+                        self.category = category
+                        self.text = text
+                        self.element_index = element_index
+                elements_for_chunking = [
+                    LightElement(elem.get('category'), elem.get('text', ''), elem.get('element_index', i))
+                    for i, elem in enumerate(filtered_elements_light)
+                ]
+
+            chunks_with_index = DocxService(db).chunk_text(
+                text_content,
+                text_element_index_map=text_element_index_map,
+                elements=elements_for_chunking
+            )
+            chunk_time = time.time() - chunk_start
+
+            if chunks_with_index and isinstance(chunks_with_index[0], str):
+                chunks = chunks_with_index
+                chunks_metadata = []
+            else:
+                chunks = [chunk.get('content', '') for chunk in chunks_with_index]
+                chunks_metadata = chunks_with_index
+
+            logger.info(f"[任务ID: {task_id}] 文档分块完成: 耗时={chunk_time:.2f}秒, 共生成 {len(chunks)} 个分块")
+
+            merged_items = []
+            tables_meta = parse_result.get('tables', [])
+            image_chunks: List[Dict[str, Any]] = []
+            # 收集文本块
+            for i, chunk_content in enumerate(chunks):
+                element_index_start = None
+                element_index_end = None
+                page_number = None
+                section_id = None
+                is_parent = False
+                if chunks_metadata and i < len(chunks_metadata):
+                    element_index_start = chunks_metadata[i].get('element_index_start')
+                    element_index_end = chunks_metadata[i].get('element_index_end')
+                    section_id = chunks_metadata[i].get('section_id')
+                    is_parent = bool(chunks_metadata[i].get('is_parent'))
+
+                page_numbers = []
+                coordinates_list = []
+                if text_element_index_map:
+                    if element_index_start is not None and element_index_end is not None:
+                        for map_item in text_element_index_map:
+                            elem_idx = map_item.get('element_index')
+                            if element_index_start <= elem_idx <= element_index_end:
+                                page_num = map_item.get('page_number')
+                                if page_num is not None and page_num not in page_numbers:
+                                    page_numbers.append(page_num)
+                                coords = map_item.get('coordinates')
+                                if coords and isinstance(coords, dict):
+                                    if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
+                                        coordinates_list.append(coords)
+                    elif element_index_start is not None:
+                        for map_item in text_element_index_map:
+                            if map_item.get('element_index') == element_index_start:
+                                page_num = map_item.get('page_number')
+                                if page_num is not None:
+                                    page_numbers.append(page_num)
+                                coords = map_item.get('coordinates')
+                                if coords and isinstance(coords, dict):
+                                    if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
+                                        coordinates_list.append(coords)
+                                break
+                    if page_numbers:
+                        page_number = page_numbers[0]
+                chunk_coordinates = None
+                if coordinates_list:
+                    if len(coordinates_list) == 1:
+                        chunk_coordinates = coordinates_list[0]
+                    else:
+                        min_x = min(c.get('x', 0) for c in coordinates_list)
+                        min_y = min(c.get('y', 0) for c in coordinates_list)
+                        max_x = max((c.get('x', 0) + c.get('width', 0)) for c in coordinates_list)
+                        max_y = max((c.get('y', 0) + c.get('height', 0)) for c in coordinates_list)
+                        chunk_coordinates = {
+                            'x': min_x,
+                            'y': min_y,
+                            'width': max_x - min_x,
+                            'height': max_y - min_y
+                        }
+                pos = element_index_start if element_index_start is not None else (10_000_000 + i)
+                chunk_meta = {
+                    'chunk_index': i,
+                    'element_index_start': element_index_start,
+                    'element_index_end': element_index_end,
+                    'page_number': page_number,
+                    'coordinates': chunk_coordinates,
+                    'section_id': section_id,
+                    'is_parent': is_parent,
+                }
+                merged_items.append({
+                    'type': 'text',
+                    'content': chunk_content,
+                    'pos': pos,
+                    'meta': chunk_meta
+                })
 
         # 收集表格块
+        existing_table_keys = set()
+        if is_docx:
+            existing_table_keys = {
+                (item.get('meta', {}).get('element_index'), item.get('pos'))
+                for item in merged_items
+                if item.get('type') == 'table'
+            }
+
         for tbl in tables_meta:
             try:
                 tbl_index = tbl.get('element_index')
@@ -352,19 +597,28 @@ def process_document_task(self, document_id: int):
                     tbl_text = tbl_text[:2048]
                 # 使用 table_uid 替代大 JSON 存入 chunk.meta
                 tbl_page_number = tbl.get('page_number')
-                merged_items.append({
-                    'type': 'table',
-                    'content': tbl_text,
-                    'pos': tbl_index if tbl_index is not None else 9_000_000,
-                    'meta': {
-                        'element_index': tbl_index,
-                        'table_id': table_uid,
-                        'table_group_uid': table_group_uid,
-                        'n_rows': n_rows,
-                        'n_cols': n_cols,
-                        'page_number': tbl_page_number
-                    }
-                })
+                append_table_chunk = True
+                if is_docx:
+                    doc_order = tbl.get('doc_order') or 0
+                    table_pos = doc_order * 1000
+                    if tbl_index is not None and (tbl_index, table_pos) in existing_table_keys:
+                        append_table_chunk = False
+                else:
+                    table_pos = tbl_index if tbl_index is not None else 9_000_000
+                if append_table_chunk:
+                    merged_items.append({
+                        'type': 'table',
+                        'content': tbl_text,
+                        'pos': table_pos,
+                        'meta': {
+                            'element_index': tbl_index,
+                            'table_id': table_uid,
+                            'table_group_uid': table_group_uid,
+                            'n_rows': n_rows,
+                            'n_cols': n_cols,
+                            'page_number': tbl_page_number
+                        }
+                    })
             except Exception as e:
                 logger.warning(f"[任务ID: {task_id}] 保存表格到 document_tables 失败: {e}")
                 continue
@@ -481,6 +735,9 @@ def process_document_task(self, document_id: int):
             if item_type == 'table':
                 elem_idx = item_meta.get('element_index')
                 logger.info(f"[任务ID: {task_id}]   [{actual_idx}] {item_type}: pos={item_pos}, element_index={elem_idx}")
+            elif item_type == 'image':
+                elem_idx = item_meta.get('element_index')
+                logger.info(f"[任务ID: {task_id}]   [{actual_idx}] {item_type}: pos={item_pos}, element_index={elem_idx}")
             else:
                 elem_start = item_meta.get('element_index_start')
                 elem_end = item_meta.get('element_index_end')
@@ -491,25 +748,60 @@ def process_document_task(self, document_id: int):
         import json
 
         created_chunks = []  # 收集已创建的块（便于后续关系建立）
+        element_index_to_chunk_row = {}
+        chunk_index_to_row = {}
+        image_chunk_rows = {}
 
         for new_index, item in enumerate(merged_items):
-            chunk_metadata = item['meta'] or {}
+            # ✅ 重要：使用 copy() 创建 meta 的副本，避免修改原始数据
+            original_meta = item.get('meta') or {}
+            chunk_metadata = original_meta.copy() if isinstance(original_meta, dict) else {}
             chunk_metadata['chunk_index'] = new_index
+            chunk_type = item.get('type', 'text')
+            
+            # ✅ 调试：记录图片分块的 element_index
+            if chunk_type == 'image':
+                elem_idx = chunk_metadata.get('element_index')
+                if elem_idx is None:
+                    logger.warning(
+                        f"[任务ID: {task_id}] ⚠️ 图片分块缺少 element_index: chunk_index={new_index}, "
+                        f"meta_keys={list(chunk_metadata.keys())}, original_meta={original_meta}"
+                    )
+                else:
+                    logger.info(
+                        f"[任务ID: {task_id}] 保存图片分块: chunk_index={new_index}, element_index={elem_idx}, "
+                        f"meta_keys={list(chunk_metadata.keys())}"
+                    )
+            
+            # ✅ 验证：确保 meta 可以正确序列化
+            try:
+                meta_json = json.dumps(chunk_metadata, ensure_ascii=False)
+            except Exception as json_err:
+                logger.warning(
+                    f"[任务ID: {task_id}] ⚠️ 分块 meta 序列化失败: chunk_index={new_index}, "
+                    f"chunk_type={chunk_type}, error={json_err}, meta={chunk_metadata}"
+                )
+                # 如果序列化失败，使用空字典
+                chunk_metadata = {'chunk_index': new_index}
+                meta_json = json.dumps(chunk_metadata, ensure_ascii=False)
+            
             chunk = DocumentChunk(
                 document_id=document_id,
-                content=item['content'] if store_text else "",
+                content=item.get('content', '') if store_text else "",
                 chunk_index=new_index,
-                chunk_type=item['type'],
-                meta=json.dumps(chunk_metadata, ensure_ascii=False)
+                chunk_type=chunk_type,
+                meta=meta_json
             )
             db.add(chunk)
             created_chunks.append((chunk, chunk_metadata))
+            chunk_index_to_row[new_index] = chunk
             if (new_index + 1) % 50 == 0:
                 logger.debug(f"[任务ID: {task_id}] 已保存 {new_index + 1}/{len(merged_items)} 个分块到数据库")
         
         db.commit()
         
         # ✅ 建立父子关系（基于 section_id / is_parent）并回填 parent_chunk_id 到子块 meta
+        # ✅ 同时构建 element_index 到 chunk_row 的映射（用于图片回填）
         try:
             # 重新查询含主键ID
             db_chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).order_by(DocumentChunk.chunk_index).all()
@@ -517,29 +809,56 @@ def process_document_task(self, document_id: int):
             import json as _json
             idx_to_row = {}
             idx_to_meta = {}
+            current_parent_chunk_id = None
+            order_in_parent = 0
+            
             for row in db_chunks:
                 idx_to_row[row.chunk_index] = row
+                chunk_index_to_row[row.chunk_index] = row
                 meta_raw = getattr(row, 'meta', None)
                 try:
                     meta = _json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
                 except Exception:
                     meta = {}
                 idx_to_meta[row.chunk_index] = meta
-            # 按 section 分组并建立关系
-            current_section_id = None
-            current_parent_chunk_id = None
-            order_in_parent = 0
-            from sqlalchemy import text as _sql_text
-            for i in range(len(db_chunks)):
-                meta = idx_to_meta.get(i, {})
+                
+                # ✅ 构建 element_index 到 chunk_row 的映射
+                chunk_type = getattr(row, 'chunk_type', '').lower()
+                elem_idx = meta.get('element_index')
+                
+                if elem_idx is not None:
+                    # ✅ 有 element_index 的分块（图片、表格）
+                    logger.info(
+                        f"[任务ID: {task_id}] 分块映射: chunk_id={row.id}, chunk_index={row.chunk_index}, "
+                        f"chunk_type={chunk_type}, element_index={elem_idx}, meta_keys={list(meta.keys())}"
+                    )
+                    element_index_to_chunk_row[elem_idx] = row
+                    if chunk_type == 'image':
+                        image_chunk_rows[elem_idx] = row
+                        logger.info(
+                            f"[任务ID: {task_id}] ✅ 图片分块映射成功: element_index={elem_idx} -> chunk_id={row.id}"
+                        )
+                else:
+                    # ✅ 对于没有 element_index 的分块（如文本块），检查是否有 element_index_start/end
+                    elem_start = meta.get('element_index_start')
+                    elem_end = meta.get('element_index_end')
+                    if chunk_type == 'image':
+                        # ✅ 图片分块必须有 element_index，如果没有则记录警告
+                        logger.warning(
+                            f"[任务ID: {task_id}] ⚠️ 图片分块缺少 element_index: chunk_id={row.id}, "
+                            f"chunk_index={row.chunk_index}, meta_keys={list(meta.keys())}, "
+                            f"meta_content={meta}"
+                        )
+                    elif elem_start is None and elem_end is None:
+                        logger.debug(
+                            f"[任务ID: {task_id}] 文本分块无 element_index: chunk_id={row.id}, "
+                            f"chunk_index={row.chunk_index}, meta_keys={list(meta.keys())}"
+                        )
+                
+                # ✅ 建立父子关系（从 meta 中读取 is_parent 和 section_id）
+                is_parent = bool(meta.get('is_parent', False))
                 section_id = meta.get('section_id')
-                is_parent = bool(meta.get('is_parent'))
-                row = idx_to_row[i]
-                if section_id != current_section_id:
-                    # 新 section
-                    current_section_id = section_id
-                    current_parent_chunk_id = None
-                    order_in_parent = 0
+                
                 if is_parent:
                     current_parent_chunk_id = row.id
                     order_in_parent = 0
@@ -574,10 +893,47 @@ def process_document_task(self, document_id: int):
                         except Exception:
                             pass
             db.commit()
-            logger.info(f"[任务ID: {task_id}] 父子关系建立完成，并已回填子块 parent_chunk_id")
+            logger.info(f"[任务ID: {task_id}] 父子关系建立完成，element_index映射已构建: {len(element_index_to_chunk_row)} 个映射，其中图片分块: {len(image_chunk_rows)} 个")
         except Exception as e:
             db.rollback()
             logger.warning(f"[任务ID: {task_id}] 父子关系建立阶段失败（不影响主流程）: {e}")
+            import traceback
+            logger.debug(f"[任务ID: {task_id}] 父子关系建立失败详情: {traceback.format_exc()}")
+            # ✅ 即使映射建立失败，也尝试重新构建映射（仅用于图片回填）
+            try:
+                logger.info(f"[任务ID: {task_id}] 尝试重新构建 element_index 映射用于图片回填...")
+                import json as retry_json
+                db_chunks_retry = db.query(DocumentChunk).filter(
+                    DocumentChunk.document_id == document_id,
+                    DocumentChunk.chunk_type == 'image'
+                ).all()
+                retry_count = 0
+                for row in db_chunks_retry:
+                    meta_raw = getattr(row, 'meta', None)
+                    try:
+                        meta = retry_json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+                    except Exception:
+                        meta = {}
+                    elem_idx = meta.get('element_index')
+                    if elem_idx is not None:
+                        element_index_to_chunk_row[elem_idx] = row
+                        image_chunk_rows[elem_idx] = row
+                        retry_count += 1
+                        logger.info(f"[任务ID: {task_id}] 重新映射成功: element_index={elem_idx} -> chunk_id={row.id}")
+                    else:
+                        logger.warning(
+                            f"[任务ID: {task_id}] 重新映射跳过: chunk_id={row.id} 缺少 element_index, "
+                            f"meta_keys={list(meta.keys())}"
+                        )
+                logger.info(
+                    f"[任务ID: {task_id}] 重新构建映射完成: 查询到 {len(db_chunks_retry)} 个图片分块, "
+                    f"成功映射 {retry_count} 个, element_index_to_chunk_row={len(element_index_to_chunk_row)}, "
+                    f"image_chunk_rows={len(image_chunk_rows)}"
+                )
+            except Exception as retry_err:
+                logger.warning(f"[任务ID: {task_id}] 重新构建映射也失败: {retry_err}")
+                import traceback
+                logger.debug(f"[任务ID: {task_id}] 重新构建映射失败详情: {traceback.format_exc()}")
         
         # ✅ 统计信息
         text_chunks = sum(1 for item in merged_items if item.get('type') == 'text')
@@ -615,107 +971,127 @@ def process_document_task(self, document_id: int):
             logger.warning(f"[任务ID: {task_id}] 分块归档到 MinIO 失败: {e}")
 
         # 图片处理流水线（若解析结果包含图片二进制，则落 MinIO + 入库 + 向量化 + 索引）
-        try:
-            images_meta = parse_result.get('images', [])
-            if images_meta:
-                try:
-                    total_images = len(images_meta)
-                    with_data = sum(1 for _img in images_meta if (_img.get('data') or _img.get('bytes')))
-                    logger.info(f"[任务ID: {task_id}] 解析到图片: {total_images} 张，其中含二进制数据: {with_data}/{total_images}")
-                    if with_data == 0:
-                        logger.warning(f"[任务ID: {task_id}] 警告：所有图片均缺少二进制数据(data/bytes)，将无法持久化。")
-                except Exception:
-                    pass
-                img_service = ImageService(db)
-                vector_service = VectorService(db)
-                os_service = OpenSearchService()
-                saved = 0
-                for img in images_meta:
-                    data = img.get('data') or img.get('bytes')
-                    if not data:
-                        continue
-                    
-                    # 步骤1：创建或获取图片记录（基于SHA256去重）
-                    # 注意：如果图片已存在（SHA256相同），会直接返回已存在的记录，不会重复上传到MinIO
-                    image_sha256 = hashlib.sha256(data).hexdigest()
-                    
-                    # 获取图片的 element_index（用于100%还原文档顺序）
-                    element_index = img.get('element_index')  # 从解析结果中获取
-                    
-                    # 先检查图片是否已存在（用于判断是否需要生成向量）
-                    existing_image = db.query(DocumentImage).filter(
-                        DocumentImage.sha256_hash == image_sha256,
-                        DocumentImage.is_deleted == False
-                    ).first()
-                    is_new_image = existing_image is None
-                    
-                    # 创建或获取图片记录
-                    image_row = img_service.create_image_from_bytes(document_id, data, image_ext=img.get('ext', '.png'), image_type=img.get('image_type'))
-                    
-                    # ✅ 保存 element_index 和 page_number 到图片的 metadata JSON 中（关键：用于100%还原和关联查找）
-                    # 注意：element_index 已在上面第594行获取，无需重复赋值
-                    page_number = img.get('page_number')
-                    if element_index is not None or page_number is not None:
-                        import json
-                        try:
-                            existing_meta = {}
-                            if image_row.meta:
-                                existing_meta = json.loads(image_row.meta) if isinstance(image_row.meta, str) else image_row.meta
-                            if element_index is not None:
-                                existing_meta['element_index'] = element_index
-                            if page_number is not None:
-                                existing_meta['page_number'] = page_number
-                            # 同时保存 coordinates（如果存在）
-                            coordinates = img.get('coordinates')
-                            if coordinates:
-                                existing_meta['coordinates'] = coordinates
-                            image_row.meta = json.dumps(existing_meta, ensure_ascii=False)
-                            db.commit()
-                            logger.debug(f"[任务ID: {task_id}] 图片 {image_row.id} 已保存 element_index={element_index}, page_number={page_number}")
-                        except Exception as e:
-                            logger.warning(f"[任务ID: {task_id}] 保存图片 metadata 失败: {e}")
-                            db.rollback()
-                    
-                    # 步骤2：检查图片是否已有向量（避免重复生成）
-                    # 注意：相同图片（SHA256相同）复用向量，不重复生成
-                    image_vector = None
-                    if not is_new_image:
-                        # 图片已存在，尝试从OpenSearch获取已有向量（使用同步方法）
-                        try:
-                            response = os_service.client.get(
-                                index=os_service.image_index,
-                                id=f"image_{image_row.id}"
-                            )
-                            existing_vector = response.get("_source", {}).get("image_vector")
-                            if existing_vector and len(existing_vector) == 512:
-                                # 图片已存在且有向量，复用向量（跳过向量生成）
-                                image_vector = existing_vector
-                                logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} (SHA256: {image_sha256[:8]}...) 已存在，复用向量（跳过向量生成和重复上传）")
-                        except Exception:
-                            # 索引不存在或图片未索引，需要生成向量
-                            logger.debug(f"[任务ID: {task_id}] 图片 {image_row.id} 未在OpenSearch中找到向量，将生成新向量")
-                    
-                    # 步骤3：如果是新图片或没有向量，生成向量（优先内存，失败回退临时文件）
-                    if not image_vector:
-                        image_vector = vector_service.generate_image_embedding_prefer_memory(data)
-                        logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} 向量生成完成，维度: {len(image_vector)}")
-                    
-                    # 步骤4：索引到 OpenSearch（更新索引，记录图片与当前文档的关联）
-                    # 注意：即使图片已存在，也需要更新索引以反映图片与当前文档的关联关系
+        def _process_images():
+            images_meta = parse_result.get('images', []) or []
+            if not images_meta:
+                return
+
+            total_images = len(images_meta)
+            try:
+                with_data = sum(1 for _img in images_meta if (_img.get('data') or _img.get('bytes')))
+            except Exception:
+                with_data = 0
+            logger.info(
+                f"[任务ID: {task_id}] 解析到图片: {total_images} 张，其中含二进制数据: {with_data}/{total_images}"
+            )
+            if total_images and with_data == 0:
+                logger.warning(
+                    f"[任务ID: {task_id}] 警告：所有图片均缺少二进制数据(data/bytes)，将无法持久化。"
+                )
+
+            img_service = ImageService(db)
+            vector_service = VectorService(db)
+            os_service = OpenSearchService()
+            saved = 0
+            chunk_meta_dirty = False
+
+            for img in images_meta:
+                data = img.get('data') or img.get('bytes')
+                if not data:
+                    continue
+
+                element_index = img.get('element_index')
+                page_number = img.get('page_number')
+                doc_order = img.get('doc_order')
+                coordinates = img.get('coordinates')
+                image_sha256 = hashlib.sha256(data).hexdigest()
+
+                existing_image = db.query(DocumentImage).filter(
+                    DocumentImage.sha256_hash == image_sha256,
+                    DocumentImage.is_deleted == False,
+                ).first()
+                is_new_image = existing_image is None
+
+                image_row = img_service.create_image_from_bytes(
+                    document_id,
+                    data,
+                    image_ext=img.get('ext', '.png'),
+                    image_type=img.get('image_type'),
+                )
+
+                # ✅ 更新图片 metadata（element_index, page_number, coordinates 等）
+                if element_index is not None or page_number is not None or doc_order is not None or coordinates:
+                    import json
                     try:
-                        # 构建 metadata（包含 element_index，用于100%还原）
-                        image_metadata = img.get('metadata', {})
+                        existing_meta = {}
+                        if image_row.meta:
+                            existing_meta = (
+                                json.loads(image_row.meta)
+                                if isinstance(image_row.meta, str)
+                                else image_row.meta
+                            )
                         if element_index is not None:
-                            image_metadata['element_index'] = element_index
-                        
-                        os_service.index_image_sync({
+                            existing_meta['element_index'] = element_index
+                        if page_number is not None:
+                            existing_meta['page_number'] = page_number
+                        if doc_order is not None:
+                            existing_meta['doc_order'] = doc_order
+                        if coordinates:
+                            existing_meta['coordinates'] = coordinates
+                        image_row.meta = json.dumps(existing_meta, ensure_ascii=False)
+                        db.commit()
+                        logger.debug(
+                            f"[任务ID: {task_id}] 图片 {image_row.id} metadata 更新成功: "
+                            f"element_index={element_index}, page_number={page_number}"
+                        )
+                    except Exception as meta_exc:
+                        logger.warning(
+                            f"[任务ID: {task_id}] 保存图片 metadata 失败 (image_id={image_row.id}): {meta_exc}"
+                        )
+                        db.rollback()
+
+                image_vector = None
+                if not is_new_image:
+                    try:
+                        response = os_service.client.get(
+                            index=os_service.image_index,
+                            id=f"image_{image_row.id}",
+                        )
+                        existing_vector = response.get("_source", {}).get("image_vector")
+                        if existing_vector and len(existing_vector) == 512:
+                            image_vector = existing_vector
+                            logger.info(
+                                f"[任务ID: {task_id}] 图片 {image_row.id} (SHA256: {image_sha256[:8]}...) 已存在，复用向量"
+                            )
+                    except Exception:
+                        logger.debug(
+                            f"[任务ID: {task_id}] 图片 {image_row.id} 未在OpenSearch中找到向量，将生成新向量"
+                        )
+
+                if image_vector is None:
+                    image_vector = vector_service.generate_image_embedding_prefer_memory(data)
+                    logger.info(
+                        f"[任务ID: {task_id}] 图片 {image_row.id} 向量生成完成，维度: {len(image_vector)}"
+                    )
+
+                try:
+                    image_metadata = img.get('metadata', {}) or {}
+                    if element_index is not None:
+                        image_metadata['element_index'] = element_index
+                    if doc_order is not None:
+                        image_metadata['doc_order'] = doc_order
+                    image_metadata['image_path'] = image_row.image_path
+                    image_metadata['image_id'] = image_row.id
+
+                    os_service.index_image_sync(
+                        {
                             "image_id": image_row.id,
-                            "document_id": document.id,  # 更新为当前文档ID
+                            "document_id": document.id,
                             "knowledge_base_id": document.knowledge_base_id,
                             "category_id": getattr(document, 'category_id', None),
                             "image_path": image_row.image_path,
-                            "page_number": img.get('page_number'),
-                            "coordinates": img.get('coordinates'),
+                            "page_number": page_number,
+                            "coordinates": coordinates,
                             "width": image_row.width,
                             "height": image_row.height,
                             "image_type": image_row.image_type,
@@ -723,21 +1099,104 @@ def process_document_task(self, document_id: int):
                             "description": img.get('description', ''),
                             "feature_tags": img.get('feature_tags', []),
                             "image_vector": image_vector,
-                            "element_index": element_index,  # 关键：记录 element_index 用于100%还原
-                            "created_at": getattr(image_row, 'created_at', None).isoformat() if getattr(image_row, 'created_at', None) else None,
-                            "updated_at": getattr(image_row, 'updated_at', None).isoformat() if getattr(image_row, 'updated_at', None) else None,
+                            "element_index": element_index,
+                            "created_at": getattr(image_row, 'created_at', None).isoformat()
+                            if getattr(image_row, 'created_at', None)
+                            else None,
+                            "updated_at": getattr(image_row, 'updated_at', None).isoformat()
+                            if getattr(image_row, 'updated_at', None)
+                            else None,
                             "metadata": image_metadata,
                             "processing_status": getattr(image_row, 'status', 'completed'),
                             "model_version": "1.0",
-                        })
-                        logger.info(f"[任务ID: {task_id}] 图片 {image_row.id} 索引完成（element_index={element_index}）")
-                    except Exception as idxe:
-                        logger.warning(f"[任务ID: {task_id}] 图片索引失败 image_id={image_row.id}: {idxe}")
-                    saved += 1
-                logger.info(f"[任务ID: {task_id}] 图片持久化完成: {saved}/{len(images_meta)}")
-        except Exception as e:
-            logger.warning(f"[任务ID: {task_id}] 图片持久化失败: {e}")
-        
+                        }
+                    )
+                    logger.info(
+                        f"[任务ID: {task_id}] 图片 {image_row.id} 索引完成（element_index={element_index}）"
+                    )
+                except Exception as idx_exc:
+                    logger.warning(
+                        f"[任务ID: {task_id}] 图片索引失败 image_id={image_row.id}: {idx_exc}"
+                    )
+
+                saved += 1
+
+                # ✅ 回填图片元数据到对应的 DocumentChunk
+                if element_index is not None:
+                    # 首先尝试从 image_chunk_rows 获取（这是专门为图片分块建立的映射）
+                    chunk_row = image_chunk_rows.get(element_index)
+                    # 如果没找到，再从通用的 element_index_to_chunk_row 获取
+                    if chunk_row is None:
+                        chunk_row = element_index_to_chunk_row.get(element_index)
+                    
+                    if chunk_row is not None:
+                        chunk_type = getattr(chunk_row, 'chunk_type', '').lower()
+                        chunk_id = getattr(chunk_row, 'id', None)
+                        
+                        # ✅ 只更新图片类型的分块
+                        if chunk_type == 'image':
+                            try:
+                                import json
+                                existing_meta_raw = getattr(chunk_row, 'meta', None)
+                                if isinstance(existing_meta_raw, str):
+                                    try:
+                                        existing_meta = json.loads(existing_meta_raw)
+                                    except Exception:
+                                        existing_meta = {}
+                                else:
+                                    existing_meta = existing_meta_raw or {}
+                                
+                                # ✅ 合并更新，保留原有字段
+                                existing_meta.update({
+                                    'image_id': image_row.id,
+                                    'image_path': image_row.image_path,
+                                })
+                                chunk_row.meta = json.dumps(existing_meta, ensure_ascii=False)
+                                logger.info(
+                                    f"[任务ID: {task_id}] ✅ 图片 {image_row.id} 回填成功: chunk_id={chunk_id}, chunk_index={getattr(chunk_row, 'chunk_index', None)}, element_index={element_index}, meta_keys={list(existing_meta.keys())}"
+                                )
+                                chunk_meta_dirty = True
+                            except Exception as meta_err:
+                                logger.warning(
+                                    f"[任务ID: {task_id}] ❌ 更新图片分块元数据失败 (chunk_id={chunk_id}, element_index={element_index}): {meta_err}"
+                                )
+                                import traceback
+                                logger.debug(f"[任务ID: {task_id}] 更新失败详情: {traceback.format_exc()}")
+                        else:
+                            logger.warning(
+                                f"[任务ID: {task_id}] ⚠️ 目标分块类型不匹配: chunk_id={chunk_id}, element_index={element_index}, 期望类型=image, 实际类型={chunk_type}，跳过图片元数据回填"
+                            )
+                    else:
+                        # ✅ 详细调试信息：列出所有已映射的 element_index 和图片分块
+                        mapped_indices = list(element_index_to_chunk_row.keys())
+                        mapped_image_indices = list(image_chunk_rows.keys())
+                        logger.warning(
+                            f"[任务ID: {task_id}] ⚠️ 图片 {image_row.id} 未找到 element_index={element_index} 对应的数据库分块。"
+                            f" 可用映射数量: element_index_to_chunk_row={len(element_index_to_chunk_row)}, image_chunk_rows={len(image_chunk_rows)}"
+                            f" 已映射的 element_index: {sorted(mapped_indices)}, 已映射的图片 element_index: {sorted(mapped_image_indices)}"
+                        )
+                else:
+                    logger.warning(
+                        f"[任务ID: {task_id}] ⚠️ 图片 {image_row.id} 缺少 element_index，无法回填到分块"
+                    )
+
+            logger.info(
+                f"[任务ID: {task_id}] 图片持久化完成: {saved}/{len(images_meta)}"
+            )
+            if chunk_meta_dirty:
+                try:
+                    db.commit()
+                except Exception as commit_err:
+                    logger.warning(
+                        f"[任务ID: {task_id}] 提交图片分块元数据失败: {commit_err}"
+                    )
+                    db.rollback()
+
+        try:
+            _process_images()
+        except Exception as images_exc:
+            logger.warning(f"[任务ID: {task_id}] 图片持久化失败: {images_exc}")
+
         current_task.update_state(
             state="PROGRESS",
             meta={"current": 60, "total": 100, "status": "文档分块完成"}

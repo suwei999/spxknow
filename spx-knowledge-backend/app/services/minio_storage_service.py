@@ -316,6 +316,29 @@ class MinioStorageService:
                 code=ErrorCode.MINIO_UPLOAD_FAILED,
                 message=f"元数据上传失败: {str(e)}"
             )
+
+    def upload_debug_artifact(self, document_db_id: int, artifact_name: str, local_path: str, content_type: str = "application/octet-stream") -> Optional[str]:
+        try:
+            if not os.path.exists(local_path):
+                logger.warning(f"[MinIO] debug artifact 不存在: {local_path}")
+                return None
+            now = datetime.now()
+            artifact_path = f"documents/debug/{document_db_id}/{now.strftime('%Y%m%d_%H%M%S')}_{artifact_name}"
+            with open(local_path, 'rb') as fh:
+                data = fh.read()
+            from io import BytesIO
+            self.client.put_object(
+                bucket_name=self.bucket_name,
+                object_name=artifact_path,
+                data=BytesIO(data),
+                length=len(data),
+                content_type=content_type,
+            )
+            logger.info(f"[MinIO] debug artifact 上传成功: {artifact_path}")
+            return artifact_path
+        except Exception as exc:
+            logger.warning(f"[MinIO] debug artifact 上传失败: {exc}")
+            return None
     
     def update_chunk_content(self, document_id: int, chunk_index: int, new_content: str, chunk_meta: dict = None) -> Dict[str, Any]:
         """

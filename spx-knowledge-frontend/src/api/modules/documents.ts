@@ -122,6 +122,32 @@ export const getChunkDetail = (documentId: number, chunkId: number) => {
   })
 }
 
+// 获取文本/表格命中的上下文
+export const getChunkContext = (
+  documentId: number,
+  chunkId: number,
+  params?: { neighbor_pre?: number; neighbor_next?: number; parent_group_max_chars?: number }
+) => {
+  return request({
+    url: `/query/documents/${documentId}/chunks/${chunkId}/context`,
+    method: 'get',
+    params
+  })
+}
+
+// 获取图片的上下文（位置与关联文本）
+export const getImageContext = (
+  documentId: number,
+  imageId: number,
+  params?: { neighbor_pre?: number; neighbor_next?: number; min_confidence?: number }
+) => {
+  return request({
+    url: `/query/documents/${documentId}/images/${imageId}/context`,
+    method: 'get',
+    params
+  })
+}
+
 // 更新块内容（块级修改）
 export const updateChunk = (documentId: number, chunkId: number, data: {
   content: string

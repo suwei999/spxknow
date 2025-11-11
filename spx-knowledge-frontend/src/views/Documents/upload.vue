@@ -259,8 +259,19 @@ loadKnowledgeBases()
 .file-info {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  color: var(--el-text-color-primary);
+  gap: 6px;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.32);
+}
+
+.file-info span {
+  color: #e2e8f0;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
 }
 
 /* 强化左侧表单标签与辅助文字的可读性（深色背景下） */

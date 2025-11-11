@@ -400,6 +400,11 @@
     <el-dialog v-model="imageDetailVisible" title="图片详情" width="900px">
       <div v-if="selectedImage" class="image-detail">
         <div class="detail-info">
+          <div class="advanced-bar" style="margin:6px 0 12px;">
+            <span style="color:#9aa6bf;font-size:12px;margin-right:8px;">最小关联置信度</span>
+            <el-slider v-model="imageAssocMinConf" :min="0" :max="1" :step="0.01" style="width:240px;" @change="refreshImageContext" />
+          </div>
+
           <el-descriptions :column="2" border>
             <el-descriptions-item label="图片ID">{{ selectedImage.image_id || selectedImage.id || '-' }}</el-descriptions-item>
             <el-descriptions-item label="来源文档ID">
@@ -439,6 +444,66 @@
             <h4>页码</h4>
             <p>第 {{ selectedImage.page_number }} 页</p>
           </div>
+
+          <div v-if="selectedImage._context?.associations?.length" class="info-section">
+            <h4>关联文本（Top{{ selectedImage._context.associations.length }}）</h4>
+            <div v-for="a in selectedImage._context.associations" :key="a.chunk_id" style="margin:8px 0;">
+              <div style="color:#9aa6bf;font-size:12px;">置信度 {{ (a.confidence*100).toFixed(1) }}%</div>
+              <div style="white-space:pre-wrap;line-height:1.6;border:1px solid rgba(148,163,184,.16);padding:8px;border-radius:6px;">
+                {{ a.context?.display?.merged_text || '—' }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- 命中上下文对话框 -->
+    <el-dialog v-model="contextVisible" title="上下文" width="900px">
+      <div v-if="contextData">
+        <div style="margin-bottom:8px;color:#9aa6bf;">合并文本</div>
+        <div class="context-merged">
+          <template v-if="contextSegments.length">
+            <template v-for="(segment, idx) in contextSegments" :key="idx">
+              <div v-if="segment.kind === 'text'" class="context-text">{{ segment.content }}</div>
+              <div v-else class="context-inline-image">
+                <img
+                  :src="segment.src"
+                  alt="上下文图片"
+                  @click="handleContextImageClick(segment.raw)"
+                />
+                <div v-if="segment.description" class="context-inline-caption">{{ segment.description }}</div>
+              </div>
+            </template>
+          </template>
+          <template v-else>
+            <div class="context-text">{{ contextData.display?.merged_text || '暂无' }}</div>
+          </template>
+        </div>
+        <el-divider />
+        <div style="color:#9aa6bf;">邻接块</div>
+        <div class="neighbors">
+          <div>
+            <div style="color:#9aa6bf;font-size:12px;margin:6px 0;">上文</div>
+            <div v-for="n in (contextData.context?.neighbors?.prev||[])" :key="n.chunk_id" style="margin-bottom:8px;">{{ n.content?.slice(0,200) }}</div>
+          </div>
+          <div>
+            <div style="color:#9aa6bf;font-size:12px;margin:6px 0;">下文</div>
+            <div v-for="n in (contextData.context?.neighbors?.next||[])" :key="n.chunk_id" style="margin-bottom:8px;">{{ n.content?.slice(0,200) }}</div>
+          </div>
+        </div>
+        <el-divider v-if="remainingContextImages.length" />
+        <div v-if="remainingContextImages.length">
+          <div style="color:#9aa6bf;">相关图片</div>
+          <div class="context-images">
+            <div class="context-image-card" v-for="img in remainingContextImages" :key="img.chunk_id || img.image_id || img.index">
+              <img :src="img.src" alt="上下文图片" @click="handleContextImageClick(img)" />
+              <div class="context-image-desc">
+                <div>ID: {{ img.image_id || img.chunk_id }}</div>
+                <div class="context-image-text">{{ img.description || '图片' }}</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </el-dialog>
@@ -447,7 +512,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
-import { getDocumentChunks, getChunkDetail } from '@/api/modules/documents'
+import { getDocumentChunks, getChunkDetail, getChunkContext, getImageContext } from '@/api/modules/documents'
 import { ElMessage } from 'element-plus'
 import { Picture, InfoFilled, Star } from '@element-plus/icons-vue'
 import { search, advancedSearch, searchByImage, searchByTextForImages } from '@/api/modules/search'
@@ -483,6 +548,21 @@ const viewMode = ref<'card' | 'table'>('card')
 const minDisplayScore = ref(0.2)
 // 搜索加载状态
 const searching = ref(false)
+
+// 预览图与坐标高亮
+const refreshImageContext = async () => {
+  try {
+    if (!selectedImage.value?.document_id) return
+    const id = selectedImage.value.image_id || selectedImage.value.id
+    if (!id) return
+    const ctxRes:any = await getImageContext(
+      selectedImage.value.document_id,
+      id,
+      { neighbor_pre: 2, neighbor_next: 2, min_confidence: imageAssocMinConf.value }
+    )
+    selectedImage.value._context = ctxRes?.data?.data || ctxRes?.data || ctxRes
+  } catch {}
+}
 
 const getScore = (row: any) => {
   return (
@@ -637,6 +717,89 @@ const uploadedImageUrl = ref<string>('')
 const imageSearching = ref(false)  // 图片搜索加载状态
 const imageDetailVisible = ref(false)  // 图片详情对话框显示状态
 const selectedImage = ref<any>(null)  // 选中的图片
+const contextVisible = ref(false)
+const contextData = ref<any>(null)
+const imageAssocMinConf = ref(0.5) // 图片关联置信度阈值（获取上下文时使用）
+
+type ContextSegment =
+  | { kind: 'text'; content: string }
+  | { kind: 'image'; imageIndex: number; src: string; description?: string; raw: any }
+
+const resolveContextImageUrl = (img: any): string => {
+  const candidate = img?.image_url || img?.image_path || img?.url
+  if (!candidate) return ''
+  if (typeof candidate === 'string') {
+    if (/^https?:\/\//.test(candidate)) return candidate
+    if (candidate.startsWith('/api/images/file')) return candidate
+    const normalized = candidate.replace(/^\/+/, '')
+    return `/api/images/file?object=${encodeURIComponent(normalized)}`
+  }
+  return ''
+}
+
+const contextSegments = computed<ContextSegment[]>(() => {
+  const mergedText: string = contextData.value?.display?.merged_text ?? ''
+  const images: any[] = contextData.value?.context?.images ?? []
+  if (!mergedText) return []
+
+  const tokens = mergedText.split('[图片]')
+  const segments: ContextSegment[] = []
+  let imageCursor = 0
+
+  tokens.forEach((text, idx) => {
+    if (text) {
+      segments.push({ kind: 'text', content: text })
+    }
+    if (idx < tokens.length - 1) {
+      const image = images[imageCursor]
+      if (image) {
+        segments.push({
+          kind: 'image',
+          imageIndex: imageCursor,
+          src: resolveContextImageUrl(image),
+          description: image.description || '',
+          raw: image
+        })
+      } else {
+        segments.push({ kind: 'text', content: '[图片]' })
+      }
+      imageCursor += 1
+    }
+  })
+
+  return segments
+})
+
+const remainingContextImages = computed<any[]>(() => {
+  const images: any[] = contextData.value?.context?.images ?? []
+  if (!images.length) return []
+
+  const usedIndices = new Set<number>()
+  contextSegments.value.forEach((segment) => {
+    if (segment.kind === 'image') {
+      usedIndices.add(segment.imageIndex)
+    }
+  })
+
+  return images
+    .map((img: any, index: number) => ({
+      ...img,
+      index,
+      src: resolveContextImageUrl(img)
+    }))
+    .filter((img) => !usedIndices.has(img.index))
+})
+
+const handleContextImageClick = (img: any) => {
+  if (!img) return
+  const fallbackSrc = resolveContextImageUrl(img)
+  const normalized = {
+    ...img,
+    image_path: img.image_path || fallbackSrc,
+    image_url: img.image_url || fallbackSrc
+  }
+  viewImage(normalized)
+}
 
 const handleSearch = async () => {
   if (!searchForm.query.trim()) {
@@ -829,8 +992,18 @@ const handleSearchByText = async () => {
 }
 
 const handleItemClick = (item: any) => {
-  if (item.document_id) {
-    window.open(`/documents/${item.document_id}`, '_blank')
+  // 优先展示上下文（如果有 chunk_id + document_id）
+  const docId = item.document_id
+  const chunkId = item.chunk_id
+  if (docId && chunkId) {
+    getChunkContext(docId, chunkId, { neighbor_pre: 2, neighbor_next: 2 }).then((res:any) => {
+      contextData.value = res?.data?.data || res?.data || res
+      contextVisible.value = true
+    }).catch(() => {
+      window.open(`/documents/${docId}`, '_blank')
+    })
+  } else if (docId) {
+    window.open(`/documents/${docId}`, '_blank')
   }
 }
 
@@ -846,6 +1019,17 @@ const viewImage = async (image: any) => {
         detail.image_path = `/api/images/file?object=${enc}`
       }
       selectedImage.value = detail
+      // 拉取图片上下文
+      if (detail.document_id && (detail.image_id || detail.id)) {
+        try {
+          const ctxRes:any = await getImageContext(
+            detail.document_id,
+            detail.image_id || detail.id,
+            { neighbor_pre: 2, neighbor_next: 2, min_confidence: imageAssocMinConf.value }
+          )
+          selectedImage.value._context = ctxRes?.data?.data || ctxRes?.data || ctxRes
+        } catch {}
+      }
     } else {
       // 如果没有 image_id，使用搜索结果中的基本信息
       selectedImage.value = image
@@ -1066,6 +1250,98 @@ watch(() => imageSearchType.value, (val, oldVal) => {
   }
   :deep(.el-radio.is-checked .el-radio__label) {
     color: #f3f6fb;
+  }
+
+  .neighbors {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+
+  .context-merged {
+    line-height: 1.6;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    padding: 12px;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .context-text {
+    white-space: pre-wrap;
+    color: #dce4f5;
+    font-size: 14px;
+  }
+
+  .context-inline-image {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .context-inline-image img {
+    max-width: 100%;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    box-shadow: 0 8px 20px rgba(2, 6, 23, 0.45);
+    cursor: pointer;
+    background: #0f172a;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .context-inline-image img:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 26px rgba(2, 6, 23, 0.55);
+  }
+
+  .context-inline-caption {
+    font-size: 12px;
+    color: #9aa6bf;
+  }
+
+  .context-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 12px;
+  }
+
+  .context-image-card {
+    width: 160px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(15, 23, 42, 0.6);
+    box-shadow: 0 8px 20px rgba(2, 6, 23, 0.4);
+  }
+
+  .context-image-card img {
+    width: 100%;
+    height: 110px;
+    object-fit: cover;
+    display: block;
+    background: #0f172a;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .context-image-card img:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 26px rgba(2, 6, 23, 0.55);
+  }
+
+  .context-image-desc {
+    padding: 8px 10px;
+    font-size: 12px;
+    color: #dce4f5;
+    line-height: 1.4;
+  }
+
+  .context-image-text {
+    margin-top: 4px;
+    color: #9aa6bf;
   }
 
   /* 开关的文字：提升未激活态的可读性 */

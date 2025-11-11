@@ -80,8 +80,8 @@ class QASessionCreate(BaseModel):
     search_type: SearchType = SearchType.HYBRID
     max_sources: int = Field(default=10, ge=1, le=50)
     similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    llm_model: str = "llama2"
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    llm_model: Optional[str] = None
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
 
 class QASessionResponse(BaseModel):
     """问答会话响应"""
@@ -89,8 +89,9 @@ class QASessionResponse(BaseModel):
     session_name: str
     knowledge_base_id: int
     knowledge_base_name: str
+    search_type: SearchType = Field(default=SearchType.HYBRID)
     search_config: Dict[str, Any]
-    llm_config: Dict[str, Any]
+    llm_config: Dict[str, Any] = {}
     question_count: int = 0
     last_question: Optional[str] = None
     last_activity: Optional[datetime] = None
@@ -108,8 +109,6 @@ class QASessionConfigUpdate(BaseModel):
     search_type: Optional[SearchType] = None
     max_sources: Optional[int] = Field(None, ge=1, le=50)
     similarity_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
-    llm_model: Optional[str] = None
-    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
 
 # 3. 多模态问答相关Schema
 

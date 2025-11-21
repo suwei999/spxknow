@@ -16,7 +16,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { ErrorFilled, Warning } from '@element-plus/icons-vue'
+import { CircleClose, Warning } from '@element-plus/icons-vue'
 
 const props = withDefaults(defineProps<{
   status?: number
@@ -29,7 +29,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits(['retry', 'back'])
 
 const icon = computed(() => {
-  return props.status === 403 ? Warning : ErrorFilled
+  return props.status === 403 ? Warning : CircleClose
 })
 
 const title = computed(() => {

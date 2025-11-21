@@ -109,8 +109,8 @@ def main() -> None:
     
     log_level = os.getenv("CELERY_LOG_LEVEL", "INFO").lower()
     # 默认监听所有任务队列（根据 app.tasks.celery_app 中的 task_routes 配置）
-    # 包括：document, vector, index, image, version, cleanup, notification, celery
-    queues = os.getenv("CELERY_QUEUES", "document,vector,index,image,version,cleanup,notification,celery")
+    # 包括：document, vector, index, image, version, cleanup, notification, observability, celery
+    queues = os.getenv("CELERY_QUEUES", "document,vector,index,image,version,cleanup,notification,observability,celery")
     pool = "solo" if os.name == "nt" else "prefork"
 
     try:

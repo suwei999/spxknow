@@ -103,7 +103,7 @@ class SearchService:
         alpha: float = None,
         use_keywords: bool = True,
         use_vector: bool = True,
-        similarity_threshold: float = 0.0,
+        similarity_threshold: Optional[float] = None,  # 改为 None，使用配置值
         category_id: Optional[int] = None,
         min_rerank_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
@@ -116,7 +116,7 @@ class SearchService:
             alpha: 向量搜索权重（0.0-1.0），关键词搜索权重为(1-alpha)
             use_keywords: 是否使用关键词搜索
             use_vector: 是否使用向量搜索
-            similarity_threshold: 相似度阈值
+            similarity_threshold: 相似度阈值（如果为None，使用配置的SEARCH_VECTOR_THRESHOLD）
             
         Returns:
             搜索结果列表（经过rerank精排，返回top_k个结果）
@@ -129,6 +129,10 @@ class SearchService:
         if top_k is None:
             top_k = settings.SEARCH_VECTOR_TOPK or settings.RERANK_TOP_K
         
+        # 确定相似度阈值（优先使用传入参数，否则使用配置值）
+        if similarity_threshold is None:
+            similarity_threshold = settings.SEARCH_VECTOR_THRESHOLD
+        
         # 为了rerank，需要召回更多候选（通常取top_k的2-3倍）
         recall_limit = top_k * 3  # 召回更多候选，供rerank精排
         
@@ -140,7 +144,7 @@ class SearchService:
                     # 使用同步方法（OpenSearch客户端是同步的）
                     vector_hits = self.os.search_document_vectors_sync(
                         query_vector=qv,
-                        similarity_threshold=similarity_threshold if similarity_threshold is not None else settings.SEARCH_VECTOR_THRESHOLD,
+                        similarity_threshold=similarity_threshold,
                         limit=recall_limit,
                         knowledge_base_id=knowledge_base_id,
                         category_id=category_id
@@ -234,7 +238,6 @@ class SearchService:
         # 若未指定，使用配置的 α
         if alpha is None:
             try:
-                from app.config.settings import settings
                 alpha = float(getattr(settings, 'SEARCH_HYBRID_ALPHA', 0.6))
             except Exception:
                 alpha = 0.6
@@ -547,7 +550,7 @@ class SearchService:
                 alpha=None,  # 使用配置的SEARCH_HYBRID_ALPHA
                 use_keywords=True,
                 use_vector=True,
-                similarity_threshold=getattr(search_request, "similarity_threshold", settings.SEARCH_VECTOR_THRESHOLD),
+                similarity_threshold=getattr(search_request, "similarity_threshold", None),  # None 时会使用配置值
                 category_id=getattr(search_request, "category_id", None),
                 min_rerank_score=getattr(search_request, "min_rerank_score", None)
             )

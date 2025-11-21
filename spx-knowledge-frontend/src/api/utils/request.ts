@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/modules/app'
 
 const service = axios.create({
@@ -46,19 +46,12 @@ service.interceptors.response.use(
     // 检查响应格式：如果有 code 字段，需要验证
     if (res && typeof res === 'object' && 'code' in res) {
       if (res.code !== 200 && res.code !== 0) {
-        ElMessage.error(res.message || 'Error')
-        
-        // 401: 未登录
         if (res.code === 401) {
-          ElMessageBox.confirm('登录状态已过期，请重新登录', '提示', {
-            confirmButtonText: '重新登录',
-            cancelButtonText: '取消',
-            type: 'warning'
-          }).then(() => {
-            // 重新登录逻辑
-          })
+          const authError = new Error(res.message || 'Not authenticated')
+          Object.assign(authError, { isAuthError: true, code: 401 })
+          return Promise.reject(authError)
         }
-        
+        ElMessage.error(res.message || 'Error')
         return Promise.reject(new Error(res.message || 'Error'))
       }
     }
@@ -79,11 +72,9 @@ service.interceptors.response.use(
         message = error.response.data?.message || error.message
       }
       // 只在非 404 错误时显示错误消息（404 可能是正常的业务逻辑）
-      if (error.response.status !== 404) {
+      if (error.response.status !== 404 && error.response.status !== 401) {
         ElMessage.error(message)
       }
-    } else {
-      ElMessage.error(message)
     }
     
     return Promise.reject(error)

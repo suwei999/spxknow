@@ -6,6 +6,7 @@ OpenSearch Service
 from typing import List, Optional, Dict, Any
 import asyncio
 import json
+import threading
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from opensearchpy.helpers import bulk as os_bulk
 from opensearchpy.exceptions import OpenSearchException
@@ -14,15 +15,37 @@ from app.core.logging import logger
 from app.core.exceptions import CustomException, ErrorCode
 
 class OpenSearchService:
-    """OpenSearch服务 - 严格按照设计文档实现"""
+    """OpenSearch服务 - 严格按照设计文档实现（单例模式）"""
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        """单例模式实现"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(OpenSearchService, cls).__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
     
     def __init__(self):
-        self.client = self._create_client()
-        self.document_index = settings.DOCUMENT_INDEX_NAME
-        self.image_index = settings.IMAGE_INDEX_NAME
-        self.qa_index = settings.QA_INDEX_NAME
-        self.qa_answer_index = getattr(settings, "QA_ANSWER_INDEX_NAME", "qa_answers")
-        self._ensure_indices_exist()
+        """初始化OpenSearch客户端（仅执行一次）"""
+        if self._initialized:
+            return
+        
+        with self._lock:
+            if self._initialized:
+                return
+            
+            self.client = self._create_client()
+            self.document_index = settings.DOCUMENT_INDEX_NAME
+            self.image_index = settings.IMAGE_INDEX_NAME
+            self.qa_index = settings.QA_INDEX_NAME
+            self.qa_answer_index = getattr(settings, "QA_ANSWER_INDEX_NAME", "qa_answers")
+            self.resource_events_index = getattr(settings, "RESOURCE_EVENTS_INDEX_NAME", "resource_events")
+            self._ensure_indices_exist()
+            self._initialized = True
     
     def _create_client(self) -> OpenSearch:
         """创建OpenSearch客户端"""
@@ -110,6 +133,10 @@ class OpenSearchService:
             # 创建问答答案索引
             if not self.client.indices.exists(index=self.qa_answer_index):
                 self._create_qa_answer_index()
+            
+            # 创建资源事件索引
+            if not self.client.indices.exists(index=self.resource_events_index):
+                self._create_resource_events_index()
             
             logger.info("OpenSearch索引检查完成")
             
@@ -486,6 +513,137 @@ class OpenSearchService:
                 code=ErrorCode.OPENSEARCH_INDEX_FAILED,
                 message=f"问答答案索引创建失败: {str(e)}"
             )
+
+    def _create_resource_events_index(self):
+        """创建资源事件索引"""
+        try:
+            logger.info(f"创建资源事件索引: {self.resource_events_index}")
+
+            index_mapping = {
+                "settings": {
+                    "number_of_shards": settings.OPENSEARCH_NUMBER_OF_SHARDS,
+                    "number_of_replicas": settings.OPENSEARCH_NUMBER_OF_REPLICAS,
+                },
+                "mappings": {
+                    "properties": {
+                        "cluster_id": {"type": "integer"},
+                        "resource_type": {"type": "keyword"},
+                        "namespace": {"type": "keyword"},
+                        "resource_uid": {"type": "keyword"},
+                        "event_type": {"type": "keyword"},
+                        "diff": {"type": "object", "enabled": True},
+                        "created_at": {"type": "date"},
+                    }
+                }
+            }
+
+            self.client.indices.create(index=self.resource_events_index, body=index_mapping)
+            logger.info(f"资源事件索引创建成功: {self.resource_events_index}")
+
+        except Exception as e:
+            logger.error(f"创建资源事件索引失败: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.OPENSEARCH_INDEX_FAILED,
+                message=f"资源事件索引创建失败: {str(e)}"
+            )
+
+    async def ensure_resource_events_index(self) -> None:
+        """确保 resource_events 索引存在（异步方法）"""
+        try:
+            exists = await self.index_exists(self.resource_events_index)
+            if not exists:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._create_resource_events_index)
+                logger.info(f"资源事件索引已创建: {self.resource_events_index}")
+        except Exception as e:
+            logger.warning(f"确保资源事件索引存在失败: {e}")
+
+    async def index_resource_event(self, event_id: int, event_data: Dict[str, Any]) -> bool:
+        """索引资源事件到 OpenSearch"""
+        try:
+            return await self.index_document(
+                index=self.resource_events_index,
+                doc_id=str(event_id),
+                document=event_data,
+            )
+        except Exception as e:
+            logger.warning(f"索引资源事件到 OpenSearch 失败: {e}")
+            return False
+
+    async def search_resource_events(
+        self,
+        cluster_id: int,
+        resource_type: Optional[str] = None,
+        namespace: Optional[str] = None,
+        resource_uid: Optional[str] = None,
+        event_type: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """查询资源变更事件（OpenSearch）"""
+        try:
+            # 构建查询条件
+            must_clauses = [{"term": {"cluster_id": cluster_id}}]
+            
+            if resource_type:
+                must_clauses.append({"term": {"resource_type": resource_type}})
+            if namespace:
+                must_clauses.append({"term": {"namespace": namespace}})
+            if resource_uid:
+                must_clauses.append({"term": {"resource_uid": resource_uid}})
+            if event_type:
+                must_clauses.append({"term": {"event_type": event_type}})
+            
+            # 时间范围查询
+            if start_time or end_time:
+                range_query = {}
+                if start_time:
+                    range_query["gte"] = start_time
+                if end_time:
+                    range_query["lte"] = end_time
+                must_clauses.append({"range": {"created_at": range_query}})
+            
+            query = {
+                "bool": {
+                    "must": must_clauses
+                }
+            }
+            
+            search_body = {
+                "query": query,
+                "size": min(limit, 1000),  # 限制最多 1000 条
+                "sort": [{"created_at": {"order": "desc"}}],
+            }
+            
+            loop = asyncio.get_running_loop()
+            
+            def _search() -> Dict[str, Any]:
+                response = self.client.search(
+                    index=self.resource_events_index,
+                    body=search_body,
+                )
+                return response
+            
+            result = await loop.run_in_executor(None, _search)
+            
+            # 格式化返回结果
+            hits = result.get("hits", {}).get("hits", [])
+            events = []
+            for hit in hits:
+                source = hit.get("_source", {})
+                events.append({
+                    "id": hit.get("_id"),
+                    **source
+                })
+            
+            return {
+                "total": result.get("hits", {}).get("total", {}).get("value", 0),
+                "events": events,
+            }
+        except Exception as e:
+            logger.warning(f"OpenSearch 查询资源事件失败: {e}")
+            raise
     
     async def index_document_chunk(self, chunk_data: Dict[str, Any]) -> bool:
         """索引文档分块 - 根据设计文档实现"""

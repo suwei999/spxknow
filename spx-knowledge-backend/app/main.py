@@ -58,6 +58,15 @@ async def lifespan(app: FastAPI):
         from app.config.opensearch import opensearch_client
         opensearch_client.cluster.health()
         logger.info("✅ OpenSearch 连接正常")
+        
+        # 确保 resource_events 索引存在
+        try:
+            from app.services.opensearch_service import OpenSearchService
+            opensearch_service = OpenSearchService()
+            await opensearch_service.ensure_resource_events_index()
+            logger.info("✅ resource_events 索引已就绪")
+        except Exception as e:
+            logger.warning(f"⚠️ 确保 resource_events 索引存在失败: {e}")
     except Exception as e:
         logger.error(f"❌ OpenSearch 连接失败: {e}")
     

@@ -19,6 +19,7 @@ celery_app = Celery(
         "app.tasks.version_tasks",
         "app.tasks.cleanup_tasks",
         "app.tasks.notification_tasks",
+        "app.tasks.observability_tasks",
     ]
 )
 
@@ -50,5 +51,21 @@ celery_app.conf.update(
         "app.tasks.version_tasks.*": {"queue": "version"},
         "app.tasks.cleanup_tasks.*": {"queue": "cleanup"},
         "app.tasks.notification_tasks.*": {"queue": "notification"},
+        "app.tasks.observability_tasks.*": {"queue": "observability"},
     }
 )
+
+celery_app.conf.beat_schedule = getattr(celery_app.conf, "beat_schedule", {})
+if settings.OBSERVABILITY_ENABLE_SCHEDULE:
+    celery_app.conf.beat_schedule.update(
+        {
+            "observability-resource-sync": {
+                "task": "app.tasks.observability_tasks.sync_active_clusters",
+                "schedule": settings.OBSERVABILITY_SYNC_INTERVAL_SECONDS,
+            },
+            "observability-health-check": {
+                "task": "app.tasks.observability_tasks.health_check_clusters",
+                "schedule": settings.OBSERVABILITY_HEALTHCHECK_INTERVAL_SECONDS,
+            },
+        }
+    )

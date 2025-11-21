@@ -53,10 +53,10 @@ numpy<2.0,>=1.21.0
 
 # Computer Vision Models
 # 方案A（CPU-only，默认启用）
-torch==2.3.1+cpu
-torchaudio==2.3.1+cpu
-torchvision==0.18.1+cpu
-open-clip-torch>=2.24.0
+#torch==2.3.1+cpu
+#torchaudio==2.3.1+cpu
+#torchvision==0.18.1+cpu
+#open-clip-torch>=2.24.0
 
 # 方案B（GPU，CUDA 12.1）
 # 如服务器具备 NVIDIA GPU 且已安装 CUDA 12.1，对应启用以下依赖并注释掉方案A三行：
@@ -79,7 +79,12 @@ httpx>=0.24.0
 python-dotenv>=1.0.0
 pytz>=2023.3
 
-transformers==4.41.2
+# Transformers and related ML libraries
+# transformers 4.40.0+ 引入了 EncoderDecoderCache，但需要 4.44.0+ 才稳定
+transformers>=4.44.0
 
 # Rerank Model
+# FlagEmbedding 依赖 sentence-transformers 和 peft，需要兼容的版本
+sentence-transformers>=2.7.0
+peft>=0.10.0
 FlagEmbedding>=1.2.0

@@ -18,17 +18,29 @@ class OllamaService:
     async def generate_text(
         self, 
         prompt: str, 
-        model: str = settings.OLLAMA_MODEL
+        model: str = settings.OLLAMA_MODEL,
+        format: Optional[str] = None
     ) -> str:
-        """生成文本"""
+        """生成文本
+        
+        Args:
+            prompt: 提示词
+            model: 模型名称
+            format: 输出格式，如 "json" 用于强制 JSON 输出（Ollama 支持）
+        """
         try:
+            request_data = {
+                "model": model,
+                "prompt": prompt,
+                "stream": False
+            }
+            # 如果指定了 format，添加到请求中（Ollama 支持 format 参数强制 JSON 输出）
+            if format:
+                request_data["format"] = format
+            
             response = requests.post(
                 f"{self.base_url}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False
-                }
+                json=request_data
             )
             response.raise_for_status()
             result = response.json()

@@ -170,6 +170,15 @@ const routes: RouteRecordRaw[] = [
           title: '图片管理',
           keepAlive: true
         }
+      },
+      {
+        path: 'observability',
+        name: 'Observability',
+        component: () => import('@/views/Observability/index.vue'),
+        meta: {
+          title: '运维诊断',
+          keepAlive: false
+        }
       }
     ]
   },

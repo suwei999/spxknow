@@ -20,6 +20,7 @@ from app.api.v1.routes import (
     document_recommendation,
     document_status,
     websocket,
+    observability,
 )
 
 api_router = APIRouter()
@@ -107,4 +108,10 @@ api_router.include_router(
     websocket.router,
     prefix="/ws",
     tags=["WebSocket通知"]
+)
+
+api_router.include_router(
+    observability.router,
+    prefix="/observability",
+    tags=["集群观测"]
 )

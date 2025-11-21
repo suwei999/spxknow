@@ -5,7 +5,7 @@ Configuration Management
 import os
 from pathlib import Path
 from typing import List, Optional
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings  # type: ignore
 
 # 计算项目根目录，确保无论从哪里运行都能找到根目录下的 .env
 _CURRENT_DIR = Path(__file__).resolve().parent
@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     DOCUMENT_INDEX_NAME: str = "documents"
     IMAGE_INDEX_NAME: str = "images"
     QA_INDEX_NAME: str = "qa_history"
+    RESOURCE_EVENTS_INDEX_NAME: str = "resource_events"
+    RESOURCE_EVENTS_RETENTION_DAYS: int = 30
     OPENSEARCH_NUMBER_OF_SHARDS: int = 3
     OPENSEARCH_NUMBER_OF_REPLICAS: int = 1
     TEXT_ANALYZER: str = "ik_max_word"
@@ -126,12 +128,13 @@ class Settings(BaseSettings):
     RERANK_MODEL_PATH: Optional[str] = str((_PROJECT_ROOT / "models" / "rerank").resolve())  # 本地模型目录，默认指向项目 models/rerank
     RERANK_TOP_K: int = 5  # rerank后返回的结果数量（默认5个）
     RERANK_DEVICE: str = "cpu"  # rerank模型运行设备（cpu/cuda，如果配置为cuda但GPU不可用，会自动降级到cpu）
-    RERANK_MIN_SCORE: float = 0.2  # rerank 后端最小得分过滤（0-1）
+    RERANK_MIN_SCORE: float = 0.5  # rerank 后端最小得分过滤（0-1），业界建议0.4-0.5，设置为0.5以提升结果质量
     # 混合搜索向量权重 α（关键词权重为 1-α）
-    SEARCH_HYBRID_ALPHA: float = 0.6
+    # 设置为0.5表示向量和BM25权重平衡，既考虑语义相似度，也重视精确匹配
+    SEARCH_HYBRID_ALPHA: float = 0.5
 
     # 文本向量检索参数
-    SEARCH_VECTOR_THRESHOLD: float = 0.3  # 向量相似度默认阈值
+    SEARCH_VECTOR_THRESHOLD: float = 0.6  # 向量相似度默认阈值
     SEARCH_VECTOR_TOPK: int = 5  # 向量检索默认返回数量（与 RERANK_TOP_K 保持一致）
     # 精确搜索字段列表（用于 multi_match type=phrase），为空则默认 content
     SEARCH_EXACT_FIELDS: List[str] = ["content"]
@@ -163,6 +166,38 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = 3600
     CACHE_MAX_SIZE: int = 1000
     CACHE_CLEANUP_INTERVAL: int = 300
+    OBSERVABILITY_RESOURCE_TYPES: List[str] = [
+        "pods",
+        "deployments",
+        "statefulsets",
+        "configmaps",  # 支持追踪 ConfigMap 配置变更
+        "secrets",     # 支持追踪 Secret 配置变更
+        "daemonsets",  # 支持追踪 DaemonSet（如 kube-proxy）
+    ]
+    OBSERVABILITY_DEFAULT_NAMESPACE: Optional[str] = None  # None 表示全命名空间
+    # 支持追踪多个命名空间（包含系统组件命名空间）；为空则表示全部
+    OBSERVABILITY_TRACKED_NAMESPACES: Optional[List[str]] = None
+    OBSERVABILITY_SYNC_INTERVAL_SECONDS: int = 300
+    OBSERVABILITY_HEALTHCHECK_INTERVAL_SECONDS: int = 600
+    OBSERVABILITY_METRICS_CACHE_SECONDS: int = 120
+    OBSERVABILITY_LOG_CACHE_SECONDS: int = 60
+    OBSERVABILITY_ENABLE_SCHEDULE: bool = True
+    OBSERVABILITY_ALLOWED_ROLES: List[str] = ["admin"]
+    OBSERVABILITY_WATCH_TIMEOUT_SECONDS: int = 30
+    OBSERVABILITY_WATCH_MAX_ATTEMPTS: int = 3
+    OBSERVABILITY_DIAGNOSIS_MAX_ITERATIONS: int = 5
+    OBSERVABILITY_DIAGNOSIS_CONFIDENCE_THRESHOLD: float = 0.8
+    OBSERVABILITY_DIAGNOSIS_MEMORY_RECENT_LIMIT: int = 10
+    OBSERVABILITY_DIAGNOSIS_ITERATION_DELAY_SECONDS: int = 5
+    OBSERVABILITY_KNOWLEDGE_BASE_ID: Optional[int] = None  # 诊断案例保存到的知识库ID（可选）
+    OBSERVABILITY_KNOWLEDGE_EVAL_MAX_DOCS: int = 3  # 每轮知识库评估最多使用的文档数量
+    # 日志收集配置
+    OBSERVABILITY_LOG_INITIAL_TAIL_LINES: int = 500  # 第一次尝试获取日志时的 tail_lines
+    OBSERVABILITY_LOG_FALLBACK_TAIL_LINES: int = 300  # 回退策略时的 tail_lines（时间范围内无日志时）
+    OBSERVABILITY_LOG_MAX_LINES: int = 300  # 最终返回的最大日志行数（优先保留 ERROR/WARNING/FATAL 日志）
+    OBSERVABILITY_LOG_CONTEXT_LINES: int = 3  # 错误日志上下文行数（前后各几行）
+    OBSERVABILITY_LOG_MAX_LINE_LENGTH: int = 10000  # 单行日志最大长度（超过此长度将被截断，单位：字符）
+    SEARXNG_URL: Optional[str] = None
     
     # 文本质量阈值
     MAX_NEWLINE_RATIO: float = 0.5

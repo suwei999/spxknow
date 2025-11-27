@@ -189,7 +189,21 @@ class QAHistoryService:
             # 2. 提取关键词
             keywords = await self._extract_keywords(question_content, answer_content)
             
-            # 3. 构建历史记录文档
+            # 3. 清理 source_info，确保 document_id 为整数或 None（避免 OpenSearch 类型冲突）
+            cleaned_source_info = []
+            for src in source_info:
+                cleaned_src = src.copy()
+                doc_id = cleaned_src.get("document_id")
+                # ✅ 如果 document_id 不是整数类型，设置为 None
+                if doc_id is not None and not isinstance(doc_id, int):
+                    # 尝试转换为整数，如果失败则设为 None
+                    try:
+                        cleaned_src["document_id"] = int(doc_id)
+                    except (ValueError, TypeError):
+                        cleaned_src["document_id"] = None
+                cleaned_source_info.append(cleaned_src)
+            
+            # 4. 构建历史记录文档
             history_doc = {
                 "question_id": question_id,
                 "session_id": session_id,
@@ -197,7 +211,7 @@ class QAHistoryService:
                 "knowledge_base_id": knowledge_base_id,
                 "question_content": question_content,
                 "answer_content": answer_content,
-                "source_info": source_info,
+                "source_info": cleaned_source_info,
                 "processing_info": processing_info,
                 "quality_assessment": quality_assessment,
                 "user_feedback": user_feedback or {},
@@ -210,10 +224,10 @@ class QAHistoryService:
                 "keywords": keywords
             }
             
-            # 4. 存储到OpenSearch
+            # 5. 存储到OpenSearch
             success = await self._store_to_opensearch(question_id, history_doc)
 
-            # 5. 构建并存储答案索引文档（用于全文/语义检索）
+            # 6. 构建并存储答案索引文档（用于全文/语义检索）
             answer_doc = {
                 "question_id": question_id,
                 "session_id": session_id,
@@ -222,7 +236,7 @@ class QAHistoryService:
                 "answer_content": answer_content,
                 "answer_strategy": processing_info.get("answer_strategy"),
                 "confidence": quality_assessment.get("confidence", 0.0),
-                "source_ids": [src.get("document_id") for src in source_info if src.get("document_id")],
+                "source_ids": [src.get("document_id") for src in cleaned_source_info if src.get("document_id") is not None and isinstance(src.get("document_id"), int)],
                 "keywords": keywords,
                 "question_vector": question_vector,
                 "answer_vector": answer_vector,

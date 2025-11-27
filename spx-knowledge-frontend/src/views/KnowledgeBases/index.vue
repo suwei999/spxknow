@@ -76,13 +76,29 @@ const total = ref(0)
 const loadData = async () => {
   loading.value = true
   try {
-    const res = await getKnowledgeBases({ page: page.value, size: size.value })
-    // 后端统一为 {code, message, data: { list, total, page, size }}，兼容旧字段 items
-    const data = res.data || {}
-    knowledgeBases.value = data.list ?? data.items ?? []
-    total.value = data.total ?? 0
-  } catch (error) {
-    ElMessage.error('加载失败')
+      const res = await getKnowledgeBases({ page: page.value, size: size.value })
+      // 后端返回格式: { code: 0, message: "ok", data: { list: [], total: 0 } }
+      // 响应拦截器已经返回了 response.data，所以 res 就是响应数据本身
+      if (res && typeof res === 'object') {
+      if (res.code === 0 && res.data) {
+        knowledgeBases.value = res.data.list ?? res.data.items ?? []
+        total.value = res.data.total ?? 0
+      } else if (res.data) {
+        // 兼容没有 code 字段的格式
+        knowledgeBases.value = res.data.list ?? res.data.items ?? []
+        total.value = res.data.total ?? 0
+      } else {
+        knowledgeBases.value = []
+        total.value = 0
+      }
+    } else {
+      knowledgeBases.value = []
+      total.value = 0
+    }
+    } catch (error: any) {
+      ElMessage.error(error.response?.data?.detail || error.message || '加载失败')
+    knowledgeBases.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }

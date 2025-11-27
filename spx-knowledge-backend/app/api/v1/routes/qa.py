@@ -3,7 +3,7 @@ QA API Routes
 根据知识问答系统设计文档实现
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Request
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -14,7 +14,7 @@ from app.schemas.qa import (
     QAMultimodalQuestionRequest, QAMultimodalQuestionResponse,
     QAImageSearchRequest, QAImageSearchResponse,
     QAHistoryResponse, QAHistorySearchRequest, QAHistorySearchResponse,
-    QAModelResponse, QASessionConfigUpdate
+    QAModelResponse, QASessionConfigUpdate, KnowledgeBaseListResponse
 )
 from app.services.qa_service import QAService
 from app.services.multimodal_processing_service import MultimodalProcessingService
@@ -26,9 +26,23 @@ from app.config.settings import settings
 
 router = APIRouter()
 
+
+def get_current_user_id(request: Request) -> int:
+    """从请求中获取当前用户ID"""
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的用户信息")
+    try:
+        return int(user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的用户ID")
+
 # 1. 知识库选择功能
 
-@router.get("/knowledge-bases", response_model=QASessionListResponse)
+@router.get("/knowledge-bases", response_model=KnowledgeBaseListResponse)
 def get_knowledge_bases(
     category_id: Optional[int] = None,
     status: str = "active",
@@ -154,14 +168,16 @@ def get_search_types():
 @router.post("/sessions", response_model=QASessionResponse)
 def create_qa_session(
     session_data: QASessionCreate,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """创建问答会话 - 根据设计文档实现"""
     try:
-        logger.info(f"API请求: 创建问答会话，知识库ID: {session_data.knowledge_base_id}")
+        user_id = get_current_user_id(request)
+        logger.info(f"API请求: 创建问答会话，知识库ID: {session_data.knowledge_base_id}, 用户ID: {user_id}")
         
         service = QAService(db)
-        result = service.create_qa_session(session_data)
+        result = service.create_qa_session(session_data, user_id=user_id)
 
         # 兼容服务层返回 Pydantic 模型或 dict
         try:
@@ -207,16 +223,16 @@ def get_qa_sessions(
         )
 
 @router.get("/sessions/{session_id}", response_model=QASessionResponse)
-def get_qa_session_detail(
+async def get_qa_session_detail(
     session_id: str,
     db: Session = Depends(get_db)
 ):
-    """获取会话详情 - 根据设计文档实现"""
+    """获取会话详情 - 根据设计文档实现，从OpenSearch加载完整内容"""
     try:
         logger.info(f"API请求: 获取会话详情 {session_id}")
         
         service = QAService(db)
-        result = service.get_qa_session_detail(session_id)
+        result = await service.get_qa_session_detail(session_id)
         
         if not result:
             raise HTTPException(
@@ -242,16 +258,16 @@ def get_qa_session_detail(
         )
 
 @router.delete("/sessions/{session_id}")
-def delete_qa_session(
+async def delete_qa_session(
     session_id: str,
     db: Session = Depends(get_db)
 ):
-    """删除会话 - 根据设计文档实现"""
+    """删除会话 - 硬删除：删除数据库和OpenSearch中的所有相关数据"""
     try:
-        logger.info(f"API请求: 删除会话 {session_id}")
+        logger.info(f"API请求: 硬删除会话 {session_id}")
         
         service = QAService(db)
-        success = service.delete_qa_session(session_id)
+        success = await service.delete_qa_session(session_id)
         
         if not success:
             raise HTTPException(
@@ -259,7 +275,7 @@ def delete_qa_session(
                 detail="会话不存在"
             )
         
-        logger.info(f"API响应: 成功删除会话 {session_id}")
+        logger.info(f"API响应: 成功硬删除会话 {session_id}")
         return {"message": "会话删除成功"}
         
     except HTTPException:

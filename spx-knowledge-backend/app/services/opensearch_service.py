@@ -191,6 +191,32 @@ class OpenSearchService:
             logger.error(f"[OpenSearch] index_document error index={index} id={doc_id}: {e}")
             raise
     
+    async def search(self, index: str, query: Dict[str, Any]) -> Dict[str, Any]:
+        """异步搜索文档 - 通用搜索方法"""
+        loop = asyncio.get_running_loop()
+        
+        def _search() -> Dict[str, Any]:
+            return self.client.search(index=index, body=query)
+        
+        try:
+            return await loop.run_in_executor(None, _search)
+        except Exception as e:
+            logger.error(f"[OpenSearch] search error index={index}: {e}")
+            raise
+    
+    async def delete_by_query(self, index: str, query: Dict[str, Any]) -> Dict[str, Any]:
+        """异步按查询条件删除文档"""
+        loop = asyncio.get_running_loop()
+        
+        def _delete_by_query() -> Dict[str, Any]:
+            return self.client.delete_by_query(index=index, body=query, refresh=True)
+        
+        try:
+            return await loop.run_in_executor(None, _delete_by_query)
+        except Exception as e:
+            logger.error(f"[OpenSearch] delete_by_query error index={index}: {e}")
+            raise
+    
     def _create_document_index(self):
         """创建文档内容索引 - 根据设计文档实现"""
         try:
@@ -824,7 +850,7 @@ class OpenSearchService:
         query_vector: List[float],
         similarity_threshold: float | None = None,
         limit: int = 10,
-        knowledge_base_id: Optional[int] = None,
+        knowledge_base_id: Optional[List[int]] = None,
         category_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """搜索文档向量（同步版本）- 根据设计文档实现"""
@@ -864,7 +890,13 @@ class OpenSearchService:
             # 构建过滤条件
             filters = []
             if knowledge_base_id:
-                filters.append({"term": {"knowledge_base_id": knowledge_base_id}})
+                if isinstance(knowledge_base_id, list) and len(knowledge_base_id) > 0:
+                    if len(knowledge_base_id) == 1:
+                        filters.append({"term": {"knowledge_base_id": knowledge_base_id[0]}})
+                    else:
+                        filters.append({"terms": {"knowledge_base_id": knowledge_base_id}})
+                elif isinstance(knowledge_base_id, int):
+                    filters.append({"term": {"knowledge_base_id": knowledge_base_id}})
             if category_id is not None:
                 filters.append({"term": {"category_id": category_id}})
 
@@ -880,17 +912,33 @@ class OpenSearchService:
 
             # 2.11 官方稳态语法：顶层 knn + field/query_vector，filter 仅在存在时添加
             # 按 OpenSearch k-NN plugin 固定语法：content_vector + vector（不要 values/field/query_vector）
-            body = {
-                "size": limit,
-                "query": {
-                    "knn": {
-                        "content_vector": {
-                            "vector": query_vector,
-                            "k": limit
+            knn_query = {
+                "content_vector": {
+                    "vector": query_vector,
+                    "k": limit
+                }
+            }
+            
+            # 如果有过滤条件，使用 bool 查询包装 knn 查询
+            if filters:
+                body = {
+                    "size": limit,
+                    "query": {
+                        "bool": {
+                            "must": [
+                                {"knn": knn_query}
+                            ],
+                            "filter": filters
                         }
                     }
                 }
-            }
+            else:
+                body = {
+                    "size": limit,
+                    "query": {
+                        "knn": knn_query
+                    }
+                }
 
             # 强制标准 JSON 序列化-反序列化，避免任何非基元类型导致被当作字符串
             try:
@@ -946,7 +994,7 @@ class OpenSearchService:
         query_vector: List[float],
         similarity_threshold: Optional[float] = None,
         limit: int = 10,
-        knowledge_base_id: Optional[int] = None,
+        knowledge_base_id: Optional[List[int]] = None,
         category_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """搜索文档向量（异步版本）- 根据设计文档实现"""
@@ -964,7 +1012,7 @@ class OpenSearchService:
         query_vector: List[float],
         similarity_threshold: Optional[float] = None,
         limit: int | None = None,
-        knowledge_base_id: Optional[int] = None,
+        knowledge_base_id: Optional[List[int]] = None,
         exclude_image_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """搜索图片向量 - 根据设计文档实现"""
@@ -1013,6 +1061,19 @@ class OpenSearchService:
                 "k": k_value
             }
             
+            # 构建过滤条件（在 OpenSearch 查询层过滤，提高性能）
+            filter_clauses = []
+            if knowledge_base_id is not None:
+                if isinstance(knowledge_base_id, list) and len(knowledge_base_id) > 0:
+                    if len(knowledge_base_id) == 1:
+                        filter_clauses.append({"term": {"knowledge_base_id": knowledge_base_id[0]}})
+                    else:
+                        filter_clauses.append({"terms": {"knowledge_base_id": knowledge_base_id}})
+                elif isinstance(knowledge_base_id, int):
+                    filter_clauses.append({"term": {"knowledge_base_id": knowledge_base_id}})
+            if exclude_image_id:
+                filter_clauses.append({"bool": {"must_not": [{"term": {"image_id": exclude_image_id}}]}})
+            
             body: Dict[str, Any] = {
                 "size": k_value,
                 "query": {
@@ -1021,6 +1082,15 @@ class OpenSearchService:
                     }
                 }
             }
+            
+            # 如果有过滤条件，添加到查询中
+            if filter_clauses:
+                body["query"] = {
+                    "bool": {
+                        "must": [{"knn": {"image_vector": knn_payload}}],
+                        "filter": filter_clauses
+                    }
+                }
             
             # 强制标准 JSON 序列化-反序列化，确保 query_vector 是数组而不是字符串
             try:
@@ -1045,13 +1115,8 @@ class OpenSearchService:
                 # 严格按阈值过滤：只有 >= threshold 的结果才保留
                 if score >= similarity_threshold:
                     source = hit["_source"]
-                    # 额外在 Python 层过滤知识库与排除图片
-                    if knowledge_base_id is not None and source.get("knowledge_base_id") != knowledge_base_id:
-                        filtered_count += 1
-                        continue
-                    if exclude_image_id and source.get("image_id") == exclude_image_id:
-                        filtered_count += 1
-                        continue
+                    # 注意：知识库和图片排除过滤已在 OpenSearch 查询层完成，这里不需要再次过滤
+                    # 但如果 OpenSearch 版本不支持在 knn 查询中使用 filter，则保留这里的过滤逻辑作为兜底
                     result = {
                         "image_id": source["image_id"],
                         "document_id": source["document_id"],
@@ -1091,7 +1156,7 @@ class OpenSearchService:
         self,
         query_text: str,
         limit: int = 10,
-        knowledge_base_id: Optional[int] = None
+        knowledge_base_id: Optional[List[int]] = None
     ) -> List[Dict[str, Any]]:
         """搜索图片关键词 - 根据设计文档实现"""
         try:
@@ -1132,9 +1197,19 @@ class OpenSearchService:
             
             # 添加知识库过滤
             if knowledge_base_id:
-                query["bool"]["filter"] = [
-                    {"term": {"knowledge_base_id": knowledge_base_id}}
-                ]
+                if isinstance(knowledge_base_id, list) and len(knowledge_base_id) > 0:
+                    if len(knowledge_base_id) == 1:
+                        query["bool"]["filter"] = [
+                            {"term": {"knowledge_base_id": knowledge_base_id[0]}}
+                        ]
+                    else:
+                        query["bool"]["filter"] = [
+                            {"terms": {"knowledge_base_id": knowledge_base_id}}
+                        ]
+                elif isinstance(knowledge_base_id, int):
+                    query["bool"]["filter"] = [
+                        {"term": {"knowledge_base_id": knowledge_base_id}}
+                    ]
             
             # 执行搜索
             response = self.client.search(
@@ -1175,7 +1250,7 @@ class OpenSearchService:
         self,
         query_text: str,
         limit: int = None,
-        knowledge_base_id: Optional[int] = None,
+        knowledge_base_id: Optional[List[int]] = None,
         similarity_threshold: float = 0.0,
         filters: Optional[Dict[str, Any]] = None,
         sort_by: Optional[str] = None,
@@ -1224,7 +1299,13 @@ class OpenSearchService:
             # 构建过滤条件
             filter_list = []
             if knowledge_base_id:
-                filter_list.append({"term": {"knowledge_base_id": knowledge_base_id}})
+                if isinstance(knowledge_base_id, list) and len(knowledge_base_id) > 0:
+                    if len(knowledge_base_id) == 1:
+                        filter_list.append({"term": {"knowledge_base_id": knowledge_base_id[0]}})
+                    else:
+                        filter_list.append({"terms": {"knowledge_base_id": knowledge_base_id}})
+                elif isinstance(knowledge_base_id, int):
+                    filter_list.append({"term": {"knowledge_base_id": knowledge_base_id}})
             
             # 添加自定义filters
             if filters:
@@ -1247,6 +1328,10 @@ class OpenSearchService:
                 "size": limit,
                 "_source": ["document_id", "chunk_id", "content", "chunk_type", "metadata", "knowledge_base_id"]
             }
+            
+            # 添加高亮配置
+            highlight_config = self._build_highlight_config(query_text, fields=["content"])
+            search_body.update(highlight_config)
             
             # 构建排序（只有在需要自定义排序时才添加）
             if sort_by:
@@ -1272,6 +1357,9 @@ class OpenSearchService:
                     except (json.JSONDecodeError, TypeError):
                         metadata = {}
                     
+                    # 提取高亮内容
+                    highlighted_content = self._extract_highlight(hit, "content")
+                    
                     results.append({
                         "document_id": hit["_source"].get("document_id"),
                         "chunk_id": hit["_source"].get("chunk_id"),
@@ -1282,7 +1370,8 @@ class OpenSearchService:
                         "score": score,
                         "bm25_score": score,  # match_phrase使用BM25评分
                         "original_score": score,
-                        "knn_score": 0.0  # 精确匹配不使用向量搜索
+                        "knn_score": 0.0,  # 精确匹配不使用向量搜索
+                        "highlighted_content": highlighted_content  # 添加高亮内容
                     })
             
             logger.info(f"精确匹配搜索完成，找到 {len(results)} 个结果")
@@ -1294,6 +1383,56 @@ class OpenSearchService:
         except Exception as e:
             logger.error(f"精确匹配搜索失败: {e}", exc_info=True)
             return []
+    
+    def _build_highlight_config(self, query_text: str, fields: List[str] = None) -> Dict[str, Any]:
+        """构建高亮配置
+        
+        Args:
+            query_text: 查询文本
+            fields: 要高亮的字段列表，默认为 ["content"]
+        
+        Returns:
+            highlight 配置字典
+        """
+        if fields is None:
+            fields = ["content"]
+        
+        return {
+            "highlight": {
+                "fields": {
+                    field: {
+                        "fragment_size": 150,
+                        "number_of_fragments": 3,
+                        "pre_tags": ["<mark>"],
+                        "post_tags": ["</mark>"]
+                    }
+                    for field in fields
+                },
+                "require_field_match": False
+            }
+        }
+    
+    def _extract_highlight(self, hit: Dict[str, Any], field: str = "content") -> Optional[str]:
+        """从搜索结果中提取高亮内容
+        
+        Args:
+            hit: OpenSearch 返回的 hit 对象
+            field: 字段名，默认为 "content"
+        
+        Returns:
+            高亮后的内容，如果没有高亮则返回 None
+        """
+        highlight = hit.get("highlight", {})
+        if not highlight:
+            return None
+        
+        # 获取字段的高亮片段
+        field_highlights = highlight.get(field, [])
+        if field_highlights:
+            # 返回第一个高亮片段（通常是最相关的）
+            return field_highlights[0]
+        
+        return None
     
     def _build_filters(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         """构建OpenSearch过滤条件
@@ -1334,7 +1473,7 @@ class OpenSearchService:
         wildcard: Optional[str] = None,
         regex: Optional[str] = None,
         limit: int = 10,
-        knowledge_base_id: Optional[int] = None,
+        knowledge_base_id: Optional[List[int]] = None,
         filters: Optional[Dict[str, Any]] = None,
         similarity_threshold: float = 0.0
     ) -> List[Dict[str, Any]]:
@@ -1422,7 +1561,13 @@ class OpenSearchService:
             # 构建过滤条件
             filter_list = []
             if knowledge_base_id:
-                filter_list.append({"term": {"knowledge_base_id": knowledge_base_id}})
+                if isinstance(knowledge_base_id, list) and len(knowledge_base_id) > 0:
+                    if len(knowledge_base_id) == 1:
+                        filter_list.append({"term": {"knowledge_base_id": knowledge_base_id[0]}})
+                    else:
+                        filter_list.append({"terms": {"knowledge_base_id": knowledge_base_id}})
+                elif isinstance(knowledge_base_id, int):
+                    filter_list.append({"term": {"knowledge_base_id": knowledge_base_id}})
             if filters:
                 filter_list.extend(self._build_filters(filters))
             
@@ -1443,6 +1588,11 @@ class OpenSearchService:
                 "_source": ["document_id", "chunk_id", "content", "chunk_type", "metadata", "knowledge_base_id"]
             }
             
+            # 添加高亮配置（如果有查询文本）
+            if query_text:
+                highlight_config = self._build_highlight_config(query_text, fields=["content"])
+                search_body.update(highlight_config)
+            
             response = self.client.search(
                 index=self.document_index,
                 body=search_body
@@ -1460,6 +1610,9 @@ class OpenSearchService:
                     except (json.JSONDecodeError, TypeError):
                         metadata = {}
                     
+                    # 提取高亮内容
+                    highlighted_content = self._extract_highlight(hit, "content") if query_text else None
+                    
                     results.append({
                         "document_id": hit["_source"].get("document_id"),
                         "chunk_id": hit["_source"].get("chunk_id"),
@@ -1470,7 +1623,8 @@ class OpenSearchService:
                         "score": score,
                         "bm25_score": score,
                         "original_score": score,
-                        "knn_score": 0.0
+                        "knn_score": 0.0,
+                        "highlighted_content": highlighted_content  # 添加高亮内容
                     })
             
             logger.info(f"高级搜索完成，找到 {len(results)} 个结果")

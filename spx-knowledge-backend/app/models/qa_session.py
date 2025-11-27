@@ -17,7 +17,7 @@ class QASession(BaseModel):
     session_id = Column(String(100), unique=True, nullable=False, index=True, comment="会话ID")
     session_name = Column(String(200), comment="会话名称")
     knowledge_base_id = Column(Integer, nullable=False, index=True, comment="知识库ID")
-    user_id = Column(String(100), index=True, comment="用户ID")
+    user_id = Column(Integer, index=True, comment="用户ID")
     
     # 配置信息
     query_method = Column(String(50), default="hybrid", comment="查询方式")

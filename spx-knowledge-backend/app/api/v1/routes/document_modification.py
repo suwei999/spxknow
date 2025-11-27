@@ -702,18 +702,27 @@ async def update_chunk_content(
                 detail=error_response
             )
         
-        # 操作状态管理 - 根据设计文档实现
-        status_service = OperationStatusService(db)
-        operation_id = status_service.start_modification_operation(document_id, chunk_id, "user")
+        # 操作状态管理 - 根据设计文档实现（失败不影响主流程）
+        operation_id = None
+        status_service = None
+        try:
+            status_service = OperationStatusService(db)
+            operation_id = status_service.start_modification_operation(document_id, chunk_id, "user")
+        except Exception as status_err:
+            logger.warning(f"操作状态管理初始化失败，继续执行保存: {status_err}", exc_info=True)
+            operation_id = f"modify_{document_id}_{chunk_id}_{datetime.now().timestamp()}"
         
-        # WebSocket通知 - 根据设计文档实现
-        await websocket_notification_service.send_modification_notification(
-            "modification_started",
-            document_id,
-            chunk_id,
-            "user",
-            {"operation_id": operation_id}
-        )
+        # WebSocket通知 - 根据设计文档实现（失败不影响主流程）
+        try:
+            await websocket_notification_service.send_modification_notification(
+                "modification_started",
+                document_id,
+                chunk_id,
+                "user",
+                {"operation_id": operation_id}
+            )
+        except Exception as ws_err:
+            logger.warning(f"WebSocket通知发送失败，继续执行保存: {ws_err}", exc_info=True)
         
         try:
             # 保存当前版本（修改前的版本）- 根据设计文档实现版本管理
@@ -855,13 +864,20 @@ async def update_chunk_content(
                     detail=f"保存修改内容失败: {str(mysql_err)}"
                 )
             
-            # 更新操作进度
-            status_service.update_operation_progress(operation_id, 50.0, "内容已保存到 MySQL，开始重新向量化")
+            # 更新操作进度（失败不影响主流程）
+            if status_service and operation_id:
+                try:
+                    status_service.update_operation_progress(operation_id, 50.0, "内容已保存到 MySQL，开始重新向量化")
+                except Exception as status_err:
+                    logger.warning(f"更新操作进度失败: {status_err}", exc_info=True)
             
-            # WebSocket进度通知
-            await websocket_notification_service.send_progress_notification(
-                operation_id, 50.0, "内容已保存到 MySQL，开始重新向量化", "user"
-            )
+            # WebSocket进度通知（失败不影响主流程）
+            try:
+                await websocket_notification_service.send_progress_notification(
+                    operation_id, 50.0, "内容已保存到 MySQL，开始重新向量化", "user"
+                )
+            except Exception as ws_err:
+                logger.warning(f"WebSocket进度通知失败: {ws_err}", exc_info=True)
             
             # ============================================
             # 阶段2：向量化（在 MySQL 保存成功后）
@@ -906,11 +922,19 @@ async def update_chunk_content(
                 })
                 logger.info(f"✅ OpenSearch 更新成功: document_id={document_id}, chunk_id={chunk_id}")
                 
-                # 更新操作进度
-                status_service.update_operation_progress(operation_id, 75.0, "已更新 OpenSearch 索引")
-                await websocket_notification_service.send_progress_notification(
-                    operation_id, 75.0, "已更新 OpenSearch 索引", "user"
-                )
+                # 更新操作进度（失败不影响主流程）
+                if status_service and operation_id:
+                    try:
+                        status_service.update_operation_progress(operation_id, 75.0, "已更新 OpenSearch 索引")
+                    except Exception as status_err:
+                        logger.warning(f"更新操作进度失败: {status_err}", exc_info=True)
+                
+                try:
+                    await websocket_notification_service.send_progress_notification(
+                        operation_id, 75.0, "已更新 OpenSearch 索引", "user"
+                    )
+                except Exception as ws_err:
+                    logger.warning(f"WebSocket进度通知失败: {ws_err}", exc_info=True)
                 
             except (Exception, ValueError, AttributeError) as idx_err:  # ✅ 修复：指定具体异常类型
                 logger.warning(f"⚠️ OpenSearch 更新失败（不影响返回）: {idx_err}", exc_info=True)
@@ -930,11 +954,19 @@ async def update_chunk_content(
                 )
                 logger.info(f"✅ MinIO chunk 更新成功: doc_id={document_id}, chunk_index={chunk.chunk_index}")
                 
-                # 更新操作进度
-                status_service.update_operation_progress(operation_id, 90.0, "已更新 MinIO 存储")
-                await websocket_notification_service.send_progress_notification(
-                    operation_id, 90.0, "已更新 MinIO 存储", "user"
-                )
+                # 更新操作进度（失败不影响主流程）
+                if status_service and operation_id:
+                    try:
+                        status_service.update_operation_progress(operation_id, 90.0, "已更新 MinIO 存储")
+                    except Exception as status_err:
+                        logger.warning(f"更新操作进度失败: {status_err}", exc_info=True)
+                
+                try:
+                    await websocket_notification_service.send_progress_notification(
+                        operation_id, 90.0, "已更新 MinIO 存储", "user"
+                    )
+                except Exception as ws_err:
+                    logger.warning(f"WebSocket进度通知失败: {ws_err}", exc_info=True)
             except (Exception, ValueError, AttributeError) as minio_err:  # ✅ 修复：指定具体异常类型
                 logger.warning(f"⚠️ MinIO chunk 更新失败（不影响修改流程）: {minio_err}", exc_info=True)
             
@@ -1021,33 +1053,47 @@ async def update_chunk_content(
             
             result = {"code": 0, "message": "ok", "data": data}
             
-            # 完成操作状态
-            status_service.complete_modification_operation(operation_id, True, "修改完成")
+            # 完成操作状态（失败不影响主流程）
+            if status_service and operation_id:
+                try:
+                    status_service.complete_modification_operation(operation_id, True, "修改完成")
+                except Exception as status_err:
+                    logger.warning(f"完成操作状态失败: {status_err}", exc_info=True)
             
-            # WebSocket完成通知
-            await websocket_notification_service.send_modification_notification(
-                "modification_completed",
-                document_id,
-                chunk_id,
-                "user",
-                {"operation_id": operation_id}  # ✅ 移除未定义的 task.id
-            )
+            # WebSocket完成通知（失败不影响主流程）
+            try:
+                await websocket_notification_service.send_modification_notification(
+                    "modification_completed",
+                    document_id,
+                    chunk_id,
+                    "user",
+                    {"operation_id": operation_id}  # ✅ 移除未定义的 task.id
+                )
+            except Exception as ws_err:
+                logger.warning(f"WebSocket完成通知失败: {ws_err}", exc_info=True)
             
             logger.info(f"API响应: 块内容更新成功，operation_id: {operation_id}")
             return result
             
         except Exception as e:
-            # 操作失败，更新状态
-            status_service.complete_modification_operation(operation_id, False, f"修改失败: {str(e)}")
+            # 操作失败，更新状态（失败不影响主流程）
+            if status_service and operation_id:
+                try:
+                    status_service.complete_modification_operation(operation_id, False, f"修改失败: {str(e)}")
+                except Exception as status_err:
+                    logger.warning(f"更新失败状态失败: {status_err}", exc_info=True)
             
-            # WebSocket错误通知
-            await websocket_notification_service.send_error_notification(
-                "modification_error",
-                str(e),
-                document_id,
-                chunk_id,
-                "user"
-            )
+            # WebSocket错误通知（失败不影响主流程）
+            try:
+                await websocket_notification_service.send_error_notification(
+                    "modification_error",
+                    str(e),
+                    document_id,
+                    chunk_id,
+                    "user"
+                )
+            except Exception as ws_err:
+                logger.warning(f"WebSocket错误通知失败: {ws_err}", exc_info=True)
             raise
         
     except HTTPException:

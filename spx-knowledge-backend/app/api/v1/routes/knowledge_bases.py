@@ -2,7 +2,7 @@
 Knowledge Base API Routes
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from typing import List, Optional
 from app.schemas.knowledge_base import KnowledgeBaseCreate, KnowledgeBaseUpdate, KnowledgeBaseResponse, KnowledgeBaseListResponse
 from app.core.response import success_response
@@ -14,15 +14,31 @@ from sqlalchemy.orm import Session
 
 router = APIRouter()
 
+def get_current_user_id(request: Request) -> int:
+    """从请求中获取当前用户ID（由中间件设置）"""
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的用户信息")
+    try:
+        return int(user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的用户ID")
+
 @router.get("/")
 async def get_knowledge_bases(
+    request: Request,
     page: int = 1,
     size: int = 20,
     db: Session = Depends(get_db)
 ):
     """获取知识库列表（分页）"""
+    # 获取当前用户ID
+    user_id = get_current_user_id(request)
     service = KnowledgeBaseService(db)
-    items, total = await service.get_knowledge_bases_paginated(page=page, size=size)
+    items, total = await service.get_knowledge_bases_paginated(page=page, size=size, user_id=user_id)
     # 兼容部分前端对 {code, message, data} 的期望结构
     return {
         "code": 0,
@@ -32,12 +48,17 @@ async def get_knowledge_bases(
 
 @router.post("/")
 async def create_knowledge_base(
+    request: Request,
     knowledge_base: KnowledgeBaseCreate,
     db: Session = Depends(get_db)
 ):
     """创建知识库"""
+    # 获取当前用户ID
+    user_id = get_current_user_id(request)
     # 允许通过 category_name 动态创建或复用分类；分类为必填
     kb_data = knowledge_base.dict(exclude_unset=True)
+    # 设置用户ID（数据隔离）
+    kb_data["user_id"] = user_id
     # 校验分类
     if not kb_data.get("category_id") and not (kb_data.get("category_name") and kb_data.get("category_name").strip()):
         return {"code": 400, "message": "分类必填", "data": None}
@@ -57,7 +78,7 @@ async def create_knowledge_base(
                 kb_data["category_id"] = created["id"]
     kb_data.pop("category_name", None)
     service = KnowledgeBaseService(db)
-    kb = await service.create_knowledge_base(KnowledgeBaseCreate.parse_obj(kb_data))
+    kb = await service.create_knowledge_base(KnowledgeBaseCreate.parse_obj(kb_data), user_id=user_id)
     return {"code": 0, "message": "ok", "data": kb}
 
 @router.get("/{kb_id}")

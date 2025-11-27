@@ -218,3 +218,10 @@ export const getDiagnosisReport = (recordId: number) => {
   })
 }
 
+export const deleteDiagnosisRecord = (recordId: number) => {
+  return request<ApiResponse>({
+    url: `/observability/diagnosis/${recordId}`,
+    method: 'delete'
+  })
+}
+

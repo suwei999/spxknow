@@ -6,8 +6,9 @@ from sqlalchemy import text
 
 from app.config.database import SessionLocal
 from app.core.logging import logger
+from app.dependencies.auth import get_current_user
 
-router = APIRouter(prefix="/tables", tags=["tables"])
+router = APIRouter(prefix="/tables", tags=["tables"], dependencies=[Depends(get_current_user)])
 
 
 def get_db():

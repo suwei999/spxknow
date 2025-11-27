@@ -5,6 +5,7 @@ Document Service
 from typing import List, Optional, Dict, Any
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.models.document import Document
 from app.schemas.document import DocumentCreate, DocumentUpdate
 from app.services.base import BaseService
@@ -30,17 +31,31 @@ class DocumentService(BaseService[Document]):
         self, 
         skip: int = 0, 
         limit: int = 100,
-        knowledge_base_id: Optional[int] = None
+        knowledge_base_id: Optional[int] = None,
+        user_id: Optional[int] = None
     ) -> List[Document]:
         """获取文档列表 - 根据文档处理流程设计实现"""
         try:
-            logger.info(f"获取文档列表，跳过: {skip}, 限制: {limit}, 知识库ID: {knowledge_base_id}")
+            logger.info(f"获取文档列表，跳过: {skip}, 限制: {limit}, 知识库ID: {knowledge_base_id}, 用户ID: {user_id}")
             
-            filters = {}
+            query = self.db.query(Document).filter(Document.is_deleted == False)
             if knowledge_base_id:
-                filters["knowledge_base_id"] = knowledge_base_id
+                query = query.filter(Document.knowledge_base_id == knowledge_base_id)
+            if user_id is not None:
+                query = query.filter(
+                    or_(Document.user_id == user_id, Document.user_id.is_(None))
+                )
             
-            documents = await self.get_multi(skip=skip, limit=limit, **filters)
+            documents = query.offset(skip).limit(limit).all()
+            
+            if user_id is not None:
+                needs_update = [doc for doc in documents if getattr(doc, "user_id", None) is None]
+                if needs_update:
+                    logger.info(f"发现 {len(needs_update)} 个历史文档缺少 user_id，回填为用户 {user_id}")
+                    for doc in needs_update:
+                        doc.user_id = user_id
+                    self.db.commit()
+            
             logger.info(f"获取到 {len(documents)} 个文档")
             return documents
             
@@ -71,7 +86,8 @@ class DocumentService(BaseService[Document]):
         knowledge_base_id: int,
         category_id: Optional[int] = None,
         tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         上传文档 - 严格按照设计文档实现完整流程
@@ -155,7 +171,8 @@ class DocumentService(BaseService[Document]):
                 "tags": tags,
                 "metadata": metadata,
                 "status": "uploaded",
-                "processing_progress": 0.0
+                "processing_progress": 0.0,
+                "user_id": user_id
             }
             
             document = await self.create(doc_data)
@@ -164,8 +181,55 @@ class DocumentService(BaseService[Document]):
             # 5. 触发异步处理任务
             logger.info("步骤5: 触发异步处理任务")
             from app.tasks.document_tasks import process_document_task
-            task = process_document_task.delay(document.id)
-            logger.info(f"文档处理任务已启动，任务ID: {task.id}")
+            from app.tasks.celery_app import celery_app
+            try:
+                # 检查 Celery broker 连接
+                try:
+                    celery_app.control.inspect().active()
+                    logger.debug("Celery broker 连接正常")
+                except Exception as broker_err:
+                    logger.warning(f"Celery broker 连接检查失败: {broker_err}")
+                
+                # 发送任务（设置高优先级，确保文档处理任务优先执行）
+                task = process_document_task.apply_async(
+                    args=(document.id,),
+                    priority=settings.CELERY_TASK_PRIORITY_DOCUMENT
+                )
+                logger.info(
+                    f"✅ 文档处理任务已发送: 任务ID={task.id}, 文档ID={document.id}, "
+                    f"任务状态={task.state}, 队列=document"
+                )
+                
+                # 检查任务状态
+                if task.state == 'PENDING':
+                    # 注意：如果 Worker 使用了 --without-gossip 和 --without-mingle，
+                    # inspect() 无法检测到 Worker，这是正常的
+                    logger.warning(
+                        f"⚠️ 任务 {task.id} 处于 PENDING 状态，可能的原因："
+                        f"1. Worker 未运行或未监听 document 队列"
+                        f"2. Worker 繁忙或被其他任务占用"
+                        f"3. Redis 连接问题"
+                        f"4. Worker 使用了 --without-gossip/--without-mingle（无法通过 inspect 检测）"
+                    )
+                    # 尝试检查 Worker 状态（如果 Worker 启用了 gossip/mingle）
+                    try:
+                        inspect = celery_app.control.inspect(timeout=1.0)
+                        active_queues = inspect.active_queues()
+                        if active_queues:
+                            logger.info(f"✅ 检测到活跃的 Worker 队列: {active_queues}")
+                        else:
+                            # 不报错，因为 Worker 可能使用了 --without-gossip
+                            logger.debug("无法通过 inspect 检测到 Worker（可能使用了 --without-gossip/--without-mingle）")
+                    except Exception as inspect_err:
+                        # 不报错，因为 Worker 可能使用了 --without-gossip
+                        logger.debug(f"无法检查 Worker 状态（可能使用了 --without-gossip）: {inspect_err}")
+                elif task.state == 'RECEIVED':
+                    logger.info(f"✅ 任务 {task.id} 已被 Worker 接收，开始处理")
+                else:
+                    logger.info(f"任务 {task.id} 状态: {task.state}")
+            except Exception as e:
+                logger.error(f"❌ 触发文档处理任务失败: {e}", exc_info=True)
+                raise
             
             # 6. 上传元数据到MinIO
             logger.info("步骤6: 上传元数据到MinIO")
@@ -180,6 +244,7 @@ class DocumentService(BaseService[Document]):
                 "category_id": category_id,
                 "tags": tags,
                 "metadata": metadata,
+                "user_id": user_id,
                 "validation_result": validation_result,
                 "storage_result": storage_result,
                 "duplicate_result": duplicate_result,
@@ -492,8 +557,11 @@ class DocumentService(BaseService[Document]):
             
             self.db.commit()
             
-            # 触发异步任务重新处理文档
-            task = process_document_task.delay(doc_id)
+            # 触发异步任务重新处理文档（设置高优先级）
+            task = process_document_task.apply_async(
+                args=(doc_id,),
+                priority=settings.CELERY_TASK_PRIORITY_DOCUMENT
+            )
             logger.info(f"文档重新处理任务已启动，任务ID: {task.id}")
             
             return True

@@ -1,4 +1,4 @@
-import { computed, reactive, ref, watch, onMounted, onUnmounted, nextTick, defineComponent } from 'vue'
+import { computed, reactive, ref, watch, onMounted, onUnmounted, onUpdated, nextTick, defineComponent } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import {
   fetchClusters,
@@ -19,7 +19,8 @@ import {
   submitDiagnosisFeedback,
   listDiagnosisIterations,
   listDiagnosisMemories,
-  getDiagnosisReport
+  getDiagnosisReport,
+  deleteDiagnosisRecord
 } from '@/api/modules/observability'
 import type {
   ClusterConfig,
@@ -223,13 +224,15 @@ export default defineComponent({
           diagnosisDialog.form.cluster_id = clusters.value[0].id
           }
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error('[ERROR] 加载集群失败:', error)
-        if (!isAuthError(error)) {
-          ElMessage.error('加载集群失败')
+        clusters.value = []
+        clusterPagination.total = 0
+        if (isAuthError(error)) {
+          ElMessage.warning('请先登录')
         } else {
-          clusters.value = []
-          clusterPagination.total = 0
+          const errorMsg = error?.response?.data?.detail || error?.message || '加载集群失败'
+          ElMessage.error(typeof errorMsg === 'string' ? errorMsg : '加载集群失败，请检查网络连接')
         }
       } finally {
         pageLoading.value = false
@@ -1551,6 +1554,35 @@ export default defineComponent({
       }
     }
 
+    const handleDeleteDiagnosis = async (record: DiagnosisRecord) => {
+      try {
+        await ElMessageBox.confirm(`确认删除诊断记录【${record.resource_name}】吗？`, '提示', {
+          confirmButtonText: '删除',
+          cancelButtonText: '取消',
+          type: 'warning'
+        })
+        await deleteDiagnosisRecord(record.id)
+        ElMessage.success('删除成功')
+        if (diagnosisDrawer.visible && diagnosisDrawer.record?.id === record.id) {
+          diagnosisDrawer.visible = false
+          diagnosisDrawer.record = null
+        }
+        await loadDiagnosis()
+      } catch (error: any) {
+        if (error === 'cancel' || error === 'close') {
+          return
+        }
+        if (!isAuthError(error)) {
+          ElMessage.error('删除失败')
+        }
+      }
+    }
+
+    const handleDeleteDiagnosisFromDetail = async () => {
+      if (!diagnosisDrawer.record) return
+      await handleDeleteDiagnosis(diagnosisDrawer.record)
+    }
+
     // 公共方法
     const handleTabChange = (tab: string) => {
       if (tab === 'resources') {
@@ -2492,11 +2524,97 @@ export default defineComponent({
           startDiagnosisPolling()
         }
       }
+      // 设置配置信息表格列宽
+      fixConfigDescriptionsWidth()
     })
 
     onUnmounted(() => {
       // 清理定时器
       stopDiagnosisPolling()
+    })
+
+    // 动态设置配置信息表格的列宽为 50/50
+    const fixConfigDescriptionsWidth = () => {
+      nextTick(() => {
+        const configDescriptions = document.querySelectorAll('.config-descriptions .el-descriptions__table')
+        configDescriptions.forEach((table: any) => {
+          // 设置 table-layout
+          if (table) {
+            table.style.tableLayout = 'fixed'
+            table.style.width = '100%'
+            
+            // 设置 colgroup
+            let colgroup = table.querySelector('colgroup')
+            if (!colgroup) {
+              colgroup = document.createElement('colgroup')
+              table.insertBefore(colgroup, table.firstChild)
+            }
+            
+            // 确保有两个 col 元素
+            let cols = colgroup.querySelectorAll('col')
+            if (cols.length < 2) {
+              colgroup.innerHTML = '<col style="width: 50% !important;"><col style="width: 50% !important;">'
+            } else {
+              cols.forEach((col: any) => {
+                col.style.width = '50%'
+                col.style.minWidth = '50%'
+                col.style.maxWidth = '50%'
+              })
+            }
+            
+            // 强制设置 td 宽度，并防止文本溢出
+            const tds = table.querySelectorAll('tbody td')
+            tds.forEach((td: any, index: number) => {
+              if (index % 2 === 0) {
+                // 第一列（标签列）
+                td.style.width = '50%'
+                td.style.minWidth = '50%'
+                td.style.maxWidth = '50%'
+                td.style.boxSizing = 'border-box'
+                td.style.overflow = 'hidden'
+                td.style.wordBreak = 'break-word'
+                td.style.overflowWrap = 'break-word'
+                // 确保标签列内容不会溢出
+                const label = td.querySelector('.el-descriptions__label')
+                if (label) {
+                  label.style.width = '100%'
+                  label.style.maxWidth = '100%'
+                  label.style.boxSizing = 'border-box'
+                  label.style.overflow = 'hidden'
+                  label.style.wordBreak = 'break-word'
+                  label.style.overflowWrap = 'break-word'
+                  label.style.whiteSpace = 'normal'
+                }
+              } else {
+                // 第二列（内容列）
+                td.style.width = '50%'
+                td.style.minWidth = '50%'
+                td.style.maxWidth = '50%'
+                td.style.boxSizing = 'border-box'
+                td.style.overflow = 'hidden'
+                td.style.wordBreak = 'break-word'
+                td.style.overflowWrap = 'break-word'
+                // 确保内容列内容不会溢出
+                const content = td.querySelector('.el-descriptions__content')
+                if (content) {
+                  content.style.width = '100%'
+                  content.style.maxWidth = '100%'
+                  content.style.boxSizing = 'border-box'
+                  content.style.overflow = 'hidden'
+                  content.style.wordBreak = 'break-word'
+                  content.style.overflowWrap = 'break-word'
+                  content.style.whiteSpace = 'normal'
+                }
+              }
+            })
+          }
+        })
+      })
+    }
+
+    // 在组件更新后设置列宽
+    onUpdated(() => {
+      fixConfigDescriptionsWidth()
     })
 
     return {
@@ -2594,6 +2712,8 @@ export default defineComponent({
       memoryTimeline,
       diagnosisReport,
       openDiagnosisDetail,
+      handleDeleteDiagnosis,
+      handleDeleteDiagnosisFromDetail,
       getRootCauseAnalysis,
       getWhySteps,
       getTimeline,
@@ -2613,7 +2733,8 @@ export default defineComponent({
       getEventAlertClass,
       formatMetricValue,
       getMetricValueClass,
-      getAllEvidenceChain,
+      getAllEvidenceChain
     }
   }
-})
+  }
+)

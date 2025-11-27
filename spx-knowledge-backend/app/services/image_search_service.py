@@ -34,7 +34,7 @@ class ImageSearchService:
         file: UploadFile,
         similarity_threshold: float = settings.SEARCH_VECTOR_THRESHOLD,
         limit: int = settings.QA_DEFAULT_MAX_RESULTS,
-        knowledge_base_id: Optional[int] = None
+        knowledge_base_id: Optional[List[int]] = None
     ) -> List[ImageSearchResponse]:
         """以图找图搜索 - 根据设计文档实现"""
         try:

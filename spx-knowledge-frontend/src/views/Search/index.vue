@@ -9,19 +9,82 @@
       <el-tabs v-model="searchMode" class="search-mode-tabs">
         <!-- 文本搜索 -->
         <el-tab-pane label="文本搜索" name="text">
-          <el-form :model="searchForm" @submit.prevent="handleSearch" class="search-form">
-            <el-form-item>
-              <el-input
-                v-model="searchForm.query"
-                placeholder="请输入搜索关键词..."
-                size="large"
-                @keyup.enter="handleSearch"
-              >
-                <template #append>
-                  <el-button type="primary" @click="handleSearch" :loading="searching">搜索</el-button>
-                </template>
-              </el-input>
-            </el-form-item>
+          <div class="search-layout">
+            <!-- 左侧搜索历史边栏 -->
+            <div v-if="searchHistory.length > 0" class="search-history-sidebar">
+              <div class="history-header">
+                <div class="history-title">
+                  <el-icon class="history-icon"><Clock /></el-icon>
+                  <span>搜索历史</span>
+                </div>
+                <el-button 
+                  type="text" 
+                  size="small" 
+                  class="clear-btn"
+                  @click="handleClearHistory"
+                >
+                  清空
+                </el-button>
+              </div>
+              <div class="history-list">
+                <div
+                  v-for="item in searchHistory"
+                  :key="item.id"
+                  class="history-item"
+                  @click="handleHistoryClick(item)"
+                >
+                  <el-icon class="history-item-icon"><Search /></el-icon>
+                  <div class="history-content">
+                    <div class="history-query">{{ item.query_text }}</div>
+                    <div class="history-meta">
+                      <el-icon class="time-icon"><Clock /></el-icon>
+                      <span>{{ formatTime(item.created_at) }}</span>
+                    </div>
+                  </div>
+                  <el-icon 
+                    class="history-delete" 
+                    @click.stop="handleDeleteHistory(item.id)"
+                  >
+                    <Close />
+                  </el-icon>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右侧搜索表单 -->
+            <div class="search-form-wrapper">
+              <el-form :model="searchForm" @submit.prevent="handleSearch" class="search-form">
+                <!-- 知识库选择 - 必需项，支持多选 -->
+                <el-form-item label="选择知识库" required>
+                  <el-select 
+                    v-model="searchForm.knowledge_base_id" 
+                    placeholder="请选择知识库（可多选）" 
+                    multiple
+                    clearable
+                    style="width: 100%"
+                    size="large"
+                  >
+                    <el-option
+                      v-for="kb in knowledgeBases"
+                      :key="kb.id"
+                      :label="kb.name"
+                      :value="kb.id"
+                    />
+                  </el-select>
+                </el-form-item>
+
+                <el-form-item>
+                  <el-input
+                    v-model="searchForm.query"
+                    placeholder="请输入搜索关键词..."
+                    size="large"
+                    @keyup.enter="handleSearch"
+                  >
+                    <template #append>
+                      <el-button type="primary" @click="handleSearch" :loading="searching">搜索</el-button>
+                    </template>
+                  </el-input>
+                </el-form-item>
 
             <el-form-item class="mode-row">
               <el-radio-group v-model="searchForm.search_type">
@@ -104,18 +167,6 @@
             <el-collapse-transition>
               <div v-show="showAdvanced && searchForm.search_type === 'exact'" class="advanced-panel">
                 <el-divider content-position="left">范围</el-divider>
-                <el-form-item label="知识库">
-                  <el-select v-model="searchForm.knowledge_base_id" placeholder="全部" clearable>
-                    <el-option label="全部" :value="null" />
-                    <el-option
-                      v-for="kb in knowledgeBases"
-                      :key="kb.id"
-                      :label="kb.name"
-                      :value="kb.id"
-                    />
-                  </el-select>
-                </el-form-item>
-
                 <el-form-item label="分类">
                   <el-select v-model="searchForm.category_id" placeholder="全部" clearable>
                     <el-option label="全部" :value="null" />
@@ -142,10 +193,10 @@
                 </el-form-item>
               </div>
             </el-collapse-transition>
-          </el-form>
+              </el-form>
 
-          <!-- 文本搜索结果 -->
-          <div v-if="searchMode === 'text' && filteredResults.length > 0" class="search-results">
+              <!-- 文本搜索结果 -->
+              <div v-if="filteredResults.length > 0" class="search-results">
             <div class="results-header">
               <span>搜索结果 ({{ filteredResults.length }})</span>
               <el-tag v-if="searchForm.search_type === 'hybrid'" type="success" size="small">
@@ -225,7 +276,11 @@
                   </el-table>
                 </template>
                 <template v-else>
-                  {{ item.content }}
+                  <!-- 优先显示高亮内容，如果没有则显示原始内容 -->
+                  <div 
+                    class="result-content-text" 
+                    v-html="item.highlighted_content || item.content"
+                  />
                 </template>
               </div>
               <div class="result-meta">
@@ -249,20 +304,41 @@
               :total="filteredResults.length"
               @current-change="handleSearch"
             />
-          </div>
-          <!-- 文本搜索空态 -->
-          <div v-else-if="searchMode === 'text' && textSearched && !searching" class="empty-state">
-            <el-empty description="没有找到匹配的结果">
-              <div class="empty-hints">
-                <div>• 尝试放宽关键词或减少过滤条件</div>
-                <div>• 适当降低相似度阈值/最低Rerank分</div>
               </div>
-            </el-empty>
+              <!-- 文本搜索空态 -->
+              <div v-else-if="textSearched && !searching" class="empty-state">
+                <el-empty description="没有找到匹配的结果">
+                  <div class="empty-hints">
+                    <div>• 尝试放宽关键词或减少过滤条件</div>
+                    <div>• 适当降低相似度阈值/最低Rerank分</div>
+                  </div>
+                </el-empty>
+              </div>
+            </div>
           </div>
         </el-tab-pane>
 
         <!-- 图片搜索 -->
         <el-tab-pane label="图片搜索" name="image">
+          <!-- 知识库选择 - 必需项，支持多选 -->
+          <el-form-item label="选择知识库" required style="margin-bottom: 20px;">
+            <el-select 
+              v-model="searchForm.knowledge_base_id" 
+              placeholder="请选择知识库（可多选）" 
+              multiple
+              clearable
+              style="width: 100%"
+              size="large"
+            >
+              <el-option
+                v-for="kb in knowledgeBases"
+                :key="kb.id"
+                :label="kb.name"
+                :value="kb.id"
+              />
+            </el-select>
+          </el-form-item>
+
           <el-tabs v-model="imageSearchType" class="sub-tabs">
             <!-- 以图搜图 -->
             <el-tab-pane label="以图搜图" name="by-image">
@@ -511,11 +587,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { getDocumentChunks, getChunkDetail, getChunkContext, getImageContext } from '@/api/modules/documents'
 import { ElMessage } from 'element-plus'
-import { Picture, InfoFilled, Star } from '@element-plus/icons-vue'
-import { search, advancedSearch, searchByImage, searchByTextForImages } from '@/api/modules/search'
+import { Picture, InfoFilled, Star, Clock, Search, Close } from '@element-plus/icons-vue'
+import { search, advancedSearch, searchByImage, searchByTextForImages, getSearchHistory, deleteSearchHistory, clearSearchHistory } from '@/api/modules/search'
 import { getImageDetail } from '@/api/modules/images'
 import { formatFileSize } from '@/utils/format'
 import { getKnowledgeBases } from '@/api/modules/knowledge-bases'
@@ -527,7 +603,7 @@ const imageSearchType = ref<'by-image' | 'by-text'>('by-image')
 const searchForm = reactive({
   query: '',
   search_type: 'hybrid',
-  knowledge_base_id: null as number | null,
+  knowledge_base_id: [] as number[],
   category_id: null as number | null,
   similarity_threshold: 0.3
 })
@@ -712,6 +788,89 @@ const advForm = reactive({
 // 图片搜索相关
 const imageSearchText = ref('')
 const imageSearchSimilarityThreshold = ref(0.3)  // 图片搜索的相似度阈值
+
+// 搜索历史
+const searchHistory = ref<any[]>([])
+const showHistory = ref(false)
+
+// 加载搜索历史
+const loadSearchHistory = async () => {
+  try {
+    const res = await getSearchHistory({ limit: 10 })
+    const data = res?.data || res
+    // 后端返回格式: { code: 0, data: { list: [], total: 0 } }
+    if (data && typeof data === 'object') {
+      if (data.list) {
+        searchHistory.value = data.list
+      } else if (data.items) {
+        searchHistory.value = data.items
+      } else if (Array.isArray(data)) {
+        searchHistory.value = data
+      } else {
+        searchHistory.value = []
+      }
+    } else {
+      searchHistory.value = []
+    }
+  } catch (error) {
+    // 忽略错误
+    searchHistory.value = []
+  }
+}
+
+// 点击历史记录
+const handleHistoryClick = (item: any) => {
+  searchForm.query = item.query_text
+  if (item.search_type) {
+    searchForm.search_type = item.search_type
+  }
+  showHistory.value = false
+  handleSearch()
+}
+
+// 删除单条历史
+const handleDeleteHistory = async (historyId: number) => {
+  try {
+    await deleteSearchHistory(historyId)
+    await loadSearchHistory()
+  } catch (error) {
+    ElMessage.error('删除失败')
+  }
+}
+
+// 清空历史
+const handleClearHistory = async () => {
+  try {
+    await ElMessageBox.confirm('确定要清空所有搜索历史吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await clearSearchHistory()
+    searchHistory.value = []
+    ElMessage.success('已清空')
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('清空失败')
+    }
+  }
+}
+
+// 格式化时间
+const formatTime = (time: string) => {
+  if (!time) return ''
+  const date = new Date(time)
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+  const minutes = Math.floor(diff / 60000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes}分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}天前`
+  return date.toLocaleDateString()
+}
 const uploadedImage = ref<File | null>(null)
 const uploadedImageUrl = ref<string>('')
 const imageSearching = ref(false)  // 图片搜索加载状态
@@ -802,6 +961,10 @@ const handleContextImageClick = (img: any) => {
 }
 
 const handleSearch = async () => {
+  if (!searchForm.knowledge_base_id || searchForm.knowledge_base_id.length === 0) {
+    ElMessage.warning('请先选择至少一个知识库')
+    return
+  }
   if (!searchForm.query.trim()) {
     ElMessage.warning('请输入搜索关键词')
     return
@@ -810,7 +973,6 @@ const handleSearch = async () => {
   searching.value = true
   textSearched.value = true
   try {
-    console.log('开始搜索:', { query: searchForm.query, type: searchForm.search_type, page: page.value, size: size.value })
     
     // 是否启用高级搜索
     const hasAdvanced = (searchForm.search_type === 'exact') && (useAdvanced.value || advForm.bool_query || advForm.exact_phrase || advForm.wildcard || advForm.regex)
@@ -855,15 +1017,16 @@ const handleSearch = async () => {
       ? payload
       : (payload?.items || payload?.results || payload?.list || [])
     
-    console.log('搜索完成:', { count: list.length, results: list.slice(0, 3) })
     
     textResults.value = list
     // 预加载表格类 chunk 元数据
     preloadTableChunks()
     // total使用过滤后的实际数量（前端还会按minDisplayScore过滤一次）
     textTotal.value = list.length
+    // 搜索成功后隐藏搜索历史并刷新历史记录
+    showHistory.value = false
+    await loadSearchHistory()
   } catch (error: any) {
-    console.error('搜索失败:', error)
     const message = error?.response?.data?.detail || error?.message || '搜索失败'
     ElMessage.error(message)
   } finally {
@@ -897,15 +1060,17 @@ const handleImageUpload = (uploadFile: any) => {
     
     uploadedImage.value = file
     uploadedImageUrl.value = URL.createObjectURL(file)
-    console.log('图片上传成功:', { name: file.name, size: file.size, type: file.type })
   } else {
-    console.error('上传的文件格式不正确:', uploadFile)
     ElMessage.error('文件格式不正确')
   }
 }
 
 // 以图搜图
 const handleSearchByImage = async () => {
+  if (!searchForm.knowledge_base_id) {
+    ElMessage.warning('请先选择知识库')
+    return
+  }
   if (!uploadedImage.value) {
     ElMessage.warning('请先选择图片')
     return
@@ -914,8 +1079,6 @@ const handleSearchByImage = async () => {
   imageSearching.value = true
   imageSearched.value = true
   try {
-    console.log('开始以图搜图:', { fileName: uploadedImage.value.name, similarity_threshold: imageSearchSimilarityThreshold.value })
-    
     const res = await searchByImage(uploadedImage.value, {
       similarity_threshold: imageSearchSimilarityThreshold.value,
       limit: 20,
@@ -924,8 +1087,6 @@ const handleSearchByImage = async () => {
     const envelope: any = (res && (res as any).data !== undefined) ? (res as any).data : res
     const payload: any = envelope?.data ?? envelope
     const list: any[] = Array.isArray(payload) ? payload : (payload?.items || payload?.results || payload?.list || [])
-    
-    console.log('以图搜图完成:', { count: list.length })
     
     // 处理图片路径：确保使用代理 URL
     const processedList = list.map((img: any) => {
@@ -939,7 +1100,6 @@ const handleSearchByImage = async () => {
     imageResults.value = processedList
     imageTotal.value = processedList.length
   } catch (error: any) {
-    console.error('以图搜图失败:', error)
     const message = error?.response?.data?.detail || error?.message || '图片搜索失败'
     ElMessage.error(message)
   } finally {
@@ -949,6 +1109,10 @@ const handleSearchByImage = async () => {
 
 // 以文搜图
 const handleSearchByText = async () => {
+  if (!searchForm.knowledge_base_id || searchForm.knowledge_base_id.length === 0) {
+    ElMessage.warning('请先选择至少一个知识库')
+    return
+  }
   if (!imageSearchText.value.trim()) {
     ElMessage.warning('请输入搜索关键词')
     return
@@ -957,8 +1121,6 @@ const handleSearchByText = async () => {
   imageSearching.value = true
   imageSearched.value = true
   try {
-    console.log('开始以文搜图:', { query: imageSearchText.value, similarity_threshold: imageSearchSimilarityThreshold.value })
-    
     const res = await searchByTextForImages({
       query_text: imageSearchText.value,
       similarity_threshold: imageSearchSimilarityThreshold.value,
@@ -969,8 +1131,6 @@ const handleSearchByText = async () => {
     const payload: any = envelope?.data ?? envelope
     const list: any[] = Array.isArray(payload) ? payload : (payload?.items || payload?.results || payload?.list || [])
     
-    console.log('以文搜图完成:', { count: list.length })
-    
     // 处理图片路径：确保使用代理 URL
     const processedList = list.map((img: any) => {
       if (img.image_path && !img.image_path.startsWith('/api/images/file') && !img.image_path.startsWith('http')) {
@@ -983,7 +1143,6 @@ const handleSearchByText = async () => {
     imageResults.value = processedList
     imageTotal.value = processedList.length
   } catch (error: any) {
-    console.error('以文搜图失败:', error)
     const message = error?.response?.data?.detail || error?.message || '图片搜索失败'
     ElMessage.error(message)
   } finally {
@@ -1036,7 +1195,6 @@ const viewImage = async (image: any) => {
     }
     imageDetailVisible.value = true
   } catch (error: any) {
-    console.error('加载图片详情失败:', error)
     // 如果加载详情失败，使用列表中的基本信息
     selectedImage.value = image
     imageDetailVisible.value = true
@@ -1054,9 +1212,18 @@ const viewDocument = (documentId: number) => {
     const data = res?.data ?? {}
     knowledgeBases.value = data.list ?? data.items ?? []
   } catch (error) {
-    console.error('加载知识库列表失败')
+    // 加载知识库列表失败
   }
 })()
+
+// 页面加载时自动加载搜索历史
+onMounted(async () => {
+  await loadSearchHistory()
+  // 如果有搜索历史且当前没有搜索结果，默认显示
+  if (searchHistory.value.length > 0) {
+    showHistory.value = true
+  }
+})
 
 // 当搜索类型改变时，清空结果并关闭高级搜索
 watch(() => searchForm.search_type, (val, oldVal) => {
@@ -1113,6 +1280,18 @@ watch(() => imageSearchType.value, (val, oldVal) => {
     box-shadow: 0 10px 30px rgba(2, 6, 23, 0.6), inset 0 1px 0 rgba(255,255,255,0.03);
     backdrop-filter: blur(10px);
     border-radius: 14px;
+  }
+
+  // 搜索布局：左右分栏
+  .search-layout {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+  }
+
+  .search-form-wrapper {
+    flex: 1;
+    min-width: 0;
   }
 
   .search-form {
@@ -1459,6 +1638,20 @@ watch(() => imageSearchType.value, (val, oldVal) => {
         color: #e8eef7;
       }
 
+      .result-content-text {
+        line-height: 1.6;
+        word-break: break-word;
+        
+        // 高亮样式
+        :deep(mark) {
+          background-color: #ffeb3b;
+          padding: 2px 4px;
+          border-radius: 2px;
+          font-weight: 500;
+          color: #333;
+        }
+      }
+      
       .result-content {
         color: #9aa5b1;
         margin-bottom: 8px;
@@ -1602,6 +1795,158 @@ watch(() => imageSearchType.value, (val, oldVal) => {
         }
       }
     }
+  }
+
+  /* 搜索历史左侧边栏样式 */
+  .search-history-sidebar {
+    width: 280px;
+    flex-shrink: 0;
+    background: rgba(17, 25, 40, 0.6);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(148, 163, 184, 0.15);
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(2, 6, 23, 0.4),
+                inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    overflow: hidden;
+    height: fit-content;
+    max-height: calc(100vh - 250px);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    background: rgba(15, 23, 42, 0.4);
+  }
+
+  .history-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #e5eaf0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .history-icon {
+    font-size: 16px;
+    color: #60a5fa;
+  }
+
+  .clear-btn {
+    color: #9aa6bf !important;
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+  }
+
+  .clear-btn:hover {
+    color: #e5eaf0 !important;
+    background: rgba(148, 163, 184, 0.1);
+  }
+
+  .history-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+    min-height: 0;
+  }
+
+  .history-list::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .history-list::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.3);
+  }
+
+  .history-list::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.3);
+    border-radius: 3px;
+  }
+
+  .history-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.5);
+  }
+
+  .history-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border-left: 3px solid transparent;
+    position: relative;
+  }
+
+  .history-item:hover {
+    background: rgba(96, 165, 250, 0.08);
+    border-left-color: #60a5fa;
+  }
+
+  .history-item:active {
+    background: rgba(96, 165, 250, 0.12);
+  }
+
+  .history-item-icon {
+    font-size: 18px;
+    color: #60a5fa;
+    flex-shrink: 0;
+  }
+
+  .history-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .history-query {
+    color: #e5eaf0;
+    font-size: 14px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .history-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #9aa6bf;
+    font-size: 12px;
+  }
+
+  .time-icon {
+    font-size: 12px;
+    color: #7c8ba1;
+  }
+
+  .history-delete {
+    font-size: 16px;
+    color: #7c8ba1;
+    padding: 4px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+    opacity: 0;
+  }
+
+  .history-item:hover .history-delete {
+    opacity: 1;
+  }
+
+  .history-delete:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
   }
 }
 </style>

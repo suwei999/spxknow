@@ -2,9 +2,10 @@
 Document API Routes
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Request, Body
 from typing import List, Optional
 import json
+from pydantic import BaseModel
 from app.schemas.document import DocumentCreate, DocumentUpdate, DocumentResponse, DocumentUploadRequest
 from app.services.document_service import DocumentService
 from app.dependencies.database import get_db
@@ -17,13 +18,27 @@ from app.services.minio_storage_service import MinioStorageService
 from app.models.document import Document
 import gzip, json, io, datetime
 import os, tempfile
-from app.services.office_converter import convert_docx_to_pdf, compress_pdf
+# 预览生成已移至异步任务，此处不再需要导入转换函数
 from app.services.opensearch_service import OpenSearchService
 
 router = APIRouter()
 
+def get_current_user_id(request: Request) -> int:
+    """从请求中获取当前用户ID（由中间件设置）"""
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的用户信息")
+    try:
+        return int(user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的用户ID")
+
 @router.get("/")
 async def get_documents(
+    request: Request,
     page: int = 1,
     size: int = settings.QA_DEFAULT_PAGE_SIZE,
     knowledge_base_id: Optional[int] = None,
@@ -31,19 +46,24 @@ async def get_documents(
 ):
     """获取文档列表 - 根据文档处理流程设计实现"""
     try:
-        logger.info(f"API请求: 获取文档列表，page: {page}, size: {size}, 知识库ID: {knowledge_base_id}")
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
+        logger.info(f"API请求: 获取文档列表，page: {page}, size: {size}, 知识库ID: {knowledge_base_id}, 用户ID: {user_id}")
         
         service = DocumentService(db)
         skip = max(page - 1, 0) * max(size, 1)
         documents = await service.get_documents(
             skip=skip,
             limit=size,
-            knowledge_base_id=knowledge_base_id
+            knowledge_base_id=knowledge_base_id,
+            user_id=user_id
         )
         # 构建返回项并统计总数
         from app.models.document import Document
         from app.models.knowledge_base import KnowledgeBase
         base_q = db.query(Document).filter(Document.is_deleted == False)
+        # 添加用户过滤（支持数据隔离）
+        base_q = base_q.filter(Document.user_id == user_id)
         if knowledge_base_id:
             base_q = base_q.filter(Document.knowledge_base_id == knowledge_base_id)
         total = base_q.count()
@@ -100,6 +120,7 @@ async def get_documents(
 
 @router.post("/upload")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     knowledge_base_id: int = Form(...),
     category_id: Optional[int] = Form(None),
@@ -128,6 +149,9 @@ async def upload_document(
     try:
         logger.info(f"API请求: 上传文档 {file.filename}, 知识库ID: {knowledge_base_id}")
         
+        # 获取当前用户ID（用于数据隔离）
+        user_id = get_current_user_id(request)
+        
         # 解析tags
         parsed_tags = []
         if tags:
@@ -155,7 +179,8 @@ async def upload_document(
             knowledge_base_id=knowledge_base_id,
             category_id=category_id,
             tags=parsed_tags,
-            metadata=parsed_metadata
+            metadata=parsed_metadata,
+            user_id=user_id
         )
         
         logger.info(f"API响应: 文档上传成功，文档ID: {result['document_id']}, 任务ID: {result.get('task_id')}")
@@ -248,19 +273,80 @@ async def get_document(
             detail=f"获取文档详情失败: {str(e)}"
         )
 
+@router.get("/{doc_id}/sheets")
+async def get_document_sheets(
+    doc_id: int,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """获取 Excel 文档的 Sheet 列表（仅 Excel 文档）"""
+    try:
+        user_id = get_current_user_id(request)
+        document = db.query(Document).filter(Document.id == doc_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="文档不存在")
+        
+        # 检查文件类型
+        file_type = (document.file_type or '').lower()
+        file_suffix = (document.original_filename or '').split('.')[-1].lower()
+        is_excel = file_suffix in ('xlsx', 'xls', 'xlsb', 'csv') or file_type in ('excel', 'xlsx', 'xls', 'csv')
+        
+        if not is_excel:
+            raise HTTPException(status_code=400, detail="该接口仅支持 Excel 文档")
+        
+        # 从 metadata 中读取 sheet 信息
+        metadata = document.meta or {}
+        if isinstance(metadata, str):
+            import json
+            try:
+                metadata = json.loads(metadata)
+            except:
+                metadata = {}
+        
+        sheets_info = metadata.get('sheets', [])
+        items = []
+        for sheet in sheets_info:
+            items.append({
+                "name": sheet.get('name'),
+                "rows": sheet.get('rows', 0),
+                "columns": sheet.get('columns', 0),
+                "preview_samples": metadata.get('preview_samples', {}).get(sheet.get('name'), []),
+                "header_detected": sheet.get('header_detected', False),
+                "has_merge": sheet.get('has_merge', False),
+                "has_formula": sheet.get('has_formula', False),
+                "sheet_type": sheet.get('sheet_type', 'tabular'),
+                "layout_features": sheet.get('layout_features', []),
+            })
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "items": items,
+                "total": len(items)
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取 Sheet 列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取 Sheet 列表失败: {str(e)}")
+
 @router.get("/{doc_id}/chunks")
 async def get_document_chunks(
     doc_id: int,
     page: int = 1,
     size: int = settings.QA_DEFAULT_PAGE_SIZE,
     include_content: bool = False,
+    chunk_type: Optional[str] = Query(None, description="过滤 chunk 类型: tabular/text/summary"),
     db: Session = Depends(get_db)
 ):
     """获取指定文档的分块列表（兼容前端 /documents/{id}/chunks）"""
     try:
         skip = max(page - 1, 0) * max(size, 1)
         service = ChunkService(db)
-        rows = await service.get_chunks(skip=skip, limit=size, document_id=doc_id)
+        # 如果指定了 chunk_type，需要在查询后过滤
+        rows = await service.get_chunks(skip=skip, limit=size * 2 if chunk_type else size, document_id=doc_id)
         items = []
 
         # 若数据库未存文本，尝试从 MinIO 的 chunks.jsonl.gz 读取对应范围
@@ -297,7 +383,17 @@ async def get_document_chunks(
 
         from sqlalchemy import func
         from app.models.chunk_version import ChunkVersion
+        filtered_count = 0
         for c in rows:
+            # 过滤 chunk_type
+            if chunk_type:
+                chunk_type_attr = getattr(c, "chunk_type", "text") or "text"
+                if chunk_type_attr.lower() != chunk_type.lower():
+                    continue
+                filtered_count += 1
+                if filtered_count > size:
+                    break
+            
             idx = getattr(c, 'chunk_index', None)
             content = getattr(c, 'content', None)
             if (not content) and (idx is not None) and (idx in content_map):
@@ -489,7 +585,7 @@ async def get_document_preview(
     doc_id: int,
     db: Session = Depends(get_db)
 ):
-    """返回原始文档的直链；若为 Office 文档则自动生成 PDF 预览并返回其直链。"""
+    """返回原始文档的直链；若为 Office 文档则返回已预生成的 PDF/HTML 预览（如果存在）。"""
     try:
         doc = db.query(Document).filter(Document.id == doc_id).first()
         if not doc:
@@ -515,107 +611,111 @@ async def get_document_preview(
         ext = os.path.splitext(doc.file_path)[1].lower()
         is_office = ext in {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
         
-        # 如果已经有转换后的PDF URL，直接使用它
-        if is_office and doc.converted_pdf_url:
-            try:
-                pdf_preview_url = minio.client.presigned_get_object(
-                    minio.bucket_name, 
-                    doc.converted_pdf_url, 
-                    expires=timedelta(hours=1)
-                )
-                logger.info(f"使用已转换的PDF预览: {doc.converted_pdf_url}")
+        # 优化文本文件的 content_type 检测
+        if ext in {".txt", ".md", ".log", ".conf", ".ini", ".sh", ".bat", ".py", ".js", ".ts", ".json", ".xml", ".yaml", ".yml", ".css", ".html"}:
+            import mimetypes
+            guessed_type = mimetypes.guess_type(doc.file_path)[0]
+            if guessed_type and guessed_type.startswith('text/'):
+                content_type = guessed_type
+            elif content_type == "application/octet-stream":
+                # 如果没有检测到，默认设为 text/plain
+                content_type = "text/plain"
+        
+        doc_meta = doc.meta or {}
+        converted_html_url = None
+        if isinstance(doc_meta, dict):
+            converted_html_url = doc_meta.get("converted_html_url")
+
+        # 如果是Office文档，检查是否有预生成的预览
+        if is_office:
+            logger.info(f"文档 {doc_id} 是Office文档 ({ext})，检查预生成的预览")
+            pdf_preview_url = None
+            html_preview_url = None
+            
+            # 检查数据库中的PDF预览路径
+            if doc.converted_pdf_url:
+                logger.debug(f"文档 {doc_id} 数据库中有PDF预览路径: {doc.converted_pdf_url}")
+                try:
+                    minio.client.stat_object(minio.bucket_name, doc.converted_pdf_url)
+                    pdf_preview_url = minio.client.presigned_get_object(
+                        minio.bucket_name, 
+                        doc.converted_pdf_url, 
+                        expires=timedelta(hours=1)
+                    )
+                    logger.info(f"文档 {doc_id} 使用已预生成的PDF预览: {doc.converted_pdf_url}")
+                except Exception as e:
+                    logger.warning(f"文档 {doc_id} 预生成的PDF预览不存在: {doc.converted_pdf_url}, 错误: {e}")
+            else:
+                logger.debug(f"文档 {doc_id} 数据库中没有PDF预览路径")
+            
+            # 检查数据库中的HTML预览路径
+            if converted_html_url:
+                logger.debug(f"文档 {doc_id} 数据库中有HTML预览路径: {converted_html_url}")
+                try:
+                    minio.client.stat_object(minio.bucket_name, converted_html_url)
+                    html_preview_url = minio.client.presigned_get_object(
+                        minio.bucket_name,
+                        converted_html_url,
+                        expires=timedelta(hours=1)
+                    )
+                    logger.info(f"文档 {doc_id} 使用已预生成的HTML预览: {converted_html_url}")
+                except Exception as e:
+                    logger.warning(f"文档 {doc_id} 预生成的HTML预览不存在: {converted_html_url}, 错误: {e}")
+            else:
+                logger.debug(f"文档 {doc_id} 数据库中没有HTML预览路径")
+            
+            # 如果PDF预览存在，优先返回PDF
+            if pdf_preview_url:
+                logger.info(f"文档 {doc_id} 返回PDF预览 (HTML预览{'可用' if html_preview_url else '不可用'})")
                 return {
-                    "code": 0, 
-                    "message": "ok", 
+                    "code": 0,
+                    "message": "ok",
                     "data": {
-                        "preview_url": pdf_preview_url, 
-                        "content_type": "application/pdf", 
+                        "preview_url": pdf_preview_url,
+                        "content_type": "application/pdf",
                         "original_url": original_url,
-                        "is_converted_pdf": True
+                        "html_preview_url": html_preview_url
                     }
                 }
-            except Exception as e:
-                logger.warning(f"获取已转换PDF失败: {e}，尝试重新转换")
-                # 如果获取失败，继续执行下面的转换逻辑
-        
-        if is_office:
-            try:
-                # 预览目标对象键
-                created: datetime.datetime = getattr(doc, 'created_at', None) or datetime.datetime.utcnow()
-                year = created.strftime('%Y')
-                month = created.strftime('%m')
-                preview_base = f"documents/{year}/{month}/{doc.id}/preview"
-                preview_object = f"{preview_base}/preview.pdf"
-                preview_object_screen = f"{preview_base}/preview_screen.pdf"
+            
+            # 如果只有HTML预览，返回HTML
+            if html_preview_url:
+                logger.info(f"文档 {doc_id} 返回HTML预览 (PDF预览不可用)")
+                return {
+                    "code": 0,
+                    "message": "ok",
+                    "data": {
+                        "preview_url": html_preview_url,
+                        "content_type": "text/html",
+                        "original_url": original_url,
+                        "html_preview_url": html_preview_url
+                    }
+                }
+            
+            # 如果预览都不存在，记录日志并返回原始文件
+            logger.info(f"文档 {doc_id} 的预览尚未生成（可能正在处理中），返回原始文件URL")
 
-                # 若已存在，直接返回
+        # 默认返回原始直链（非Office文档或Office文档预览不存在时）
+        html_preview_url = None
+        # 对于非Office文档，尝试获取HTML预览（如果有）
+        if not is_office:
+            html_candidate = converted_html_url or (f"documents/{doc.created_at.strftime('%Y')}/{doc.created_at.strftime('%m')}/{doc.id}/preview/preview.html" if doc.created_at else None)
+            if html_candidate:
                 try:
-                    stat_prev = minio.client.stat_object(minio.bucket_name, preview_object)
-                    if stat_prev:
-                        preview_url = minio.client.presigned_get_object(minio.bucket_name, preview_object, expires=timedelta(hours=1))
-                        return {"code": 0, "message": "ok", "data": {"preview_url": preview_url, "content_type": "application/pdf", "original_url": original_url}}
+                    minio.client.stat_object(minio.bucket_name, html_candidate)
+                    html_preview_url = minio.client.presigned_get_object(minio.bucket_name, html_candidate, expires=timedelta(hours=1))
                 except Exception:
-                    pass
-
-                # 下载原件到临时目录
-                obj = minio.client.get_object(minio.bucket_name, doc.file_path)
-                data = obj.read(); obj.close(); obj.release_conn()
-                with tempfile.TemporaryDirectory() as td:
-                    src_path = os.path.join(td, f"origin{ext}")
-                    with open(src_path, 'wb') as f:
-                        f.write(data)
-                    pdf_path = convert_docx_to_pdf(src_path)
-                    if pdf_path and os.path.exists(pdf_path):
-                        # 若 PDF 较大，尝试生成轻量版本
-                        try:
-                            size_bytes = os.path.getsize(pdf_path)
-                        except Exception:
-                            size_bytes = 0
-                        threshold_mb = 10  # 10MB 阈值
-                        use_screen = size_bytes > threshold_mb * 1024 * 1024
-
-                        if use_screen:
-                            screen_pdf = os.path.join(td, 'preview_screen.pdf')
-                            if compress_pdf(pdf_path, screen_pdf, quality='screen') and os.path.exists(screen_pdf):
-                                with open(screen_pdf, 'rb') as pf:
-                                    minio.client.put_object(
-                                        minio.bucket_name,
-                                        preview_object_screen,
-                                        data=pf,
-                                        length=os.path.getsize(screen_pdf),
-                                        content_type='application/pdf'
-                                    )
-                                # 写回数据库：记录转换后的PDF对象键
-                                try:
-                                    doc.converted_pdf_url = preview_object_screen
-                                    db.commit()
-                                except Exception:
-                                    db.rollback()
-                                preview_url = minio.client.presigned_get_object(minio.bucket_name, preview_object_screen, expires=timedelta(hours=1))
-                                return {"code": 0, "message": "ok", "data": {"preview_url": preview_url, "content_type": "application/pdf", "original_url": original_url}}
-
-                        # 上传 PDF 到 MinIO
-                        with open(pdf_path, 'rb') as pf:
-                            minio.client.put_object(
-                                minio.bucket_name,
-                                preview_object,
-                                data=pf,
-                                length=os.path.getsize(pdf_path),
-                                content_type='application/pdf'
-                            )
-                        # 写回数据库：记录转换后的PDF对象键
-                        try:
-                            doc.converted_pdf_url = preview_object
-                            db.commit()
-                        except Exception:
-                            db.rollback()
-                        preview_url = minio.client.presigned_get_object(minio.bucket_name, preview_object, expires=timedelta(hours=1))
-                        return {"code": 0, "message": "ok", "data": {"preview_url": preview_url, "content_type": "application/pdf", "original_url": original_url}}
-            except Exception as conv_e:
-                logger.warning(f"生成 Office 预览失败，将返回原件直链: {conv_e}")
-
-        # 默认返回原始直链
-        return {"code": 0, "message": "ok", "data": {"preview_url": original_url, "content_type": content_type, "original_url": original_url}}
+                    html_preview_url = None
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "preview_url": original_url,
+                "content_type": content_type,
+                "original_url": original_url,
+                "html_preview_url": html_preview_url
+            }
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -850,6 +950,7 @@ async def delete_document(
 
 @router.post("/batch-upload")
 async def batch_upload_documents(
+    request: Request,
     files: List[UploadFile] = File(...),
     knowledge_base_id: int = Form(...),
     category_id: Optional[int] = Form(None),
@@ -874,6 +975,9 @@ async def batch_upload_documents(
     """
     try:
         logger.info(f"API请求: 批量上传文档，文件数量: {len(files)}, 知识库ID: {knowledge_base_id}")
+        
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
         
         # 解析tags
         parsed_tags = []
@@ -906,7 +1010,8 @@ async def batch_upload_documents(
                     knowledge_base_id=knowledge_base_id,
                     category_id=category_id,
                     tags=parsed_tags,
-                    metadata=parsed_metadata
+                    metadata=parsed_metadata,
+                    user_id=user_id
                 )
                 results.append({
                     "filename": file.filename,
@@ -941,6 +1046,561 @@ async def batch_upload_documents(
     except Exception as e:
         logger.error(f"批量上传文档API错误: {e}", exc_info=True)
         return {"code": 1, "message": f"批量上传文档失败: {str(e)}"}
+
+class BatchDeleteRequest(BaseModel):
+    """批量删除请求"""
+    document_ids: List[int]
+
+class BatchMoveRequest(BaseModel):
+    """批量移动请求"""
+    document_ids: List[int]
+    target_knowledge_base_id: int
+    target_category_id: Optional[int] = None
+
+class BatchTagsAddRequest(BaseModel):
+    """批量添加标签请求"""
+    document_ids: List[int]
+    tags: List[str]
+
+class BatchTagsRemoveRequest(BaseModel):
+    """批量删除标签请求"""
+    document_ids: List[int]
+    tags: List[str]
+
+class BatchTagsReplaceRequest(BaseModel):
+    """批量替换标签请求"""
+    document_ids: List[int]
+    tags: List[str]
+
+@router.post("/batch/delete")
+async def batch_delete_documents(
+    request: Request,
+    delete_request: BatchDeleteRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    批量删除文档 - 根据文档处理流程设计实现
+    
+    请求参数：
+    - document_ids: 文档ID列表
+    
+    响应内容：
+    - deleted_count: 成功删除数量
+    - failed_count: 失败数量
+    - failed_ids: 失败的文档ID列表
+    """
+    try:
+        # 获取当前用户ID（数据隔离）
+        user_id = get_current_user_id(request)
+        document_ids = delete_request.document_ids
+        logger.info(f"API请求: 批量删除文档，文档数量: {len(document_ids)}, 用户ID: {user_id}")
+        
+        if not document_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="文档ID列表不能为空"
+            )
+        
+        service = DocumentService(db)
+        deleted_count = 0
+        failed_count = 0
+        failed_ids = []
+        
+        for doc_id in document_ids:
+            try:
+                # 验证文档归属权（数据隔离）
+                doc = db.query(Document).filter(
+                    Document.id == doc_id,
+                    Document.user_id == user_id,
+                    Document.is_deleted == False
+                ).first()
+                
+                if not doc:
+                    logger.warning(f"文档不存在或无权限: {doc_id}, 用户ID: {user_id}")
+                    failed_ids.append(doc_id)
+                    failed_count += 1
+                    continue
+                
+                # 删除文档
+                success = await service.delete_document(doc_id, hard=True)
+                if success:
+                    deleted_count += 1
+                    logger.info(f"文档删除成功: {doc_id}")
+                else:
+                    failed_ids.append(doc_id)
+                    failed_count += 1
+                    logger.warning(f"文档删除失败: {doc_id}")
+            except Exception as e:
+                logger.error(f"删除文档 {doc_id} 失败: {e}", exc_info=True)
+                failed_ids.append(doc_id)
+                failed_count += 1
+        
+        logger.info(f"API响应: 批量删除完成，成功: {deleted_count}, 失败: {failed_count}")
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "deleted_count": deleted_count,
+                "failed_count": failed_count,
+                "failed_ids": failed_ids,
+                "total": len(document_ids)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量删除文档API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"批量删除文档失败: {str(e)}"
+        )
+
+@router.post("/batch/move")
+async def batch_move_documents(
+    request: Request,
+    move_request: BatchMoveRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    批量移动文档 - 根据文档处理流程设计实现
+    
+    请求参数：
+    - document_ids: 文档ID列表
+    - target_knowledge_base_id: 目标知识库ID
+    - target_category_id: 目标分类ID（可选）
+    
+    响应内容：
+    - moved_count: 成功移动数量
+    - failed_count: 失败数量
+    - failed_ids: 失败的文档ID列表
+    """
+    try:
+        # 获取当前用户ID（数据隔离）
+        user_id = get_current_user_id(request)
+        document_ids = move_request.document_ids
+        target_kb_id = move_request.target_knowledge_base_id
+        target_category_id = move_request.target_category_id
+        
+        logger.info(f"API请求: 批量移动文档，文档数量: {len(document_ids)}, 目标知识库ID: {target_kb_id}, 用户ID: {user_id}")
+        
+        if not document_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="文档ID列表不能为空"
+            )
+        
+        # 验证目标知识库是否存在且属于当前用户
+        from app.models.knowledge_base import KnowledgeBase
+        target_kb = db.query(KnowledgeBase).filter(
+            KnowledgeBase.id == target_kb_id,
+            KnowledgeBase.user_id == user_id,
+            KnowledgeBase.is_deleted == False
+        ).first()
+        
+        if not target_kb:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="目标知识库不存在或无权限"
+            )
+        
+        service = DocumentService(db)
+        moved_count = 0
+        failed_count = 0
+        failed_ids = []
+        
+        for doc_id in document_ids:
+            try:
+                # 验证文档归属权（数据隔离）
+                doc = db.query(Document).filter(
+                    Document.id == doc_id,
+                    Document.user_id == user_id,
+                    Document.is_deleted == False
+                ).first()
+                
+                if not doc:
+                    logger.warning(f"文档不存在或无权限: {doc_id}, 用户ID: {user_id}")
+                    failed_ids.append(doc_id)
+                    failed_count += 1
+                    continue
+                
+                # 如果目标知识库与当前相同，只更新分类
+                if doc.knowledge_base_id == target_kb_id:
+                    if target_category_id is not None:
+                        doc.category_id = target_category_id
+                        db.commit()
+                        moved_count += 1
+                        logger.info(f"文档分类更新成功: {doc_id}")
+                    else:
+                        # 无需移动
+                        moved_count += 1
+                        logger.info(f"文档已在目标知识库: {doc_id}")
+                else:
+                    # 更新知识库和分类
+                    doc.knowledge_base_id = target_kb_id
+                    if target_category_id is not None:
+                        doc.category_id = target_category_id
+                    db.commit()
+                    moved_count += 1
+                    logger.info(f"文档移动成功: {doc_id} -> 知识库 {target_kb_id}")
+            except Exception as e:
+                logger.error(f"移动文档 {doc_id} 失败: {e}", exc_info=True)
+                db.rollback()
+                failed_ids.append(doc_id)
+                failed_count += 1
+        
+        logger.info(f"API响应: 批量移动完成，成功: {moved_count}, 失败: {failed_count}")
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "moved_count": moved_count,
+                "failed_count": failed_count,
+                "failed_ids": failed_ids,
+                "total": len(document_ids)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量移动文档API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"批量移动文档失败: {str(e)}"
+        )
+
+@router.post("/batch/tags/add")
+async def batch_add_tags(
+    request: Request,
+    tags_request: BatchTagsAddRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    批量添加标签
+    
+    请求参数：
+    - document_ids: 文档ID列表
+    - tags: 要添加的标签列表
+    
+    响应内容：
+    - updated_count: 成功更新数量
+    """
+    try:
+        user_id = get_current_user_id(request)
+        document_ids = tags_request.document_ids
+        tags_to_add = tags_request.tags
+        
+        logger.info(f"API请求: 批量添加标签，文档数量: {len(document_ids)}, 标签: {tags_to_add}, 用户ID: {user_id}")
+        
+        if not document_ids:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文档ID列表不能为空")
+        if not tags_to_add:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="标签列表不能为空")
+        
+        updated_count = 0
+        for doc_id in document_ids:
+            try:
+                doc = db.query(Document).filter(
+                    Document.id == doc_id,
+                    Document.user_id == user_id,
+                    Document.is_deleted == False
+                ).first()
+                
+                if not doc:
+                    continue
+                
+                # 获取现有标签
+                current_tags = doc.tags if doc.tags else []
+                if not isinstance(current_tags, list):
+                    current_tags = []
+                
+                # 合并标签（去重）
+                new_tags = list(set(current_tags + tags_to_add))
+                doc.tags = new_tags
+                db.commit()
+                updated_count += 1
+            except Exception as e:
+                logger.error(f"添加标签失败 {doc_id}: {e}")
+                db.rollback()
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"updated_count": updated_count}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量添加标签API错误: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"批量添加标签失败: {str(e)}")
+
+@router.post("/batch/tags/remove")
+async def batch_remove_tags(
+    request: Request,
+    tags_request: BatchTagsRemoveRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    批量删除标签
+    
+    请求参数：
+    - document_ids: 文档ID列表
+    - tags: 要删除的标签列表
+    
+    响应内容：
+    - updated_count: 成功更新数量
+    """
+    try:
+        user_id = get_current_user_id(request)
+        document_ids = tags_request.document_ids
+        tags_to_remove = tags_request.tags
+        
+        logger.info(f"API请求: 批量删除标签，文档数量: {len(document_ids)}, 标签: {tags_to_remove}, 用户ID: {user_id}")
+        
+        if not document_ids:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文档ID列表不能为空")
+        if not tags_to_remove:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="标签列表不能为空")
+        
+        updated_count = 0
+        for doc_id in document_ids:
+            try:
+                doc = db.query(Document).filter(
+                    Document.id == doc_id,
+                    Document.user_id == user_id,
+                    Document.is_deleted == False
+                ).first()
+                
+                if not doc:
+                    continue
+                
+                # 获取现有标签
+                current_tags = doc.tags if doc.tags else []
+                if not isinstance(current_tags, list):
+                    current_tags = []
+                
+                # 移除标签
+                new_tags = [t for t in current_tags if t not in tags_to_remove]
+                doc.tags = new_tags
+                db.commit()
+                updated_count += 1
+            except Exception as e:
+                logger.error(f"删除标签失败 {doc_id}: {e}")
+                db.rollback()
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"updated_count": updated_count}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量删除标签API错误: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"批量删除标签失败: {str(e)}")
+
+@router.post("/batch/tags/replace")
+async def batch_replace_tags(
+    request: Request,
+    tags_request: BatchTagsReplaceRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    批量替换标签
+    
+    请求参数：
+    - document_ids: 文档ID列表
+    - tags: 新的标签列表（将完全替换现有标签）
+    
+    响应内容：
+    - updated_count: 成功更新数量
+    """
+    try:
+        user_id = get_current_user_id(request)
+        document_ids = tags_request.document_ids
+        new_tags = tags_request.tags
+        
+        logger.info(f"API请求: 批量替换标签，文档数量: {len(document_ids)}, 新标签: {new_tags}, 用户ID: {user_id}")
+        
+        if not document_ids:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文档ID列表不能为空")
+        
+        updated_count = 0
+        for doc_id in document_ids:
+            try:
+                doc = db.query(Document).filter(
+                    Document.id == doc_id,
+                    Document.user_id == user_id,
+                    Document.is_deleted == False
+                ).first()
+                
+                if not doc:
+                    continue
+                
+                # 直接替换标签
+                doc.tags = new_tags
+                db.commit()
+                updated_count += 1
+            except Exception as e:
+                logger.error(f"替换标签失败 {doc_id}: {e}")
+                db.rollback()
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"updated_count": updated_count}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量替换标签API错误: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"批量替换标签失败: {str(e)}")
+
+@router.get("/{doc_id}/toc")
+async def get_document_toc(
+    doc_id: int,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    获取文档目录
+    
+    响应内容：
+    - toc: 目录树形结构
+    """
+    try:
+        user_id = get_current_user_id(request)
+        
+        # 验证文档归属权
+        doc = db.query(Document).filter(
+            Document.id == doc_id,
+            Document.user_id == user_id,
+            Document.is_deleted == False
+        ).first()
+        
+        if not doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="文档不存在或无权限"
+            )
+        
+        from app.services.document_toc_service import DocumentTOCService
+        toc_service = DocumentTOCService(db)
+        toc = await toc_service.get_document_toc(doc_id)
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"toc": toc}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取文档目录API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取文档目录失败: {str(e)}"
+        )
+
+@router.get("/{doc_id}/search")
+async def search_in_document(
+    doc_id: int,
+    request: Request,
+    query: str = Query(..., description="搜索关键词"),
+    page: Optional[int] = Query(None, description="指定页码（可选）"),
+    db: Session = Depends(get_db)
+):
+    """
+    在文档内搜索关键词
+    
+    响应内容：
+    - results: 搜索结果列表
+    - total: 结果总数
+    """
+    try:
+        user_id = get_current_user_id(request)
+        
+        # 验证文档归属权
+        doc = db.query(Document).filter(
+            Document.id == doc_id,
+            Document.user_id == user_id,
+            Document.is_deleted == False
+        ).first()
+        
+        if not doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="文档不存在或无权限"
+            )
+        
+        # 从OpenSearch搜索文档内容
+        from app.services.opensearch_service import OpenSearchService
+        os_service = OpenSearchService()
+        
+        # 构建查询
+        must_clauses = [
+            {"term": {"document_id": doc_id}},
+            {"match": {"content": {"query": query}}}
+        ]
+        
+        # 添加高亮
+        highlight_config = os_service._build_highlight_config(query, fields=["content"])
+        
+        search_body = {
+            "query": {"bool": {"must": must_clauses}},
+            "size": 100,  # 文档内搜索返回更多结果
+            "_source": ["chunk_id", "content", "chunk_type", "metadata"],
+            **highlight_config
+        }
+        
+        response = os_service.client.search(
+            index=os_service.document_index,
+            body=search_body
+        )
+        
+        # 处理结果
+        results = []
+        for hit in response["hits"]["hits"]:
+            content = hit["_source"].get("content", "")
+            highlighted = os_service._extract_highlight(hit, "content")
+            
+            # 提取页码（从metadata）
+            metadata = hit["_source"].get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+            
+            page_num = metadata.get("page_number")
+            if page_num and page and page_num != page:
+                continue  # 如果指定了页码，过滤结果
+            
+            results.append({
+                "page": page_num,
+                "position": hit.get("_score", 0),
+                "context": content[:200] + "..." if len(content) > 200 else content,
+                "highlight": highlighted or content[:200],
+                "chunk_id": hit["_source"].get("chunk_id")
+            })
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "results": results,
+                "total": len(results)
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"文档内搜索API错误: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"文档内搜索失败: {str(e)}"
+        )
 
 @router.post("/{doc_id}/reprocess")
 def reprocess_document(

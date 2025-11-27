@@ -32,13 +32,14 @@
           />
         </el-form-item>
 
-        <el-form-item label="选择文件">
+          <el-form-item label="选择文件">
             <el-upload
               ref="uploadRef"
               :auto-upload="false"
               :on-change="handleFileChange"
               :on-remove="handleFileRemove"
               :limit="1"
+              accept=".docx,.pdf,.pptx,.txt,.log,.md,.markdown,.mkd,.xlsx,.xls,.csv"
               drag
             >
             <template #default>

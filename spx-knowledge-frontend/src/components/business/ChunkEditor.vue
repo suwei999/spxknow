@@ -1,5 +1,6 @@
 <template>
-  <div class="chunk-editor">
+  <div class="chunk-editor-page">
+    <div class="chunk-editor">
     <!-- 左侧：块列表 -->
     <div class="chunk-list">
       <el-card class="chunk-list-card">
@@ -56,8 +57,10 @@
               <el-tab-pane label="原始预览" name="preview">
                 <!-- ✅ 优先使用 cells 渲染（保存后能立即看到最新数据），HTML 作为兜底 -->
                 <div v-if="tableData && tableData.length > 0 && !(tableData.length === 1 && tableData[0]?.length <= 1)" class="table-preview-from-cells">
-                  <div class="table-container">
-                    <table class="preview-table" style="width: 100%; border-collapse: separate; border-spacing: 0; font-size: 16px; line-height: 1.8;">
+                  <div class="table-hint">表格支持拖动横向滚动查看全部列</div>
+                  <div class="table-scroll-wrapper" ref="tableScrollWrapper">
+                    <div class="table-container">
+                      <table class="preview-table" :style="{ minWidth: tableMinWidth }">
                       <thead v-if="tableData.length > 0">
                         <tr>
                           <th v-for="(cell, cellIdx) in tableData[0]" :key="cellIdx" 
@@ -89,6 +92,7 @@
                         </tr>
                       </tbody>
                     </table>
+                    </div>
                   </div>
                   <el-alert
                     type="warning"
@@ -122,6 +126,15 @@
                     </template>
                   </el-table-column>
                 </el-table>
+              </el-tab-pane>
+              <el-tab-pane label="结构化表格" name="sheet">
+                <div class="luckysheet-wrapper">
+                  <div
+                    class="luckysheet-container"
+                    :id="luckysheetContainerId"
+                    ref="luckysheetContainer"
+                  ></div>
+                </div>
               </el-tab-pane>
             </el-tabs>
           </template>
@@ -193,45 +206,46 @@
 
       <el-empty v-else description="选择块查看版本历史" />
     </div>
-  </div>
+    </div>
 
-  <!-- 版本对比对话框 -->
-  <el-dialog v-model="compareDialogVisible" title="版本对比" width="90%">
-    <div class="compare-legend">
-      <span class="legend-ins">绿色 = 新增/修改</span>
-      <span class="legend-del">红色删除线 = 被删除</span>
-    </div>
-    <div class="compare-content">
-      <div class="compare-left">
-        <div class="compare-header">
-          <h4>当前版本</h4>
-          <el-tag v-if="compareVersions.new?.version" size="small" type="primary">
-            v{{ compareVersions.new.version }}
-          </el-tag>
-          <span v-if="compareVersions.new?.last_modified_at" class="version-time">
-            {{ formatDateTime(compareVersions.new.last_modified_at) }}
-          </span>
-        </div>
-        <pre v-html="compareHtmlNew || EMPTY_PLACEHOLDER" />
+    <!-- 版本对比对话框 -->
+    <el-dialog v-model="compareDialogVisible" title="版本对比" width="90%">
+      <div class="compare-legend">
+        <span class="legend-ins">绿色 = 新增/修改</span>
+        <span class="legend-del">红色删除线 = 被删除</span>
       </div>
-      <div class="compare-right">
-        <div class="compare-header">
-          <h4>选择版本</h4>
-          <el-tag v-if="compareVersions.old?.version_number" size="small" type="info">
-            v{{ compareVersions.old.version_number }}
-          </el-tag>
-          <span v-if="compareVersions.old?.created_at" class="version-time">
-            {{ formatDateTime(compareVersions.old.created_at) }}
-          </span>
+      <div class="compare-content">
+        <div class="compare-left">
+          <div class="compare-header">
+            <h4>当前版本</h4>
+            <el-tag v-if="compareVersions.new?.version" size="small" type="primary">
+              v{{ compareVersions.new.version }}
+            </el-tag>
+            <span v-if="compareVersions.new?.last_modified_at" class="version-time">
+              {{ formatDateTime(compareVersions.new.last_modified_at) }}
+            </span>
+          </div>
+          <pre v-html="compareHtmlNew || EMPTY_PLACEHOLDER" />
         </div>
-        <pre v-html="compareHtmlOld || EMPTY_PLACEHOLDER" />
+        <div class="compare-right">
+          <div class="compare-header">
+            <h4>选择版本</h4>
+            <el-tag v-if="compareVersions.old?.version_number" size="small" type="info">
+              v{{ compareVersions.old.version_number }}
+            </el-tag>
+            <span v-if="compareVersions.old?.created_at" class="version-time">
+              {{ formatDateTime(compareVersions.old.created_at) }}
+            </span>
+          </div>
+          <pre v-html="compareHtmlOld || EMPTY_PLACEHOLDER" />
+        </div>
       </div>
-    </div>
-  </el-dialog>
+    </el-dialog>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CaretRight } from '@element-plus/icons-vue'
 import { 
@@ -247,6 +261,9 @@ import { formatDateTime } from '@/utils/format'
 import { QuillEditor } from '@vueup/vue-quill'
 import '@vueup/vue-quill/dist/vue-quill.snow.css'
 import { getTableByUid, getTableGroupByUid } from '@/api/modules/tables'
+import 'luckysheet/dist/css/luckysheet.css'
+import 'luckysheet/dist/plugins/css/pluginsCss.css'
+import 'luckysheet/dist/plugins/plugins.css'
 
 const props = defineProps<{
   documentId: number
@@ -269,7 +286,7 @@ const editorContent = ref('')
 const isTableChunk = computed(() => (currentChunk.value?.chunk_type === 'table'))
 const tableData = ref<string[][]>([])
 const tableHtml = ref<string>('')
-const tableTab = ref<'preview' | 'grid'>('preview')
+const tableTab = ref<'preview' | 'grid' | 'sheet'>('preview')
 // 统一内容清洗：去除不可见控制字符、零宽字符、非法代理对
 const sanitizeContent = (raw: string): string => {
   if (!raw) return ''
@@ -306,6 +323,15 @@ const tableObjects = computed(() => {
     return obj
   })
 })
+const tableScrollWrapper = ref<HTMLDivElement | null>(null)
+const tableMinWidth = computed(() => {
+  const cols = tableData.value[0]?.length || 1
+  const base = 220 // 每列最小宽度
+  return `${Math.max(cols * base, tableScrollWrapper.value?.clientWidth || 0)}px`
+})
+const luckysheetContainer = ref<HTMLDivElement | null>(null)
+let luckysheetModule: any = null
+const luckysheetContainerId = `luckysheet-preview-${Math.random().toString(36).slice(2, 8)}`
 
 const editorOptions = {
   modules: {
@@ -365,6 +391,9 @@ const initializeTableData = async (chunk: any) => {
   }
   
   try {
+    if (tableScrollWrapper.value) {
+      tableScrollWrapper.value.scrollLeft = 0
+    }
     // 解析 meta 字段
     const metaRaw = chunk.meta
     
@@ -603,6 +632,78 @@ const addCol = () => {
       row.push('')
     })
   }
+}
+
+const destroyLuckysheet = () => {
+  if (luckysheetModule && typeof luckysheetModule.destroy === 'function') {
+    luckysheetModule.destroy()
+  } else if ((window as any)?.luckysheet?.destroy) {
+    (window as any).luckysheet.destroy()
+  }
+}
+
+const renderLuckysheet = async () => {
+  if (tableTab.value !== 'sheet') {
+    destroyLuckysheet()
+    return
+  }
+  if (!luckysheetContainer.value || !tableData.value.length) {
+    destroyLuckysheet()
+    return
+  }
+  if (!luckysheetModule) {
+    const mod = await import('luckysheet')
+    luckysheetModule = mod.default || mod
+  }
+  destroyLuckysheet()
+  const sheetName = currentChunk.value?.metadata?.sheet_name || 'Sheet1'
+  const luckysheetData = tableData.value.map(row => row.map(cell => ({ v: cell ?? '' })))
+  luckysheetModule.create({
+    container: luckysheetContainerId,
+    data: [
+      {
+        name: sheetName,
+        index: 0,
+        order: 0,
+        status: 1,
+        data: luckysheetData
+      }
+    ],
+    lang: 'zh',
+    showtoolbar: false,
+    sheetFormulaBar: false,
+    showstatisticBar: false,
+    allowEdit: false,
+    enableAddRow: false,
+    enableAddCol: false,
+    forceCalculation: false,
+    rowHeaderWidth: 60,
+    columnHeaderHeight: 22,
+    defaultColWidth: 120,
+    defaultRowHeight: 24,
+    cellRightClickConfig: {
+      copy: true,
+      copyAs: true,
+      paste: false,
+      insertRow: false,
+      insertColumn: false,
+      deleteRow: false,
+      deleteColumn: false,
+      deleteCell: false,
+      hideRow: false,
+      hideColumn: false,
+      rowHeight: false,
+      columnWidth: false,
+      clear: false,
+      matrix: false,
+      sort: false,
+      filter: false,
+      chart: false,
+      image: false,
+      link: false,
+      data: false
+    }
+  })
 }
 
 const loadChunkVersions = async (chunkId: number) => {
@@ -970,14 +1071,41 @@ function escapeHtml(s: string): string {
 onMounted(() => {
   loadChunks()
 })
+
+watch(tableTab, () => {
+  nextTick(() => renderLuckysheet())
+})
+
+watch(tableData, () => {
+  nextTick(() => renderLuckysheet())
+})
+
+watch(() => currentChunk.value?.chunk_index, () => {
+  destroyLuckysheet()
+  nextTick(() => renderLuckysheet())
+})
+
+onBeforeUnmount(() => {
+  destroyLuckysheet()
+})
 </script>
 
 <style lang="scss" scoped>
+.chunk-editor-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100vh;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
 .chunk-editor {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 300px 1fr 300px;
   gap: 20px;
-  height: 100vh;
 
   .chunk-list {
     .chunk-list-card {
@@ -1105,19 +1233,30 @@ onMounted(() => {
     
     .table-preview-from-cells {
       width: 100%;
-      
-      .table-container {
+      .table-hint {
+        font-size: 13px;
+        color: #94a3b8;
+        margin-bottom: 6px;
+      }
+      .table-scroll-wrapper {
         width: 100%;
         overflow-x: auto;
-        overflow-y: visible;
+        overflow-y: hidden;
+        cursor: grab;
+      }
+      .table-container {
+        display: inline-block;
+        min-width: max-content;
+        overflow: visible;
         background: white;
         border-radius: 6px;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
         border: 1px solid #e0e0e0 !important;
         
         .preview-table {
-          width: 100%;
-          min-width: 100%;
+          width: auto;
+          min-width: max-content;
+          table-layout: auto;
           border-collapse: separate;
           border-spacing: 0;
           background: white;
@@ -1237,6 +1376,18 @@ onMounted(() => {
       }
       .table-editor { margin-top: 6px; }
       .table-editor-tools { display: flex; gap: 8px; }
+      .luckysheet-wrapper {
+        height: 60vh;
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 8px;
+        overflow: hidden;
+        .luckysheet-container {
+          width: 100%;
+          height: 100%;
+          background: #fff;
+        }
+      }
     }
   }
 
@@ -1352,6 +1503,24 @@ onMounted(() => {
   margin-bottom: 8px;
   .legend-ins { color: #38a169; }
   .legend-del { color: #e53e3e; text-decoration: line-through; }
+}
+</style>
+
+<style lang="scss">
+.chunk-editor .table-scroll-wrapper::-webkit-scrollbar {
+  height: 12px;
+}
+.chunk-editor .table-scroll-wrapper::-webkit-scrollbar-track {
+  background: rgba(34, 197, 94, 0.2);
+  border-radius: 999px;
+}
+.chunk-editor .table-scroll-wrapper::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, #4ade80, #22c55e);
+  border-radius: 999px;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.45);
+}
+.chunk-editor .table-scroll-wrapper::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(90deg, #22c55e, #16a34a);
 }
 </style>
 

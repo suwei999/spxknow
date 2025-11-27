@@ -8,8 +8,9 @@ from app.services.query_service import QueryService
 from app.services.document_service import DocumentService
 from app.models.image import DocumentImage
 from app.core.logging import logger
+from app.dependencies.auth import get_current_user
 
-router = APIRouter(prefix="/query", tags=["query"])
+router = APIRouter(prefix="/query", tags=["query"], dependencies=[Depends(get_current_user)])
 
 
 def get_db():

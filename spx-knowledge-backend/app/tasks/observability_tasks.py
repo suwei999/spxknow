@@ -151,21 +151,49 @@ async def _health_check_async(cluster_service: ClusterConfigService) -> None:
     )
 
 
-@celery_app.task(name="app.tasks.observability_tasks.sync_active_clusters")
+@celery_app.task(
+    name="app.tasks.observability_tasks.sync_active_clusters",
+    priority=settings.CELERY_TASK_PRIORITY_OBSERVABILITY,
+    ignore_result=True,  # 忽略结果，避免存储任务结果
+)
 def sync_active_clusters() -> None:
     """定时同步所有活跃集群关键资源。"""
     if not settings.OBSERVABILITY_ENABLE_SCHEDULE:
         return
-    db = SessionLocal()
+    
+    # 使用分布式锁防止任务重复执行
+    from app.core.cache import cache_manager
+    import asyncio
+    import uuid
+    
+    lock_key = "sync_active_clusters_lock"
+    lock_timeout = 1800  # 30分钟，与同步间隔相同
+    lock_value = str(uuid.uuid4())  # 生成唯一的锁值
+    
+    # 尝试获取锁
+    lock_acquired = asyncio.run(cache_manager.acquire_lock(lock_key, timeout=lock_timeout, value=lock_value))
+    if not lock_acquired:
+        logger.warning("同步任务已在执行中，跳过本次执行（可能是重复触发）")
+        return
+    
     try:
-        cluster_service = ClusterConfigService(db)
-        snapshot_service = ResourceSnapshotService(db)
-        asyncio.run(_sync_clusters_async(cluster_service, snapshot_service))
+        db = SessionLocal()
+        try:
+            cluster_service = ClusterConfigService(db)
+            snapshot_service = ResourceSnapshotService(db)
+            asyncio.run(_sync_clusters_async(cluster_service, snapshot_service))
+        finally:
+            db.close()
     finally:
-        db.close()
+        # 释放锁（使用锁的值确保只有持有者才能释放）
+        asyncio.run(cache_manager.release_lock(lock_key, value=lock_value))
 
 
-@celery_app.task(name="app.tasks.observability_tasks.health_check_clusters")
+@celery_app.task(
+    name="app.tasks.observability_tasks.health_check_clusters",
+    priority=settings.CELERY_TASK_PRIORITY_OBSERVABILITY,
+    ignore_result=True,  # 忽略结果，避免存储任务结果
+)
 def health_check_clusters() -> None:
     """定时执行集群健康检查。"""
     if not settings.OBSERVABILITY_ENABLE_SCHEDULE:

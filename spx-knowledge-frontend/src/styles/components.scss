@@ -132,34 +132,55 @@
     background-color: rgba(0, 0, 0, 0.4) !important;
     border: 1px solid rgba(255, 255, 255, 0.15) !important;
     border-radius: 6px !important;
-    
-    :deep(.el-card__body) {
-      background-color: rgba(0, 0, 0, 0.4) !important;
-      color: rgba(255, 255, 255, 0.95) !important;
-      padding: 14px 18px !important;
-    }
+    margin-bottom: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    padding: 6px 10px !important;
+    width: fit-content !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    color: rgba(255, 255, 255, 0.95) !important;
     
     .timeline-time {
       color: rgba(255, 255, 255, 0.95) !important;
-      font-size: 14px !important;
+      font-size: 13px !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 6px !important;
+      line-height: 1.4 !important;
       
       .el-icon {
         color: rgba(64, 158, 255, 0.9) !important;
+        font-size: 14px !important;
+        flex-shrink: 0 !important;
+      }
+      
+      span {
+        flex: 1 !important;
       }
     }
     
     .timeline-event {
       color: rgba(255, 255, 255, 0.95) !important;
+      display: flex !important;
+      align-items: flex-start !important;
+      gap: 8px !important;
+      line-height: 1.5 !important;
       
       .event-icon {
         color: rgba(230, 162, 60, 0.9) !important;
+        font-size: 14px !important;
+        flex-shrink: 0 !important;
+        margin-top: 2px !important;
       }
       
       .event-text {
         color: rgba(255, 255, 255, 0.95) !important;
-        font-size: 14px !important;
-        line-height: 1.7 !important;
+        font-size: 13px !important;
+        line-height: 1.5 !important;
         word-break: break-word !important;
+        flex: 1 !important;
       }
     }
   }
@@ -167,6 +188,7 @@
   .timeline-event-card {
     background-color: rgba(230, 162, 60, 0.15) !important;
     border-left: 3px solid rgba(230, 162, 60, 0.6) !important;
+    padding: 8px 12px !important;
   }
   
   // 影响范围样式
@@ -198,6 +220,7 @@
     border: 1px solid rgba(255, 255, 255, 0.1) !important;
     border-radius: 6px !important;
     padding: 16px !important;
+    transition: all 0.3s ease !important;
     
     .impact-label {
       display: flex !important;
@@ -224,6 +247,56 @@
       border-color: rgba(255, 255, 255, 0.2) !important;
       color: rgba(255, 255, 255, 0.9) !important;
     }
+    
+    // Pod 影响 - 蓝色主题（信息级别）
+    &.impact-item-pod {
+      border-left: 3px solid rgba(64, 158, 255, 0.6) !important;
+      background-color: rgba(64, 158, 255, 0.08) !important;
+      
+      .impact-label .el-icon {
+        color: rgba(64, 158, 255, 1) !important;
+      }
+      
+      &:hover {
+        border-left-color: rgba(64, 158, 255, 1) !important;
+        background-color: rgba(64, 158, 255, 0.12) !important;
+        box-shadow: 0 2px 8px rgba(64, 158, 255, 0.2) !important;
+      }
+    }
+    
+    // 服务影响 - 橙色主题（警告级别）
+    &.impact-item-service {
+      border-left: 3px solid rgba(230, 162, 60, 0.6) !important;
+      background-color: rgba(230, 162, 60, 0.08) !important;
+      
+      .impact-label .el-icon {
+        color: rgba(230, 162, 60, 1) !important;
+      }
+      
+      &:hover {
+        border-left-color: rgba(230, 162, 60, 1) !important;
+        background-color: rgba(230, 162, 60, 0.12) !important;
+        box-shadow: 0 2px 8px rgba(230, 162, 60, 0.2) !important;
+      }
+    }
+    
+    // 节点影响 - 红色主题（危险级别，最重要）
+    &.impact-item-node {
+      border-left: 3px solid rgba(245, 108, 108, 0.8) !important;
+      background-color: rgba(245, 108, 108, 0.1) !important;
+      border-width: 3px !important;
+      
+      .impact-label .el-icon {
+        color: rgba(245, 108, 108, 1) !important;
+      }
+      
+      &:hover {
+        border-left-color: rgba(245, 108, 108, 1) !important;
+        background-color: rgba(245, 108, 108, 0.15) !important;
+        box-shadow: 0 2px 12px rgba(245, 108, 108, 0.3) !important;
+        transform: translateX(2px) !important;
+      }
+    }
   }
   
   .business-impact {
@@ -232,8 +305,57 @@
     justify-content: space-between !important;
     padding: 16px !important;
     background-color: rgba(0, 0, 0, 0.3) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border: 2px solid rgba(255, 255, 255, 0.1) !important;
     border-radius: 6px !important;
+    transition: all 0.3s ease !important;
+    
+    // 高影响 - 红色主题
+    &.business-impact-high {
+      border-color: rgba(245, 108, 108, 0.6) !important;
+      background-color: rgba(245, 108, 108, 0.1) !important;
+      box-shadow: 0 2px 12px rgba(245, 108, 108, 0.3) !important;
+      
+      .business-impact-label .el-icon {
+        color: rgba(245, 108, 108, 1) !important;
+      }
+      
+      &:hover {
+        border-color: rgba(245, 108, 108, 0.8) !important;
+        box-shadow: 0 4px 16px rgba(245, 108, 108, 0.4) !important;
+      }
+    }
+    
+    // 中影响 - 橙色主题
+    &.business-impact-medium {
+      border-color: rgba(230, 162, 60, 0.6) !important;
+      background-color: rgba(230, 162, 60, 0.1) !important;
+      box-shadow: 0 2px 12px rgba(230, 162, 60, 0.3) !important;
+      
+      .business-impact-label .el-icon {
+        color: rgba(230, 162, 60, 1) !important;
+      }
+      
+      &:hover {
+        border-color: rgba(230, 162, 60, 0.8) !important;
+        box-shadow: 0 4px 16px rgba(230, 162, 60, 0.4) !important;
+      }
+    }
+    
+    // 低影响 - 绿色主题
+    &.business-impact-low {
+      border-color: rgba(103, 194, 58, 0.6) !important;
+      background-color: rgba(103, 194, 58, 0.1) !important;
+      box-shadow: 0 2px 12px rgba(103, 194, 58, 0.3) !important;
+      
+      .business-impact-label .el-icon {
+        color: rgba(103, 194, 58, 1) !important;
+      }
+      
+      &:hover {
+        border-color: rgba(103, 194, 58, 0.8) !important;
+        box-shadow: 0 4px 16px rgba(103, 194, 58, 0.4) !important;
+      }
+    }
     
     .business-impact-label {
       display: flex !important;
@@ -1300,27 +1422,73 @@
       border-radius: 4px !important;
       table-layout: fixed !important;
       
-      // 强制设置列宽为 1:1
+      // 强制设置列宽为 1:1 - 使用更具体的选择器
       colgroup {
         col:first-child {
           width: 50% !important;
+          min-width: 50% !important;
+          max-width: 50% !important;
         }
         col:last-child {
           width: 50% !important;
+          min-width: 50% !important;
+          max-width: 50% !important;
         }
       }
       
       // 直接设置 colgroup 中的 col 元素
       > colgroup > col:nth-child(1) {
         width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
       }
       
       > colgroup > col:nth-child(2) {
         width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
       }
       
+      // 确保 colgroup 存在并正确设置
+      colgroup col {
+        width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
+      }
+      
+      // 强制所有 col 元素都是 50%
+      colgroup > col {
+        width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
+      }
+      
+      // 如果 Element Plus 没有创建 colgroup，通过 td 强制设置
       tbody {
         background-color: rgba(0, 0, 0, 0.7) !important;
+      }
+      
+      // 强制表格列宽 - 最直接的方法
+      tbody tr {
+        display: table-row !important;
+      }
+      
+      tbody tr td {
+        display: table-cell !important;
+      }
+      
+      tbody tr td:first-child {
+        width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
+        box-sizing: border-box !important;
+      }
+      
+      tbody tr td:last-child {
+        width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
+        box-sizing: border-box !important;
       }
       
       .el-descriptions__row {
@@ -1334,6 +1502,9 @@
         min-width: 50% !important;
         max-width: 50% !important;
         box-sizing: border-box !important;
+        overflow: hidden !important;
+        word-break: break-word !important;
+        overflow-wrap: break-word !important;
       }
       
       // 第二列（内容列）- 直接在 td 上设置
@@ -1342,24 +1513,33 @@
         min-width: 50% !important;
         max-width: 50% !important;
         box-sizing: border-box !important;
+        overflow: hidden !important;
+        word-break: break-word !important;
+        overflow-wrap: break-word !important;
       }
 
-      // 第一列（标签列）
-      .el-descriptions__cell:first-child {
+      // 第一列（标签列）- 使用更具体的选择器
+      .el-descriptions__cell:first-child,
+      tbody .el-descriptions__cell:first-child,
+      tr .el-descriptions__cell:first-child {
         width: 50% !important;
         min-width: 50% !important;
         max-width: 50% !important;
         box-sizing: border-box !important;
         display: table-cell !important;
+        table-layout: fixed !important;
       }
       
-      // 第二列（内容列）
-      .el-descriptions__cell:last-child {
+      // 第二列（内容列）- 使用更具体的选择器
+      .el-descriptions__cell:last-child,
+      tbody .el-descriptions__cell:last-child,
+      tr .el-descriptions__cell:last-child {
         width: 50% !important;
         min-width: 50% !important;
         max-width: 50% !important;
         box-sizing: border-box !important;
         display: table-cell !important;
+        table-layout: fixed !important;
       }
 
       .el-descriptions__label {
@@ -1371,10 +1551,16 @@
         border-right: 1px solid rgba(255, 255, 255, 0.2) !important;
         white-space: normal !important;
         word-break: break-word !important;
+        overflow-wrap: break-word !important;
         vertical-align: top !important;
         box-sizing: border-box !important;
-        width: 100% !important;
-        display: block !important;
+        width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
+        display: table-cell !important;
+        overflow: hidden !important;
+        // 防止文本溢出到右侧
+        max-width: 50% !important;
       }
       
       .el-descriptions__content {
@@ -1388,8 +1574,13 @@
         line-height: 1.7 !important;
         vertical-align: top !important;
         box-sizing: border-box !important;
-        width: 100% !important;
-        display: block !important;
+        width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
+        display: table-cell !important;
+        overflow: hidden !important;
+        // 防止文本溢出到右侧
+        max-width: 50% !important;
       }
       
       .el-descriptions__cell {
@@ -1421,6 +1612,7 @@
         color: rgba(255, 255, 255, 0.95) !important;
         border-color: rgba(255, 255, 255, 0.2) !important;
         vertical-align: top !important;
+        box-sizing: border-box !important;
         
         // 第一列（标签列）50%宽度
         &:first-child {
@@ -1428,6 +1620,7 @@
           min-width: 50% !important;
           max-width: 50% !important;
           box-sizing: border-box !important;
+          table-layout: fixed !important;
         }
         
         // 第二列（内容列）50%宽度
@@ -1436,7 +1629,23 @@
           min-width: 50% !important;
           max-width: 50% !important;
           box-sizing: border-box !important;
+          table-layout: fixed !important;
         }
+      }
+      
+      // 确保表格单元格正确设置宽度
+      tbody td:first-child,
+      tbody th:first-child {
+        width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
+      }
+      
+      tbody td:last-child,
+      tbody th:last-child {
+        width: 50% !important;
+        min-width: 50% !important;
+        max-width: 50% !important;
       }
       
       tr {

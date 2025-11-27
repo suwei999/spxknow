@@ -107,17 +107,43 @@ def main() -> None:
     # 显式打印 Redis 连接地址
     logging.getLogger("celery").info(f"Worker 使用 Redis: {settings.REDIS_URL}")
     
-    log_level = os.getenv("CELERY_LOG_LEVEL", "INFO").lower()
-    # 默认监听所有任务队列（根据 app.tasks.celery_app 中的 task_routes 配置）
-    # 包括：document, vector, index, image, version, cleanup, notification, observability, celery
-    queues = os.getenv("CELERY_QUEUES", "document,vector,index,image,version,cleanup,notification,observability,celery")
+    # 优先使用 settings 中的配置，如果没有则使用环境变量，最后使用默认值
+    log_level = (settings.CELERY_LOG_LEVEL or os.getenv("CELERY_LOG_LEVEL", "INFO")).lower()
+    
+    # 队列配置：优先使用 settings，然后环境变量，最后根据 OBSERVABILITY_ENABLE_SCHEDULE 决定
+    if settings.CELERY_QUEUES:
+        queues = settings.CELERY_QUEUES
+    elif os.getenv("CELERY_QUEUES"):
+        queues = os.getenv("CELERY_QUEUES")
+    else:
+        # 根据 OBSERVABILITY_ENABLE_SCHEDULE 决定默认队列
+        if settings.OBSERVABILITY_ENABLE_SCHEDULE:
+            queues = "document,vector,index,image,version,cleanup,notification,observability,celery"
+        else:
+            queues = "document,vector,index,image,version,cleanup,notification,celery"
+            logging.getLogger("celery").info("OBSERVABILITY_ENABLE_SCHEDULE=False，默认排除 observability 队列")
+    
     pool = "solo" if os.name == "nt" else "prefork"
 
-    try:
-        default_concurrency = max(1, multiprocessing.cpu_count() - 1)
-    except Exception:
-        default_concurrency = 1
-    concurrency = os.getenv("CELERY_CONCURRENCY", str(default_concurrency))
+    # 并发数配置：优先使用 settings，然后环境变量，最后自动计算
+    if settings.CELERY_CONCURRENCY is not None:
+        concurrency = str(settings.CELERY_CONCURRENCY)
+    elif os.getenv("CELERY_CONCURRENCY"):
+        concurrency = os.getenv("CELERY_CONCURRENCY")
+    else:
+        # 自动计算并发数
+        try:
+            cpu_count = multiprocessing.cpu_count() or 2
+            # 默认取 [4, 8] 之间，确保有足够 worker 处理文档解析，即使 k8s 同步任务占用部分 worker
+            # 如果 CPU 核心数 >= 4，使用 4-8 个并发；否则使用 2-4 个并发
+            if cpu_count >= 4:
+                default_concurrency = max(4, min(8, cpu_count))
+            else:
+                default_concurrency = max(2, min(4, cpu_count))
+            logging.getLogger("celery").info(f"自动计算并发数: CPU核心数={cpu_count}, 并发数={default_concurrency} (考虑 k8s 同步任务占用)")
+        except Exception:
+            default_concurrency = 2
+        concurrency = str(default_concurrency)
 
     argv = [
         "worker",
@@ -132,6 +158,32 @@ def main() -> None:
         "--without-gossip",
         "--without-mingle",
     ]
+    
+    # 输出启动信息
+    logging.getLogger("celery").info(
+        f"🚀 Celery Worker 启动参数: "
+        f"queues={queues}, concurrency={concurrency}, pool={pool}, log_level={log_level}"
+    )
+    logging.getLogger("celery").info(
+        f"📋 监听的队列列表: {queues.split(',')}"
+    )
+    logging.getLogger("celery").info(
+        f"🔗 Redis 连接: {settings.REDIS_URL}"
+    )
+    
+    # 验证队列配置
+    required_queues = ["document"]  # 文档处理任务必须的队列
+    configured_queues = queues.split(",")
+    missing_queues = [q for q in required_queues if q not in configured_queues]
+    if missing_queues:
+        logging.getLogger("celery").error(
+            f"❌ 错误：Worker 未监听必需的队列: {missing_queues}。"
+            f"当前监听的队列: {configured_queues}"
+        )
+    else:
+        logging.getLogger("celery").info(
+            f"✅ Worker 已正确配置，监听 document 队列"
+        )
 
     try:
         celery_app.worker_main(argv)

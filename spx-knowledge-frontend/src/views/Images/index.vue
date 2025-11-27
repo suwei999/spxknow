@@ -152,16 +152,38 @@ const loadData = async () => {
     
     // 处理返回数据
     const data = res?.data || res
+    let imageList: any[] = []
     if (Array.isArray(data)) {
-      images.value = data
+      imageList = data
       // 如果后端返回总数，使用总数；否则使用当前数组长度
       total.value = (res as any)?.total || data.length
     } else {
-      images.value = data?.items || data?.list || []
-      total.value = data?.total || images.value.length
+      imageList = data?.items || data?.list || []
+      total.value = data?.total || imageList.length
     }
+    
+    // 确保所有图片URL都包含token（用于认证）
+    const token = localStorage.getItem('access_token')
+    images.value = imageList.map((img: any) => {
+      if (img.image_path && typeof img.image_path === 'string') {
+        // 如果已经是完整URL或已包含token，不处理
+        if (img.image_path.startsWith('http') || img.image_path.includes('token=')) {
+          return img
+        }
+        
+        // 确保路径以 /api 开头（如果后端返回的是 /images/file，需要改为 /api/images/file）
+        let finalPath = img.image_path
+        if (finalPath.startsWith('/images/file') && !finalPath.startsWith('/api/images/file')) {
+          finalPath = finalPath.replace('/images/file', '/api/images/file')
+        }
+        
+        // 添加token到URL
+        const separator = finalPath.includes('?') ? '&' : '?'
+        img.image_path = `${finalPath}${separator}token=${token || ''}`
+      }
+      return img
+    })
   } catch (error: any) {
-    console.error('加载图片列表失败:', error)
     ElMessage.error(error?.response?.data?.detail || error?.message || '加载图片列表失败')
     images.value = []
     total.value = 0
@@ -189,12 +211,12 @@ const handleImageClick = async (image: any) => {
     // 确保 image_path 可直接访问（后端应已处理，这里再次兜底）
     if (detail && typeof detail.image_path === 'string' && !/^https?:\/\//.test(detail.image_path)) {
       const enc = encodeURIComponent(detail.image_path)
-      detail.image_path = `/api/images/file?object=${enc}`
+      const token = localStorage.getItem('access_token')
+      detail.image_path = `/api/images/file?object=${enc}${token ? `&token=${token}` : ''}`
     }
     selectedImage.value = detail
     imageDialogVisible.value = true
   } catch (error: any) {
-    console.error('加载图片详情失败:', error)
     // 如果加载详情失败，使用列表中的基本信息
     selectedImage.value = image
     imageDialogVisible.value = true

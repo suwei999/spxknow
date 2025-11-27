@@ -32,6 +32,22 @@ class FileValidationService:
         'text/xml': 'XML'
     }
     
+    # 文件扩展名到 MIME 类型的映射（用于回退检查）
+    EXTENSION_TO_MIME = {
+        '.pdf': 'application/pdf',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.txt': 'text/plain',
+        '.md': 'text/markdown',
+        '.markdown': 'text/markdown',
+        '.html': 'text/html',
+        '.htm': 'text/html',
+        '.csv': 'text/csv',
+        '.json': 'application/json',
+        '.xml': 'application/xml',
+    }
+    
     # 设计文档要求的文件大小限制
     MAX_FILE_SIZE = settings.MAX_FILE_SIZE
     
@@ -45,14 +61,31 @@ class FileValidationService:
             
             # 检查文件扩展名
             file_extension = os.path.splitext(file.filename)[1].lower()
-            logger.debug(f"文件扩展名: {file_extension}")
+            logger.debug(f"文件扩展名: {file_extension}, 原始 MIME 类型: {file.content_type}")
+            
+            # 确定要使用的 MIME 类型
+            # 如果 content_type 不在支持列表中，尝试根据扩展名推断
+            mime_type = file.content_type
+            
+            if mime_type not in self.SUPPORTED_FORMATS:
+                # 尝试根据扩展名推断 MIME 类型
+                if file_extension in self.EXTENSION_TO_MIME:
+                    inferred_mime = self.EXTENSION_TO_MIME[file_extension]
+                    logger.info(f"MIME 类型不匹配，根据扩展名推断: {file_extension} -> {inferred_mime}")
+                    mime_type = inferred_mime
+                else:
+                    logger.error(f"不支持的文件格式: {file.content_type}, 扩展名: {file_extension}")
+                    raise CustomException(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"不支持的文件格式: {file.content_type}。支持的格式: {', '.join(self.SUPPORTED_FORMATS.values())}"
+                    )
             
             # 检查MIME类型
-            if file.content_type not in self.SUPPORTED_FORMATS:
-                logger.error(f"不支持的文件格式: {file.content_type}")
+            if mime_type not in self.SUPPORTED_FORMATS:
+                logger.error(f"不支持的文件格式: {mime_type}")
                 raise CustomException(
                     code=ErrorCode.VALIDATION_ERROR,
-                    message=f"不支持的文件格式: {file.content_type}。支持的格式: {', '.join(self.SUPPORTED_FORMATS.values())}"
+                    message=f"不支持的文件格式: {mime_type}。支持的格式: {', '.join(self.SUPPORTED_FORMATS.values())}"
                 )
             
             # 验证文件头魔数（防止文件扩展名伪造）
@@ -61,30 +94,47 @@ class FileValidationService:
             
             # 使用 filetype 检测真实文件类型
             kind = filetype.guess(file_content)
-            detected_mime = kind.mime if kind else file.content_type
-            logger.debug(f"检测到的MIME类型: {detected_mime}")
+            detected_mime = kind.mime if kind else None
+            logger.debug(f"文件头检测到的MIME类型: {detected_mime}")
+            
+            # 对于文本文件（TXT, MD, HTML, CSV等），filetype 可能无法准确检测
+            text_extensions = {'.txt', '.md', '.markdown', '.html', '.htm', '.csv', '.xml', '.json'}
+            is_text_file = file_extension in text_extensions or mime_type.startswith('text/') or mime_type == 'application/json' or mime_type == 'application/xml'
             
             # 兼容 OOXML 容器：docx/xlsx/pptx 实际魔数常识别为 application/zip
-            if detected_mime == 'application/zip' and file.content_type in (
+            if detected_mime == 'application/zip' and mime_type in (
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
                 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             ):
-                detected_mime = file.content_type
+                detected_mime = mime_type
+            elif detected_mime == 'application/zip' and file_extension in ('.docx', '.pptx', '.xlsx'):
+                # 如果扩展名是 OOXML 格式，使用扩展名推断的 MIME
+                detected_mime = mime_type
             
-            if detected_mime not in self.SUPPORTED_FORMATS:
-                logger.error(f"文件头魔数验证失败: {detected_mime}")
-                raise CustomException(
-                    code=ErrorCode.VALIDATION_ERROR,
-                    message=f"文件头魔数验证失败，检测到: {detected_mime}"
-                )
+            # 对于文本文件，如果 filetype 无法检测或检测失败，使用扩展名推断的 MIME
+            if not detected_mime and is_text_file:
+                detected_mime = mime_type
+                logger.info(f"文本文件 {file_extension} 无法通过文件头检测，使用扩展名推断的 MIME 类型: {mime_type}")
+            elif detected_mime and detected_mime not in self.SUPPORTED_FORMATS:
+                if not is_text_file:
+                    # 非文本文件必须通过文件头验证
+                    logger.error(f"文件头魔数验证失败: {detected_mime}")
+                    raise CustomException(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"文件头魔数验证失败，检测到: {detected_mime}"
+                    )
+                else:
+                    # 文本文件如果文件头检测失败，使用扩展名推断的 MIME 类型
+                    logger.info(f"文本文件 {file_extension} 文件头检测不匹配({detected_mime})，使用扩展名推断的 MIME 类型: {mime_type}")
+                    detected_mime = mime_type
             
             result = {
                 "valid": True,
-                "file_type": self.SUPPORTED_FORMATS[file.content_type],
-                "mime_type": file.content_type,
+                "file_type": self.SUPPORTED_FORMATS[mime_type],
+                "mime_type": mime_type,
                 "extension": file_extension,
-                "detected_mime": detected_mime
+                "detected_mime": detected_mime or mime_type
             }
             
             logger.info(f"文件格式验证通过: {file.filename}")

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.logging import logger
 from app.config.settings import settings
+from app.core.cache import cache_manager
 from app.models.qa_session import QASession
 from app.models.qa_question import QAQuestion, QAStatistics
 from app.services.opensearch_service import OpenSearchService
@@ -45,7 +46,7 @@ class QAService:
         status: str = "active",
         page: int = 1,
         size: int = 20
-    ) -> QASessionListResponse:
+    ) -> "KnowledgeBaseListResponse":
         """获取知识库列表 - 根据设计文档实现"""
         try:
             logger.info(f"获取知识库列表，分类ID: {category_id}, 状态: {status}")
@@ -117,7 +118,8 @@ class QAService:
             end_idx = start_idx + size
             paginated_bases = filtered_bases[start_idx:end_idx]
             
-            return QASessionListResponse(
+            from app.schemas.qa import KnowledgeBaseListResponse
+            return KnowledgeBaseListResponse(
                 knowledge_bases=paginated_bases,
                 pagination={
                     "page": page,
@@ -171,7 +173,7 @@ class QAService:
     
     # 2. 会话管理功能
     
-    def create_qa_session(self, session_data: QASessionCreate) -> QASessionResponse:
+    def create_qa_session(self, session_data: QASessionCreate, user_id: Optional[int] = None) -> QASessionResponse:
         """创建问答会话 - 根据设计文档实现，使用MySQL持久化"""
         try:
             logger.info(f"创建问答会话，知识库ID: {session_data.knowledge_base_id}")
@@ -202,6 +204,7 @@ class QAService:
                 session_id=session_id,
                 session_name=name,
                 knowledge_base_id=session_data.knowledge_base_id,
+                user_id=user_id,
                 query_method=session_data.search_type,
                 search_config={
                     "max_sources": session_data.max_sources,
@@ -273,8 +276,8 @@ class QAService:
                 message=f"获取会话列表失败: {str(e)}"
             )
     
-    def get_qa_session_detail(self, session_id: str) -> Optional[QASessionResponse]:
-        """获取会话详情 - 根据设计文档实现，使用MySQL"""
+    async def get_qa_session_detail(self, session_id: str) -> Optional[QASessionResponse]:
+        """获取会话详情 - 从MySQL获取元数据，从OpenSearch加载完整内容"""
         try:
             logger.info(f"获取会话详情，会话ID: {session_id}")
             
@@ -289,22 +292,38 @@ class QAService:
             
             session_dict = self._session_to_dict(db_session)
             
-            # 获取问题列表
-            questions = self.db.query(QAQuestion).filter(
+            # ✅ 从MySQL获取问题元数据列表
+            questions_meta = self.db.query(QAQuestion).filter(
                 QAQuestion.session_id == session_id
             ).order_by(QAQuestion.created_at.desc()).limit(settings.QA_DEFAULT_MAX_RESULTS).all()
             
-            session_dict["questions"] = [
-                {
-                    "question_id": q.question_id,
-                    "question_content": q.question_content,
-                    "answer_content": q.answer_content,
-                    "created_at": q.created_at.isoformat() if q.created_at else None,
-                    "similarity_score": q.similarity_score,
-                    "answer_quality": q.answer_quality
+            # ✅ 从OpenSearch加载完整内容
+            session_dict["questions"] = []
+            for q_meta in questions_meta:
+                question_detail = {
+                    "question_id": q_meta.question_id,
+                    "question_content": None,  # 将从OpenSearch加载
+                    "answer_content": None,     # 将从OpenSearch加载
+                    "created_at": q_meta.created_at.isoformat() if q_meta.created_at else None,
+                    "similarity_score": q_meta.similarity_score,
+                    "answer_quality": q_meta.answer_quality,
+                    "source_info": q_meta.source_info,
+                    "processing_info": q_meta.processing_info
                 }
-                for q in questions
-            ]
+                
+                # ✅ 从OpenSearch加载完整内容
+                try:
+                    qa_detail = await self.history_service.get_qa_detail(q_meta.question_id)
+                    if qa_detail:
+                        question_detail["question_content"] = qa_detail.get("question_content")
+                        question_detail["answer_content"] = qa_detail.get("answer_content")
+                except Exception as e:
+                    logger.warning(f"从OpenSearch加载问答详情失败 question_id={q_meta.question_id}: {e}")
+                    # 如果OpenSearch加载失败，使用MySQL中的摘要作为后备
+                    question_detail["question_content"] = q_meta.question_content
+                    question_detail["answer_content"] = q_meta.answer_content
+                
+                session_dict["questions"].append(question_detail)
             
             return session_dict
             
@@ -315,29 +334,81 @@ class QAService:
                 message=f"获取会话详情失败: {str(e)}"
             )
     
-    def delete_qa_session(self, session_id: str) -> bool:
-        """删除会话 - 根据设计文档实现，使用MySQL"""
+    async def delete_qa_session(self, session_id: str) -> bool:
+        """删除会话 - 硬删除：删除数据库和OpenSearch中的所有相关数据"""
         try:
-            logger.info(f"删除会话，会话ID: {session_id}")
+            logger.info(f"[QA] 开始硬删除会话，会话ID: {session_id}")
             
-            # 查询会话
+            # 1. 查询会话
             db_session = self.db.query(QASession).filter(
                 QASession.session_id == session_id
             ).first()
             
             if not db_session:
+                logger.warning(f"会话不存在: {session_id}")
                 return False
             
-            # 软删除
-            db_session.status = "deleted"
-            self.db.commit()
+            # 2. ✅ 删除 OpenSearch 中的问答历史记录
+            try:
+                # 删除主索引中的记录
+                delete_query = {
+                    "query": {
+                        "term": {
+                            "session_id": session_id
+                        }
+                    }
+                }
+                result = await self.history_service.opensearch_service.delete_by_query(
+                    self.history_service.INDEX_NAME, delete_query
+                )
+                deleted_count = result.get("deleted", 0)
+                logger.info(f"[QA] OpenSearch 主索引删除成功: session={session_id}, deleted={deleted_count}")
+                
+                # 删除答案索引中的记录
+                answer_result = await self.history_service.opensearch_service.delete_by_query(
+                    self.history_service.ANSWER_INDEX_NAME, delete_query
+                )
+                answer_deleted_count = answer_result.get("deleted", 0)
+                logger.info(f"[QA] OpenSearch 答案索引删除成功: session={session_id}, deleted={answer_deleted_count}")
+                
+            except Exception as e:
+                logger.warning(f"[QA] 删除 OpenSearch 记录失败: {e}，但继续执行数据库删除")
             
-            logger.info(f"会话删除成功，会话ID: {session_id}")
+            # 3. ✅ 删除 MySQL 中的问答记录（QAQuestion）
+            try:
+                questions = self.db.query(QAQuestion).filter(
+                    QAQuestion.session_id == session_id
+                ).all()
+                
+                question_count = len(questions)
+                for question in questions:
+                    self.db.delete(question)
+                
+                self.db.commit()
+                logger.info(f"[QA] MySQL 问答记录删除成功: session={session_id}, count={question_count}")
+                
+            except Exception as e:
+                self.db.rollback()
+                logger.error(f"[QA] 删除 MySQL 问答记录失败: {e}", exc_info=True)
+                raise
+            
+            # 4. ✅ 硬删除 MySQL 中的会话记录（QASession）
+            try:
+                self.db.delete(db_session)
+                self.db.commit()
+                logger.info(f"[QA] MySQL 会话记录删除成功: session={session_id}")
+                
+            except Exception as e:
+                self.db.rollback()
+                logger.error(f"[QA] 删除 MySQL 会话记录失败: {e}", exc_info=True)
+                raise
+            
+            logger.info(f"[QA] 会话硬删除完成: session={session_id}")
             return True
             
         except Exception as e:
             self.db.rollback()
-            logger.error(f"删除会话失败: {e}", exc_info=True)
+            logger.error(f"[QA] 删除会话失败: {e}", exc_info=True)
             raise CustomException(
                 code=ErrorCode.SESSION_DELETE_FAILED,
                 message=f"删除会话失败: {str(e)}"
@@ -362,6 +433,16 @@ class QAService:
                 return None
             
             # 更新配置
+            if config_update.knowledge_base_id is not None:
+                # 验证知识库是否存在
+                from app.models.knowledge_base import KnowledgeBase
+                kb = self.db.query(KnowledgeBase).filter(KnowledgeBase.id == config_update.knowledge_base_id).first()
+                if not kb:
+                    raise CustomException(
+                        code=ErrorCode.KNOWLEDGE_BASE_NOT_FOUND,
+                        message=f"知识库不存在: {config_update.knowledge_base_id}"
+                    )
+                db_session.knowledge_base_id = config_update.knowledge_base_id
             if config_update.search_type:
                 db_session.query_method = config_update.search_type
                 search_config = db_session.search_config or {}
@@ -371,7 +452,7 @@ class QAService:
                 search_config = db_session.search_config or {}
                 search_config["max_sources"] = config_update.max_sources
                 db_session.search_config = search_config
-            if config_update.similarity_threshold:
+            if config_update.similarity_threshold is not None:
                 search_config = db_session.search_config or {}
                 search_config["similarity_threshold"] = config_update.similarity_threshold
                 db_session.search_config = search_config
@@ -441,67 +522,170 @@ class QAService:
             # 构建问题内容
             question_content = self._build_question_content(processed_input)
             
-            # 执行检索
-            session_search_config = (db_session.search_config or {}) if db_session else {}
-            search_results = await self._perform_search(
-                question_content,
-                processed_input,
-                search_type,
-                max_sources,
-                similarity_threshold=similarity_threshold,
-                min_rerank_score=session_search_config.get("min_rerank_score") if isinstance(session_search_config, dict) else None
-            )
+            # ✅ 判断是否是首次问题：
+            # 1. 如果 question_count == 0，肯定是首次问题
+            # 2. 如果 question_count > 0，检查历史记录中是否有成功的问答对
+            #    如果所有历史问答都失败了（answer_content为空），则仍然当作首次问题处理
+            is_first_question = db_session.question_count == 0
+            if not is_first_question:
+                # 检查历史记录中是否有成功的问答对
+                has_successful_history = await self._has_successful_qa_history(session_id)
+                if not has_successful_history:
+                    logger.info(f"[QA] 历史记录中无成功问答，当作首次问题处理: session={session_id}, question_count={db_session.question_count}")
+                    is_first_question = True
             
-            # 降级策略处理
+            # 初始化变量
             answer_type = "knowledge_base"
             confidence = 0.85
-            citations = self._build_citations_from_results(search_results)
-
-            kb_context = self._build_knowledge_context(search_results)
-            # 如果检索为空，仍尝试调用模型回答
-            if not kb_context.strip():
-                answer_type = "llm_only"
-                confidence = 0.5
-                llm_model = session_info.get("llm_config", {}).get("model") or settings.OLLAMA_MODEL
-                raw_answer = await self.ollama_service.chat_completion(
-                    [
-                        {"role": "system", "content": "你是企业知识库问答助手，请尽可能给出准确、可靠的答案。"},
-                        {"role": "user", "content": question_content}
-                    ],
-                    model=llm_model
-                ) or ""
-                answer_content = self._post_process_llm_answer(raw_answer)
+            citations = []
+            search_results = []
+            kb_context = ""
+            source_info = []  # 初始化 source_info
+            answer_content = ""  # 初始化 answer_content
+            llm_model = session_info.get("llm_config", {}).get("model") or settings.OLLAMA_MODEL
+            
+            # ✅ 首次问题：查询知识库
+            if is_first_question:
+                logger.info(f"[QA] 首次问题，查询知识库: session={session_id}")
+                session_search_config = (db_session.search_config or {}) if db_session else {}
+                search_results = await self._perform_search(
+                    question_content,
+                    processed_input,
+                    search_type,
+                    max_sources,
+                    similarity_threshold=similarity_threshold,
+                    min_rerank_score=session_search_config.get("min_rerank_score") if isinstance(session_search_config, dict) else None
+                )
+                
+                citations = self._build_citations_from_results(search_results)
+                kb_context = self._build_knowledge_context(search_results)
+                
+                # 如果检索为空，仍尝试调用模型回答
+                if not kb_context.strip():
+                    answer_type = "llm_only"
+                    confidence = 0.5
+                    raw_answer = await self.ollama_service.chat_completion(
+                        [
+                            {"role": "system", "content": "你是企业知识库问答助手，请尽可能给出准确、可靠的答案。"},
+                            {"role": "user", "content": question_content}
+                        ],
+                        model=llm_model
+                    ) or ""
+                    answer_content = self._post_process_llm_answer(raw_answer)
+                else:
+                    raw_answer = await self.ollama_service.generate_text(
+                        self._build_kb_prompt(question_content, kb_context),
+                        model=llm_model
+                    ) or ""
+                    answer_content = self._post_process_llm_answer(raw_answer)
             else:
-                llm_model = session_info.get("llm_config", {}).get("model") or settings.OLLAMA_MODEL
-                raw_answer = await self.ollama_service.generate_text(
-                    self._build_kb_prompt(question_content, kb_context),
+                # ✅ 后续问题：基于历史对话总结，不查询知识库
+                logger.info(f"[QA] 后续问题，基于历史对话总结: session={session_id}, history_count={db_session.question_count}")
+                
+                # ✅ 先尝试从缓存读取历史总结（避免重复LLM调用）
+                summary_cache_key = self._build_summary_cache_key(session_id, db_session.question_count)
+                conversation_summary = await self._get_cached_conversation_summary(summary_cache_key)
+                
+                if conversation_summary:
+                    logger.info(f"[QA] 使用缓存总结: session={session_id}, question_count={db_session.question_count}, summary_len={len(conversation_summary)}")
+                else:
+                    # ✅ 尝试使用上一次的缓存（question_count-1）
+                    if db_session.question_count > 0:
+                        prev_cache_key = self._build_summary_cache_key(session_id, db_session.question_count - 1)
+                        conversation_summary = await self._get_cached_conversation_summary(prev_cache_key)
+                        if conversation_summary:
+                            logger.info(f"[QA] 使用上一次缓存总结: session={session_id}, prev_question_count={db_session.question_count - 1}, summary_len={len(conversation_summary)}")
+                
+                history_messages: List[Dict[str, str]] = []
+                
+                # ✅ 缓存不存在时再回退到最近历史（最多3条）
+                if not conversation_summary:
+                    logger.info(f"[QA] 缓存未命中，使用最近历史作为临时上下文: session={session_id}, question_count={db_session.question_count}")
+                    limited_max_history = min(max_history, 3)
+                    history_messages = await self._load_conversation_history_from_opensearch(
+                        session_id, 
+                        max_history=limited_max_history
+                    )
+                
+                # 构建对话消息列表
+                messages = [
+                    {
+                        "role": "system", 
+                        "content": "你是企业知识库问答助手。请基于之前的对话历史总结回答用户的问题，保持对话的连贯性和上下文一致性。"
+                    }
+                ]
+                
+                # ✅ 添加对话总结（而不是完整历史）
+                if conversation_summary:
+                    messages.append({
+                        "role": "system",
+                        "content": f"之前的对话总结：\n{conversation_summary}\n\n请基于这个总结回答用户的新问题。"
+                    })
+                # 如果没有总结，至少添加最近一轮对话作为上下文
+                elif history_messages:
+                    messages.extend(history_messages[-2:])  # 只添加最后一条问答对
+                
+                # 添加当前问题
+                messages.append({"role": "user", "content": question_content})
+                
+                # 调用 LLM 进行对话式回答
+                raw_answer = await self.ollama_service.chat_completion(
+                    messages,
                     model=llm_model
                 ) or ""
                 answer_content = self._post_process_llm_answer(raw_answer)
+                
+                # 标记为基于对话的回答
+                answer_type = "conversation_context"
+                confidence = 0.75
+                
+                # 后续问题没有知识库来源
+                citations = []
+                source_info = []
 
             if not answer_content.strip():
                 answer_type = "no_info"
                 confidence = 0.0
                 answer_content = "抱歉，知识库中没有找到相关答案。"
                 citations = []
+                # 如果是后续问题且回答为空，也要设置 source_info
+                if not is_first_question:
+                    source_info = []
             
-            # 构建来源信息
-            source_info = self._build_source_info(citations)
+            # 构建来源信息（仅在首次问题时构建）
+            if is_first_question:
+                source_info = self._build_source_info(citations)
+                if answer_type == "llm_only" and not source_info:
+                    source_info = [
+                        {
+                            "document_id": None,  # ✅ 使用 None 而不是字符串，避免 OpenSearch 类型冲突
+                            "document_title": "模型生成回答",
+                            "knowledge_base_name": "LLM",
+                            "content_snippet": "该回答由大语言模型直接生成，未命中任何知识库文档。",
+                            "similarity_score": 0.0,
+                            "position_info": {},
+                            "associated_images": None,
+                        }
+                    ]
             
             # 构建处理信息
             processing_info = {
                 "input_type": processed_input.get("input_type"),
-                "search_type": search_type,
-                "similarity_threshold": similarity_threshold,
-                "max_sources": max_sources,
+                "search_type": search_type if is_first_question else None,  # 后续问题不查询知识库
+                "similarity_threshold": similarity_threshold if is_first_question else None,
+                "max_sources": max_sources if is_first_question else 0,
                 "processing_steps": processed_input.get("processing_steps"),
                 "answer_strategy": answer_type,
-                "retrieved_count": len(search_results)
+                "retrieved_count": len(search_results) if is_first_question else 0,
+                "is_first_question": is_first_question,
+                "history_count": db_session.question_count
             }
             
             # 构建质量评估（基于最终回答类型）
             if answer_type == "knowledge_base":
                 relevance_level = "high"
+            elif answer_type == "conversation_context":
+                relevance_level = "medium"  # 基于对话的回答
             elif answer_type == "llm_only":
                 relevance_level = "medium"
             else:
@@ -536,36 +720,51 @@ class QAService:
                     exc_info=True
                 )
             
-            # 存储历史记录到MySQL的QAQuestion表（用于会话详情查询）
+            # ✅ 存储元数据到MySQL的QAQuestion表（仅存储基本信息，完整内容在OpenSearch）
             try:
+                # 生成简短摘要用于MySQL（仅用于显示，完整内容在OpenSearch）
+                question_summary = question_content[:100] + "..." if len(question_content) > 100 else question_content
+                answer_summary = answer_content[:100] + "..." if answer_content and len(answer_content) > 100 else answer_content
+                
                 qa_question = QAQuestion(
                     question_id=question_id,
                     session_id=session_id,
-                    question_content=question_content,
-                    answer_content=answer_content,
+                    # ✅ 只存储摘要（完整内容已保存在OpenSearch）
+                    question_content=question_summary,
+                    answer_content=answer_summary,
                     similarity_score=quality_assessment.get("overall_score", 0.0),
-                    answer_quality=str(quality_assessment.get("overall_score", 0.0)),  # 转换为字符串（模型字段为String类型）
+                    answer_quality=str(quality_assessment.get("overall_score", 0.0)),
                     input_type=processed_input["input_type"],
-                    source_info=source_info,
-                    processing_info=processing_info,
+                    source_info=source_info,  # 保留来源信息（JSON较小）
+                    processing_info=processing_info,  # 保留处理信息（JSON较小）
                     created_at=datetime.now()
                 )
                 self.db.add(qa_question)
                 self.db.commit()  # 确保立即提交
-                logger.info(f"问答记录已保存到MySQL，问题ID: {question_id}")
+                logger.info(f"问答记录元数据已保存到MySQL，问题ID: {question_id}（完整内容在OpenSearch）")
             except Exception as e:
                 self.db.rollback()  # 回滚事务
-                logger.error(f"保存问答记录到MySQL失败: {e}", exc_info=True)
+                logger.error(f"保存问答记录元数据到MySQL失败: {e}", exc_info=True)
                 # 不中断流程，继续执行
             
             # 更新会话信息 - 更新MySQL数据库
             db_session = self.db.query(QASession).filter(QASession.session_id == session_id).first()
+            new_question_count = 0
             if db_session:
                 db_session.question_count += 1
                 db_session.last_question = question_content[:100]
                 db_session.last_activity_time = datetime.now()
                 self.db.commit()
                 self.db.refresh(db_session)
+                new_question_count = db_session.question_count
+            
+            # ✅ 异步刷新对话总结缓存，供下次问答直接复用
+            if new_question_count > 0:
+                self._schedule_conversation_summary_refresh(
+                    session_id=session_id,
+                    question_count=new_question_count,
+                    llm_model=llm_model
+                )
             
             # 构建响应
             response = QAMultimodalQuestionResponse(
@@ -737,12 +936,14 @@ class QAService:
             if session_id:
                 db_session = self.db.query(QASession).filter(QASession.session_id == session_id).first()
             kb_id = db_session.knowledge_base_id if db_session else None
+            # ✅ 将 knowledge_base_id 转换为列表（SearchRequest 期望 List[int]）
+            kb_id_list = [kb_id] if kb_id is not None else None
             session_search_config = (db_session.search_config if db_session else {}) or {}
 
             # 构建搜索请求，复用 SearchService 逻辑（与搜索页保持一致）
             req = SearchRequest(
                 query=question_content,
-                knowledge_base_id=kb_id,
+                knowledge_base_id=kb_id_list,
                 search_type=search_type or "hybrid",
                 limit=max_sources,
                 similarity_threshold=similarity_threshold if similarity_threshold is not None else session_search_config.get("similarity_threshold"),
@@ -860,8 +1061,13 @@ class QAService:
         """构建来源信息"""
         source_info = []
         for i, citation in enumerate(citations):
+            doc_id = citation.get("document_id")
+            # ✅ 如果 document_id 是整数，转换为字符串；如果是 None，保持为 None
+            if doc_id is not None:
+                doc_id = str(doc_id)
+            
             source_info.append({
-                "document_id": citation.get("document_id", f"doc{i+1}"),
+                "document_id": doc_id,  # ✅ 可以是 None 或字符串
                 "document_title": citation.get("document_title", f"文档{i+1}"),
                 "knowledge_base_name": citation.get("knowledge_base_name", "知识库"),
                 "content_snippet": citation.get("content_snippet", "") or citation.get("content", ""),
@@ -1376,6 +1582,215 @@ class QAService:
             f"用户问题：{question_content}\n\n"
             "请基于知识库内容提供准确、详细的回答，并在回答中引用来源（例如：来源1）。"
         )
+
+    def _build_summary_cache_key(self, session_id: str, question_count: int) -> str:
+        """构建会话历史总结缓存 key"""
+        return f"qa:summary:{session_id}:{question_count}"
+
+    async def _get_cached_conversation_summary(self, cache_key: str) -> Optional[str]:
+        """从缓存中获取历史总结"""
+        try:
+            cached = await cache_manager.get(cache_key)
+            if isinstance(cached, str):
+                logger.debug(f"缓存命中: {cache_key}")
+                return cached
+            if isinstance(cached, dict):
+                logger.debug(f"缓存命中(字典格式): {cache_key}")
+                return cached.get("summary")
+            logger.debug(f"缓存未命中: {cache_key}")
+            return None
+        except Exception as e:
+            logger.warning(f"读取对话总结缓存失败: {cache_key}, err={e}")
+            return None
+
+    def _schedule_conversation_summary_refresh(
+        self,
+        session_id: str,
+        question_count: int,
+        llm_model: str
+    ) -> None:
+        """异步调度会话历史总结刷新"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("无法获取事件循环，跳过对话总结刷新调度")
+            return
+        
+        loop.create_task(
+            self._refresh_conversation_summary(session_id, question_count, llm_model)
+        )
+
+    async def _refresh_conversation_summary(
+        self,
+        session_id: str,
+        question_count: int,
+        llm_model: str
+    ) -> None:
+        """重新生成并缓存会话历史总结"""
+        cache_key = self._build_summary_cache_key(session_id, question_count)
+        try:
+            history_messages = await self._load_conversation_history_from_opensearch(
+                session_id,
+                max_history=min(settings.QA_DEFAULT_MAX_HISTORY, 3)
+            )
+            if not history_messages:
+                await cache_manager.delete(cache_key)
+                return
+            
+            summary = await self._summarize_conversation_history(history_messages, llm_model)
+            if summary:
+                await cache_manager.set(
+                    cache_key,
+                    summary,
+                    expire=settings.CACHE_TTL_SECONDS
+                )
+                logger.info(f"对话总结已缓存 session={session_id}, question_count={question_count}")
+        except Exception as e:
+            logger.warning(f"刷新对话总结缓存失败: session={session_id}, err={e}")
+    
+    async def _load_conversation_history_from_opensearch(
+        self, 
+        session_id: str, 
+        max_history: int = 10
+    ) -> List[Dict[str, str]]:
+        """从OpenSearch加载历史对话记录，返回格式化的消息列表"""
+        try:
+            # ✅ 限制历史对话数量不超过3个，防止上下文过长
+            max_history = min(max_history, 3)
+            
+            # ✅ 从OpenSearch查询历史对话（完整内容存储在OpenSearch中）
+            query = {
+                "query": {
+                    "term": {
+                        "session_id": session_id
+                    }
+                },
+                "sort": [{"created_at": {"order": "asc"}}],  # 按时间正序排列
+                "size": max_history
+            }
+            
+            results = await self.history_service.opensearch_service.search(
+                self.history_service.INDEX_NAME, query
+            )
+            
+            # 构建消息列表
+            messages = []
+            for hit in results.get("hits", {}).get("hits", []):
+                record = hit["_source"]
+                # 添加用户问题
+                if record.get("question_content"):
+                    messages.append({
+                        "role": "user",
+                        "content": record["question_content"]
+                    })
+                # 添加助手回答
+                if record.get("answer_content"):
+                    messages.append({
+                        "role": "assistant",
+                        "content": record["answer_content"]
+                    })
+            
+            logger.info(f"从OpenSearch加载历史对话记录: session={session_id}, 消息数={len(messages)}")
+            return messages
+            
+        except Exception as e:
+            logger.error(f"从OpenSearch加载历史对话记录失败: {e}", exc_info=True)
+            return []
+    
+    async def _summarize_conversation_history(
+        self,
+        history_messages: List[Dict[str, str]],
+        llm_model: str
+    ) -> str:
+        """总结对话历史，用于后续问题的上下文"""
+        try:
+            if not history_messages:
+                return ""
+            
+            # ✅ 优先使用配置的总结模型，如果为 None 或空则使用问答模型
+            summary_model = settings.QA_SUMMARY_MODEL
+            if not summary_model or (isinstance(summary_model, str) and summary_model.strip().lower() in ("none", "null", "")):
+                summary_model = llm_model
+                logger.debug(f"使用问答模型进行总结: {summary_model}")
+            else:
+                logger.debug(f"使用专用总结模型: {summary_model} (问答模型: {llm_model})")
+            
+            # 将历史对话格式化为文本
+            conversation_text = ""
+            for msg in history_messages:
+                role = "用户" if msg["role"] == "user" else "助手"
+                conversation_text += f"{role}: {msg['content']}\n\n"
+            
+            # 构建总结提示词
+            summary_prompt = (
+                "请总结以下对话历史的关键信息，提取重要的事实、结论和上下文，"
+                "以便后续对话能够基于这些信息继续。总结要简洁、准确，保留关键细节。\n\n"
+                f"对话历史：\n{conversation_text}\n\n"
+                "请提供对话总结："
+            )
+            
+            # 调用LLM生成总结（使用总结模型）
+            summary = await self.ollama_service.generate_text(
+                summary_prompt,
+                model=summary_model
+            ) or ""
+            
+            logger.info(
+                f"对话历史总结生成成功，原对话轮数: {len(history_messages) // 2}, "
+                f"总结长度: {len(summary)}, 使用模型: {summary_model}"
+            )
+            return summary.strip()
+            
+        except Exception as e:
+            logger.error(f"总结对话历史失败: {e}", exc_info=True)
+            # 失败时返回空字符串，后续问题将不使用历史总结
+            return ""
+    
+    async def _has_successful_qa_history(self, session_id: str) -> bool:
+        """检查会话历史记录中是否有成功的问答对（answer_content非空且有效）"""
+        try:
+            # 从OpenSearch查询最近的历史记录（只需要检查是否有成功的记录）
+            query = {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"term": {"session_id": session_id}}
+                        ]
+                    }
+                },
+                "size": 10,  # 检查最近10条记录
+                "sort": [{"created_at": {"order": "desc"}}]
+            }
+            
+            results = await self.history_service.opensearch_service.search(
+                self.history_service.INDEX_NAME, query
+            )
+            
+            hits = results.get("hits", {}).get("hits", [])
+            if not hits:
+                return False
+            
+            # 检查是否有非空的answer_content（排除错误消息）
+            for hit in hits:
+                record = hit["_source"]
+                answer_content = record.get("answer_content", "")
+                # 如果answer_content非空且不是错误消息，认为成功
+                # 排除常见的失败消息：空字符串、仅包含"抱歉"的错误消息
+                if (answer_content and 
+                    answer_content.strip() and 
+                    not answer_content.startswith("抱歉") and
+                    not answer_content.startswith("Sorry") and
+                    len(answer_content.strip()) > 10):  # 至少10个字符才认为是有效回答
+                    logger.debug(f"找到成功的问答记录: question_id={record.get('question_id')}, answer_length={len(answer_content)}")
+                    return True
+            
+            logger.info(f"历史记录中无成功的问答对: session={session_id}, total_records={len(hits)}")
+            return False
+        except Exception as e:
+            logger.warning(f"检查历史问答记录失败: session={session_id}, err={e}")
+            # ✅ 出错时：返回False，当作首次问题处理（查询知识库）
+            # 这样可以确保即使OpenSearch有问题，用户仍能使用知识库查询功能
+            return False
     
     def _session_to_dict(self, session: QASession) -> dict:
         """将QASession对象转换为字典"""

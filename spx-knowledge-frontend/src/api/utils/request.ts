@@ -16,7 +16,7 @@ service.interceptors.request.use(
     appStore.setLoading(true)
     
     // 添加token（如果有）
-    const token = localStorage.getItem('token')
+    const token = localStorage.getItem('access_token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -45,7 +45,7 @@ service.interceptors.response.use(
     
     // 检查响应格式：如果有 code 字段，需要验证
     if (res && typeof res === 'object' && 'code' in res) {
-      if (res.code !== 200 && res.code !== 0) {
+      if (res.code !== 200 && res.code !== 0 && res.code !== 201) {
         if (res.code === 401) {
           const authError = new Error(res.message || 'Not authenticated')
           Object.assign(authError, { isAuthError: true, code: 401 })
@@ -58,9 +58,44 @@ service.interceptors.response.use(
     // 如果没有 code 字段，直接返回响应（兼容直接返回数据的格式）
     return res
   },
-  (error) => {
+  async (error) => {
     const appStore = useAppStore()
     appStore.setLoading(false)
+    
+    // 处理401错误：尝试刷新Token
+    if (error.response?.status === 401) {
+      const refreshTokenValue = localStorage.getItem('refresh_token')
+      if (refreshTokenValue && !error.config._retry) {
+        error.config._retry = true
+        
+        try {
+          // 尝试刷新Token
+          const { useUserStore } = await import('@/stores/modules/user')
+          const userStore = useUserStore()
+          const refreshed = await userStore.tryRefreshToken()
+          
+          if (refreshed) {
+            // 刷新成功，更新请求头并重试
+            const newToken = localStorage.getItem('access_token')
+            if (newToken) {
+              error.config.headers.Authorization = `Bearer ${newToken}`
+              return service.request(error.config)
+            }
+          }
+        } catch (refreshError) {
+          // 刷新失败，清除认证信息并跳转登录
+          const { useUserStore } = await import('@/stores/modules/user')
+          const userStore = useUserStore()
+          userStore.clearAuth()
+          
+          // 避免在登录页面重复跳转
+          if (window.location.pathname !== '/login') {
+            const { default: router } = await import('@/router')
+            router.push('/login')
+          }
+        }
+      }
+    }
     
     let message = '请求失败'
     if (error.response) {

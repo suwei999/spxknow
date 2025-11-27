@@ -46,9 +46,11 @@ class AnswerType(str, Enum):
     """答案类型枚举"""
     KNOWLEDGE_BASE = "knowledge_base"
     LLM_ENHANCED = "llm_enhanced"
+    LLM_ONLY = "llm_only"
     GENERAL = "general"
     NO_INFO = "no_info"
     ERROR = "error"
+    CONVERSATION_CONTEXT = "conversation_context"  # 基于对话上下文的回答（不查询知识库）
 
 # 1. 知识库相关Schema
 
@@ -106,6 +108,7 @@ class QASessionListResponse(BaseModel):
 
 class QASessionConfigUpdate(BaseModel):
     """更新会话配置请求"""
+    knowledge_base_id: Optional[int] = None
     search_type: Optional[SearchType] = None
     max_sources: Optional[int] = Field(None, ge=1, le=50)
     similarity_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
@@ -124,7 +127,7 @@ class QAMultimodalQuestionRequest(BaseModel):
 
 class SourceInfo(BaseModel):
     """来源信息"""
-    document_id: str
+    document_id: Optional[str] = None  # ✅ 允许 None（用于 LLM 生成的回答，无文档来源）
     document_title: str
     knowledge_base_name: str
     content_snippet: str

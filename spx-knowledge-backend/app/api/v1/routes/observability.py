@@ -247,6 +247,20 @@ async def update_diagnosis(
     return {"code": 0, "message": "ok", "data": DiagnosisRecordResponse.model_validate(updated).model_dump()}
 
 
+@router.delete("/diagnosis/{record_id}", response_model=dict)
+async def delete_diagnosis(
+    record_id: int,
+    db: Session = Depends(get_db),
+):
+    """删除诊断记录（软删除）"""
+    service = DiagnosisRecordService(db)
+    deleted = await service.delete_record(record_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="诊断记录不存在")
+    logger.info("删除诊断记录: %s", record_id)
+    return {"code": 0, "message": "删除成功"}
+
+
 @router.post("/clusters/{cluster_id}/sync", response_model=dict)
 async def sync_cluster_resources(
     cluster_id: int,

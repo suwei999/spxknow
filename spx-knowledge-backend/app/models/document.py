@@ -18,6 +18,7 @@ class Document(BaseModel):
     converted_pdf_url = Column(String(500), comment="转换后的PDF文件路径（MinIO对象键），用于预览")
     knowledge_base_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False, comment="知识库ID")
     category_id = Column(Integer, ForeignKey("knowledge_base_categories.id"), comment="分类ID")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, comment="用户ID（数据隔离）")
     tags = Column(JSON, comment="标签列表JSON")
     # SQLAlchemy Declarative 保留名冲突，使用列名 metadata、属性名 meta
     meta = Column('metadata', JSON, comment="元数据JSON")

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, Set
 from urllib.parse import urljoin, urlparse
 
 import httpx  # type: ignore
-from httpx import Timeout, HTTPStatusError
+from httpx import Timeout, HTTPStatusError, ConnectError, ConnectTimeout
 
 from app.core.logging import logger
 from app.core.cache import cache_manager
@@ -80,7 +80,23 @@ class KubernetesResourceSyncService:
         force_full_sync: bool = False,
     ) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
+        cluster_unreachable = False  # 标记集群是否不可达
+        
         for resource_type in resource_types:
+            # 如果集群已标记为不可达，跳过所有后续资源类型
+            if cluster_unreachable:
+                logger.warning(
+                    f"跳过资源类型 {resource_type} 的同步: 集群 {self.cluster.name} 不可达"
+                )
+                results[resource_type] = {
+                    "status": "skipped",
+                    "count": 0,
+                    "resource_version": None,
+                    "events": [],
+                    "message": f"集群 {self.cluster.name} 不可达，已跳过",
+                }
+                continue
+                
             try:
                 target_namespaces = await self._resolve_namespaces(namespace, resource_type)
                 aggregated_events: List[Dict[str, Any]] = []
@@ -106,6 +122,25 @@ class KubernetesResourceSyncService:
                     "events": aggregated_events,
                     "namespaces": target_namespaces,
                 }
+            except ConnectionError as conn_exc:
+                # 连接错误：集群不可达，标记并跳过后续所有资源类型
+                cluster_unreachable = True
+                error_msg = str(conn_exc)
+                logger.error(
+                    f"Resource sync failed (集群不可达): 集群={self.cluster.name}, "
+                    f"资源类型={resource_type}, 命名空间={namespace}, 错误信息={error_msg}"
+                )
+                results[resource_type] = {
+                    "status": "error",
+                    "count": 0,
+                    "resource_version": None,
+                    "events": [],
+                    "message": error_msg,
+                }
+                # 跳过后续所有资源类型
+                logger.warning(
+                    f"集群 {self.cluster.name} 不可达，跳过剩余 {len(resource_types) - resource_types.index(resource_type) - 1} 个资源类型的同步"
+                )
             except Exception as exc:  # pylint: disable=broad-except
                 # 获取详细的错误信息
                 error_type = type(exc).__name__
@@ -288,13 +323,16 @@ class KubernetesResourceSyncService:
                 )
             elif last_resource_version and state and state.updated_at:
                 time_since_last_sync = datetime.utcnow() - state.updated_at.replace(tzinfo=None) if state.updated_at else timedelta(days=1)
-                # 如果距离上次同步超过 1 小时，强制全量同步以确保一致性
-                # 如果距离上次同步超过 5 分钟，也强制全量同步（K8s 默认只保留 5 分钟的 watch 事件）
-                use_incremental = time_since_last_sync < timedelta(minutes=5)
+                # 获取配置的同步间隔
+                sync_interval = timedelta(seconds=settings.OBSERVABILITY_SYNC_INTERVAL_SECONDS)
+                # 如果距离上次同步超过同步间隔的 1/3，禁用增量同步（避免频繁 Watch 失败）
+                # 同时考虑 K8s 默认只保留 5 分钟的 watch 事件，取两者较小值
+                max_incremental_window = min(timedelta(minutes=5), sync_interval / 3)
+                use_incremental = time_since_last_sync < max_incremental_window
                 
                 if not use_incremental:
                     logger.debug(
-                        f"距离上次同步超过 5 分钟，跳过增量同步: 集群={self.cluster.name}, "
+                        f"距离上次同步超过增量同步窗口（{max_incremental_window}），跳过增量同步: 集群={self.cluster.name}, "
                         f"资源类型={resource_type}, 命名空间={namespace}, 距离上次同步={time_since_last_sync}"
                     )
 
@@ -325,13 +363,18 @@ class KubernetesResourceSyncService:
                             watch_success = True
                             break
                     except Exception as exc:
-                        logger.warning(
-                            f"增量同步 watch 失败 (尝试 {attempt + 1}/{attempts}): 集群={self.cluster.name}, "
-                            f"资源类型={resource_type}, 命名空间={namespace}, 错误={exc}"
-                        )
+                        # 只在最后一次尝试失败时记录警告，中间尝试只记录 debug
                         if attempt == attempts - 1:
-                            # 最后一次尝试失败，回退到全量同步
+                            logger.warning(
+                                f"增量同步 watch 失败（已重试 {attempts} 次）: 集群={self.cluster.name}, "
+                                f"资源类型={resource_type}, 命名空间={namespace}, 错误={exc}"
+                            )
                             watch_success = False
+                        else:
+                            logger.debug(
+                                f"增量同步 watch 失败 (尝试 {attempt + 1}/{attempts}): 集群={self.cluster.name}, "
+                                f"资源类型={resource_type}, 命名空间={namespace}, 错误={exc}"
+                            )
                 
                 if watch_success:
                     incremental_success = True
@@ -554,7 +597,31 @@ class KubernetesResourceSyncService:
                 timeout=DEFAULT_TIMEOUT,
                 verify=verify_ssl
             ) as client:
-                response = await client.get(url, headers=headers, params=params)
+                try:
+                    response = await client.get(url, headers=headers, params=params)
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException) as conn_err:
+                    # 连接错误：集群不可达或网络问题
+                    # 注意：httpx 可能抛出 httpcore.ConnectError，但会被 httpx.ConnectError 捕获
+                    error_msg = f"无法连接到 {self.cluster.name} 集群 ({self.cluster.api_server}) - {str(conn_err)}"
+                    logger.error(
+                        f"Resource sync connection failed: 集群={self.cluster.name}, "
+                        f"资源类型={resource_type}, 命名空间={namespace}, "
+                        f"错误类型={type(conn_err).__name__}, 错误信息={error_msg}"
+                    )
+                    # 转换为 ConnectionError，让上层调用者可以统一处理
+                    raise ConnectionError(error_msg) from conn_err
+                except httpx.HTTPStatusError as http_err:
+                    # HTTP 状态错误（如 404, 500 等）
+                    if http_err.response.status_code == 403:
+                        # 403 错误会在下面单独处理
+                        raise
+                    error_msg = f"HTTP 错误 {http_err.response.status_code}: {str(http_err)}"
+                    logger.error(
+                        f"Resource sync HTTP error: 集群={self.cluster.name}, "
+                        f"资源类型={resource_type}, 命名空间={namespace}, "
+                        f"状态码={http_err.response.status_code}, 错误信息={error_msg}"
+                    )
+                    raise
                 
                 # 对于 403 权限错误，提供详细的错误信息和解决建议
                 if response.status_code == 403:
@@ -734,7 +801,8 @@ class KubernetesResourceSyncService:
                 elif "no_proxy" in os.environ:
                     del os.environ["no_proxy"]
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("Watch failed for %s: %s", resource_type, exc)
+            # Watch 失败是常见情况（网络问题、K8s API 限制等），使用 debug 级别减少日志噪音
+            logger.debug("Watch failed for %s: %s", resource_type, exc)
             return [], None
         return events, latest_rv
 

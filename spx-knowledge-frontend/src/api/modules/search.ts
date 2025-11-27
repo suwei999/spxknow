@@ -100,6 +100,14 @@ export const deleteSearchHistory = (historyId: number) => {
   })
 }
 
+// 清空搜索历史
+export const clearSearchHistory = () => {
+  return request({
+    url: '/search/history',
+    method: 'delete'
+  })
+}
+
 // 搜索分面
 export const getSearchFacets = (query: string, knowledge_base_id?: number) => {
   return request({

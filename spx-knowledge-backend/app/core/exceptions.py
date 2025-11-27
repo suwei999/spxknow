@@ -12,8 +12,13 @@ logger = logging.getLogger(__name__)
 
 class ErrorCode:
     """错误代码定义 - 根据设计文档实现"""
-    # 文件验证错误
+    # 通用错误
     VALIDATION_ERROR = "VALIDATION_ERROR"
+    NOT_FOUND = "NOT_FOUND"
+    UNAUTHORIZED = "UNAUTHORIZED"
+    FORBIDDEN = "FORBIDDEN"
+    
+    # 文件验证错误
     FILE_NOT_FOUND = "FILE_NOT_FOUND"
     DOCUMENT_ALREADY_EXISTS = "DOCUMENT_ALREADY_EXISTS"
     

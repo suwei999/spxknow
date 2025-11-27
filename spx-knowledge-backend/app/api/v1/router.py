@@ -2,8 +2,11 @@
 API Router Configuration
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from app.api.v1.routes import (
+    # 认证模块
+    auth,
+    users,
     # 放在前面，避免与 /knowledge-bases/{kb_id} 路由冲突
     knowledge_base_categories,
     knowledge_base_tags,
@@ -21,11 +24,27 @@ from app.api.v1.routes import (
     document_status,
     websocket,
     observability,
+    statistics,
+    exports,
 )
+from app.dependencies.auth import get_current_user
 
+# 创建API路由器
+# 注意：使用中间件来处理认证，不在路由级别设置全局依赖
+# 这样可以更灵活地控制哪些路径需要认证
 api_router = APIRouter()
 
 # 注册各个模块的路由
+api_router.include_router(
+    auth.router,
+    prefix="/auth",
+    tags=["用户认证"]
+)
+api_router.include_router(
+    users.router,
+    prefix="/users",
+    tags=["用户管理"]
+)
 api_router.include_router(
     documents.router,
     prefix="/documents",
@@ -114,4 +133,16 @@ api_router.include_router(
     observability.router,
     prefix="/observability",
     tags=["集群观测"]
+)
+
+api_router.include_router(
+    statistics.router,
+    prefix="/statistics",
+    tags=["数据统计"]
+)
+
+api_router.include_router(
+    exports.router,
+    prefix="/exports",
+    tags=["导出功能"]
 )

@@ -17,10 +17,10 @@ class QAQuestion(BaseModel):
     # 基础信息
     question_id = Column(String(100), unique=True, nullable=False, index=True, comment="问题ID")
     session_id = Column(String(100), ForeignKey("qa_sessions.session_id"), nullable=False, index=True, comment="会话ID")
-    question_content = Column(Text, nullable=False, comment="问题内容")
+    question_content = Column(Text, nullable=True, comment="问题内容摘要（完整内容存储在OpenSearch）")
     
     # 答案信息
-    answer_content = Column(Text, comment="答案内容")
+    answer_content = Column(Text, nullable=True, comment="答案内容摘要（完整内容存储在OpenSearch）")
     source_info = Column(JSON, comment="来源信息JSON")
     processing_info = Column(JSON, comment="处理信息JSON")
     

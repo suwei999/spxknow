@@ -98,7 +98,7 @@ class SearchService:
     async def mixed_search(
         self,
         query_text: str,
-        knowledge_base_id: Optional[int] = None,
+        knowledge_base_id: Optional[List[int]] = None,
         top_k: Optional[int] = None,
         alpha: float = None,
         use_keywords: bool = True,
@@ -161,15 +161,25 @@ class SearchService:
                     {"match": {"content": {"query": query_text}}}
                 ]
                 if knowledge_base_id:
-                    must.append({"term": {"knowledge_base_id": knowledge_base_id}})
+                    if isinstance(knowledge_base_id, list) and len(knowledge_base_id) > 0:
+                        if len(knowledge_base_id) == 1:
+                            must.append({"term": {"knowledge_base_id": knowledge_base_id[0]}})
+                        else:
+                            must.append({"terms": {"knowledge_base_id": knowledge_base_id}})
+                    elif isinstance(knowledge_base_id, int):
+                        must.append({"term": {"knowledge_base_id": knowledge_base_id}})
                 if category_id is not None:
                     must.append({"term": {"category_id": category_id}})
+                
+                # 添加高亮配置
+                highlight_config = self.os._build_highlight_config(query_text, fields=["content"])
                 
                 resp = self.os.client.search(
                     index=self.os.document_index,
                     body={
                         "query": {"bool": {"must": must}},
                         "size": recall_limit,
+                        **highlight_config
                     },
                 )
                 keyword_hits = [
@@ -182,6 +192,7 @@ class SearchService:
                         "metadata": h["_source"].get("metadata") or {},
                         "bm25_score": h.get("_score", 0.0),
                         "similarity_score": h.get("_score", 0.0),  # 统一使用similarity_score
+                        "highlighted_content": self.os._extract_highlight(h, "content"),  # 添加高亮内容
                     }
                     for h in resp.get("hits", {}).get("hits", [])
                 ]
@@ -207,6 +218,7 @@ class SearchService:
                 "knn_score": h.get("similarity_score", 0.0),
                 "bm25_score": 0.0,
                 "score": 0.0,  # 初始分数
+                "highlighted_content": h.get("highlighted_content"),  # 保留高亮内容
             }
         
         # 添加关键词搜索结果并合并
@@ -226,6 +238,7 @@ class SearchService:
                     "knn_score": 0.0,
                     "bm25_score": h.get("bm25_score", 0.0),
                     "score": 0.0,
+                    "highlighted_content": h.get("highlighted_content"),  # 保留高亮内容
                 }
             else:
                 item["bm25_score"] = h.get("bm25_score", 0.0)
@@ -234,6 +247,9 @@ class SearchService:
                     item["chunk_type"] = h.get("chunk_type")
                 if not item.get("metadata") and h.get("metadata"):
                     item["metadata"] = h.get("metadata") or {}
+                # 优先使用关键词搜索的高亮内容（通常更准确）
+                if h.get("highlighted_content"):
+                    item["highlighted_content"] = h.get("highlighted_content")
         
         # 若未指定，使用配置的 α
         if alpha is None:
@@ -349,6 +365,8 @@ class SearchService:
                     rerank_score=result.get("rerank_score"),
                     has_image_ocr=result.get("has_image_ocr", False),
                     image_ocr_count=result.get("image_ocr_count", 0),
+                    # 搜索结果高亮
+                    highlighted_content=result.get("highlighted_content"),
                     metadata={
                         "knowledge_base_id": result.get("knowledge_base_id"),
                         "chunk_type": result.get("chunk_type"),
@@ -433,7 +451,14 @@ class SearchService:
                 {"match": {"content": {"query": search_request.query}}}
             ]
             if search_request.knowledge_base_id:
-                must.append({"term": {"knowledge_base_id": search_request.knowledge_base_id}})
+                kb_ids = search_request.knowledge_base_id
+                if isinstance(kb_ids, list) and len(kb_ids) > 0:
+                    if len(kb_ids) == 1:
+                        must.append({"term": {"knowledge_base_id": kb_ids[0]}})
+                    else:
+                        must.append({"terms": {"knowledge_base_id": kb_ids}})
+                elif isinstance(kb_ids, int):
+                    must.append({"term": {"knowledge_base_id": kb_ids}})
             if getattr(search_request, "category_id", None) is not None:
                 must.append({"term": {"category_id": search_request.category_id}})
             

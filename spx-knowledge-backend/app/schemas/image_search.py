@@ -12,7 +12,7 @@ class ImageSearchRequest(BaseModel):
     query_text: str = Field(..., min_length=1, description="搜索查询文本")
     similarity_threshold: float = Field(0.7, ge=0.0, le=1.0, description="相似度阈值")
     limit: int = Field(10, ge=1, le=100, description="返回结果数量限制")
-    knowledge_base_id: Optional[int] = Field(None, description="知识库ID")
+    knowledge_base_id: Optional[List[int]] = Field(None, description="知识库ID（支持多个）")
     search_type: str = Field("hybrid", description="搜索类型：vector, keyword, hybrid")
 
 class ImageSearchResponse(BaseModel):

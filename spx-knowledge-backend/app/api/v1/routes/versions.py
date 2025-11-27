@@ -9,6 +9,7 @@ from app.services.version_service import VersionService
 from app.dependencies.database import get_db
 from sqlalchemy.orm import Session
 from app.tasks.document_tasks import reprocess_document_task
+from app.config.settings import settings
 
 router = APIRouter()
 
@@ -67,9 +68,12 @@ async def rechunk_document(
     """触发文档重处理（仅变化块将由任务层处理）。
     这里复用现有 Celery 任务，不新增 Service 方法，保持项目风格。
     """
-    # 异步触发；实际重建逻辑在任务中依据当前实现执行
+    # 异步触发；实际重建逻辑在任务中依据当前实现执行（设置高优先级）
     try:
-        reprocess_document_task.delay(document_id)
+        reprocess_document_task.apply_async(
+            args=(document_id,),
+            priority=settings.CELERY_TASK_PRIORITY_DOCUMENT
+        )
         return {"code": 0, "message": "已接受重处理请求", "data": {"document_id": document_id}}
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

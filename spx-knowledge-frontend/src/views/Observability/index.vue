@@ -145,7 +145,13 @@
               </el-table-column>
             </el-table>
 
-            <div class="pagination-container">
+            <el-empty
+              v-if="!pageLoading && clusters.length === 0"
+              description="暂无集群数据，请点击上方「新增集群」按钮添加集群"
+              :image-size="120"
+            />
+
+            <div class="pagination-container" v-if="clusterPagination.total > 0">
               <el-pagination
                 layout="prev, pager, next"
                 :page-size="clusterPagination.size"
@@ -576,24 +582,24 @@
         <el-tab-pane label="诊断记录" name="diagnosis">
           <div class="tab-section">
             <el-table :data="diagnosisList" v-loading="diagnosisLoading" size="large">
-              <el-table-column prop="resource_name" label="资源" min-width="200">
+              <el-table-column prop="resource_name" label="资源" min-width="200" align="left">
                 <template #default="{ row }">
                   {{ row.namespace || 'default' }} / {{ row.resource_name }}
                 </template>
               </el-table-column>
-              <el-table-column prop="resource_type" label="资源类型" width="120">
+              <el-table-column prop="resource_type" label="资源类型" width="120" align="center">
                 <template #default="{ row }">
                   <el-tag size="small" type="info">{{ row.resource_type || 'pods' }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column prop="status" label="状态" width="120">
+              <el-table-column prop="status" label="状态" width="120" align="center">
                 <template #default="{ row }">
                   <el-tag :type="diagnosisStatusTag(row.status)">
                     {{ formatDiagnoseStatus(row.status) }}
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column prop="confidence" label="置信度" width="120">
+              <el-table-column prop="confidence" label="置信度" width="120" align="center">
                 <template #default="{ row }">
                   <el-tag
                     v-if="row.confidence != null"
@@ -605,23 +611,33 @@
                   <span v-else>-</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="summary" label="摘要" min-width="260" show-overflow-tooltip />
-              <el-table-column label="知识来源" width="140">
+              <el-table-column prop="summary" label="摘要" min-width="260" show-overflow-tooltip align="left" />
+              <el-table-column label="知识来源" width="140" align="center">
                 <template #default="{ row }">
-                  <el-tag v-if="row.knowledge_source" type="info">{{ sourceText(row.knowledge_source) }}</el-tag>
+                  <el-tag v-if="row.knowledge_source" type="info" size="small">{{ sourceText(row.knowledge_source) }}</el-tag>
                   <span v-else class="text-muted">-</span>
                 </template>
               </el-table-column>
-              <el-table-column label="时间" min-width="200">
+              <el-table-column label="时间" min-width="200" align="left">
                 <template #default="{ row }">
-                  <div>{{ formatDateTime(row.started_at) }}</div>
-                  <div class="sub-text">{{ formatDateTime(row.completed_at) }}</div>
+                  <div class="has-sub-text">
+                    <div>{{ formatDateTime(row.started_at) }}</div>
+                    <div class="sub-text">{{ formatDateTime(row.completed_at) }}</div>
+                  </div>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="180" fixed="right">
+              <el-table-column label="操作" width="220" fixed="right" align="center">
                 <template #default="{ row }">
                   <el-button size="small" @click="openDiagnosisDetail(row)">
                     查看详情
+                  </el-button>
+                  <el-button
+                    size="small"
+                    type="danger"
+                    plain
+                    @click="handleDeleteDiagnosis(row)"
+                  >
+                    删除
                   </el-button>
                 </template>
               </el-table-column>
@@ -836,11 +852,15 @@
     <!-- 诊断详情 -->
     <el-drawer
       v-model="diagnosisDrawer.visible"
-      :title="`诊断详情 - ${diagnosisDrawer.record?.resource_name || ''}`"
       size="50%"
       destroy-on-close
       append-to-body
     >
+      <template #title>
+        <div class="drawer-header">
+          <span>{{ `诊断详情 - ${diagnosisDrawer.record?.resource_name || ''}` }}</span>
+        </div>
+      </template>
       <div v-if="diagnosisDrawer.record" class="diagnosis-detail">
         <div class="diagnosis-hero">
           <div class="hero-main">
@@ -1030,7 +1050,13 @@
             <!-- Config 展示 -->
             <template v-else-if="key.toLowerCase() === 'config'">
               <div v-if="value && typeof value === 'object' && Object.keys(value).length > 0" class="config-container">
-                <el-descriptions :column="1" size="default" border class="config-descriptions">
+                <el-descriptions 
+                  :column="1" 
+                  size="default" 
+                  border 
+                  class="config-descriptions"
+                  ref="configDescriptionsRef"
+                >
                   <el-descriptions-item
                     v-for="(configValue, configKey) in value"
                     :key="configKey"
@@ -1136,12 +1162,12 @@
                   type="primary"
                   size="large"
                 >
-                  <el-card shadow="hover" class="timeline-card">
+                  <div class="timeline-card">
                     <div class="timeline-time">
                       <el-icon><Clock /></el-icon>
                       <span>{{ formatDateTime(getTimeline(diagnosisDrawer.record).problem_start) }}</span>
                     </div>
-                  </el-card>
+                  </div>
                 </el-timeline-item>
                 
                 <el-timeline-item
@@ -1152,12 +1178,12 @@
                   type="warning"
                   size="large"
                 >
-                  <el-card shadow="hover" class="timeline-card timeline-event-card">
+                  <div class="timeline-card timeline-event-card">
                     <div class="timeline-event">
                       <el-icon class="event-icon"><Bell /></el-icon>
                       <div class="event-text">{{ event }}</div>
                     </div>
-                  </el-card>
+                  </div>
                 </el-timeline-item>
                 
                 <el-timeline-item
@@ -1166,12 +1192,12 @@
                   type="danger"
                   size="large"
                 >
-                  <el-card shadow="hover" class="timeline-card">
+                  <div class="timeline-card">
                     <div class="timeline-time">
                       <el-icon><WarningFilled /></el-icon>
                       <span>{{ formatDateTime(getTimeline(diagnosisDrawer.record).problem_escalate) }}</span>
                     </div>
-                  </el-card>
+                  </div>
                 </el-timeline-item>
               </el-timeline>
             </div>
@@ -1183,7 +1209,7 @@
             <div class="impact-container">
               <div class="impact-grid">
                 <!-- 受影响的 Pod -->
-                <div v-if="getImpactScope(diagnosisDrawer.record).affected_pods?.length" class="impact-item">
+                <div v-if="getImpactScope(diagnosisDrawer.record).affected_pods?.length" class="impact-item impact-item-pod">
                   <div class="impact-label">
                     <el-icon><Box /></el-icon>
                     <span>受影响的 Pod</span>
@@ -1203,17 +1229,17 @@
                 </div>
                 
                 <!-- 受影响的服务 -->
-                <div v-if="getImpactScope(diagnosisDrawer.record).affected_services?.length" class="impact-item">
+                <div v-if="getImpactScope(diagnosisDrawer.record).affected_services?.length" class="impact-item impact-item-service">
                   <div class="impact-label">
                     <el-icon><Connection /></el-icon>
                     <span>受影响的服务</span>
-                    <el-tag size="small" type="info" class="impact-count">{{ getImpactScope(diagnosisDrawer.record).affected_services.length }}</el-tag>
+                    <el-tag size="small" type="warning" class="impact-count">{{ getImpactScope(diagnosisDrawer.record).affected_services.length }}</el-tag>
                   </div>
                   <div class="impact-tags">
                     <el-tag
                       v-for="svc in getImpactScope(diagnosisDrawer.record).affected_services"
                       :key="svc"
-                      type="success"
+                      type="warning"
                       effect="plain"
                       class="impact-tag"
                     >
@@ -1223,17 +1249,17 @@
                 </div>
                 
                 <!-- 受影响的节点 -->
-                <div v-if="getImpactScope(diagnosisDrawer.record).affected_nodes?.length" class="impact-item">
+                <div v-if="getImpactScope(diagnosisDrawer.record).affected_nodes?.length" class="impact-item impact-item-node">
                   <div class="impact-label">
                     <el-icon><Monitor /></el-icon>
                     <span>受影响的节点</span>
-                    <el-tag size="small" type="info" class="impact-count">{{ getImpactScope(diagnosisDrawer.record).affected_nodes.length }}</el-tag>
+                    <el-tag size="small" type="danger" class="impact-count">{{ getImpactScope(diagnosisDrawer.record).affected_nodes.length }}</el-tag>
                   </div>
                   <div class="impact-tags">
                     <el-tag
                       v-for="node in getImpactScope(diagnosisDrawer.record).affected_nodes"
                       :key="node"
-                      type="warning"
+                      type="danger"
                       effect="plain"
                       class="impact-tag"
                     >
@@ -1244,7 +1270,14 @@
               </div>
               
               <!-- 业务影响 -->
-              <div class="business-impact">
+              <div 
+                class="business-impact"
+                :class="{
+                  'business-impact-high': getImpactScope(diagnosisDrawer.record).business_impact === 'high',
+                  'business-impact-medium': getImpactScope(diagnosisDrawer.record).business_impact === 'medium',
+                  'business-impact-low': getImpactScope(diagnosisDrawer.record).business_impact === 'low'
+                }"
+              >
                 <div class="business-impact-label">
                   <el-icon><TrendCharts /></el-icon>
                   <span>业务影响</span>

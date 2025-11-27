@@ -7,6 +7,17 @@
     min-height: 720px;
   }
 
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    font-size: 16px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.92);
+    gap: 12px;
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -42,6 +53,87 @@
 
   .tab-section {
     margin-top: 12px;
+
+    // 诊断记录等表格 hover 保持暗色背景
+    :deep(.el-table) {
+      background: transparent;
+
+      &::before,
+      .el-table__inner-wrapper::before {
+        background-color: rgba(255, 255, 255, 0.15);
+      }
+
+      .el-table__header-wrapper {
+        .el-table__header {
+          th {
+            background: rgba(10, 16, 30, 0.85) !important;
+            color: rgba(255, 255, 255, 0.82) !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+            letter-spacing: 0.3px;
+            padding: 12px 0 !important;
+            vertical-align: middle;
+          }
+        }
+      }
+
+      .el-table__row {
+        background: rgba(255, 255, 255, 0.02);
+        height: auto;
+        min-height: 56px;
+
+        &:hover {
+          background: rgba(64, 158, 255, 0.12) !important;
+
+          td {
+            background: transparent !important;
+            color: rgba(255, 255, 255, 0.95) !important;
+          }
+        }
+      }
+
+      .el-table__cell {
+        background: transparent !important;
+        color: rgba(255, 255, 255, 0.85);
+        padding: 12px 0 !important;
+        vertical-align: middle !important;
+
+        .cell {
+          color: inherit;
+          display: flex;
+          align-items: center;
+          justify-content: inherit;
+          min-height: 32px;
+          padding: 0 12px;
+        }
+      }
+
+      // 统一标签对齐
+      .el-table__cell .el-tag {
+        vertical-align: middle;
+        margin: 0;
+        display: inline-flex;
+        align-items: center;
+      }
+
+      // 统一按钮对齐
+      .el-table__cell .el-button {
+        vertical-align: middle;
+        margin: 0 4px 0 0;
+        display: inline-flex;
+        align-items: center;
+      }
+
+      // 时间列特殊处理（包含sub-text的单元格）
+      .el-table__cell {
+        .has-sub-text {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          justify-content: center;
+          gap: 4px;
+        }
+      }
+    }
   }
 
   .filter-form {
@@ -276,85 +368,164 @@
     }
   }
 
-  // 时间线样式（drawer 内使用暗色主题）
-  .diagnosis-detail .timeline-container {
-    padding: 16px 0;
+// 时间线样式 - Drawer 内
+.diagnosis-detail .timeline-container {
+  padding: 6px 0;
+  
+  :deep(.el-timeline) {
+    padding-left: 0;
     
-    :deep(.el-timeline) {
-      padding-left: 0;
+    .el-timeline-item {
+      padding-bottom: 10px !important;
+      margin-bottom: 0 !important;
       
-      .el-timeline-item__timestamp {
-        color: rgba(255, 255, 255, 0.6) !important;
-        font-size: 13px;
-        font-weight: 600;
-        margin-bottom: 8px;
+      &:last-child {
+        padding-bottom: 0 !important;
       }
-      
-      .el-timeline-item__content {
-        color: rgba(255, 255, 255, 0.85) !important;
+    }
+    
+    .el-timeline-item__node {
+      width: 10px !important;
+      height: 10px !important;
+      left: -5px !important;
+    }
+    
+    .el-timeline-item__timestamp {
+      color: rgba(255, 255, 255, 0.6) !important;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    
+    .el-timeline-item__content {
+      color: rgba(255, 255, 255, 0.85) !important;
+      margin-top: 0;
+    }
+  }
+}
+
+// 时间线样式 - 全局
+.timeline-container:not(.diagnosis-detail .timeline-container) {
+  padding: 10px 0;
+  
+  :deep(.el-timeline) {
+    padding-left: 0;
+    
+    .el-timeline-item {
+      padding-bottom: 12px;
+      &:last-child {
+        padding-bottom: 0;
       }
     }
   }
   
-  // 全局时间线样式（drawer 外）
-  .timeline-container:not(.diagnosis-detail .timeline-container) {
-    padding: 16px 0;
-    
-    :deep(.el-timeline) {
-      padding-left: 0;
-    }
-    
-    :deep(.el-timeline-item__timestamp) {
-      color: #606266;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
+  :deep(.el-timeline-item__timestamp) {
+    color: #606266;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 2px;
   }
+}
 
   .diagnosis-detail .timeline-card {
     border: 1px solid rgba(255, 255, 255, 0.1) !important;
     background-color: rgba(0, 0, 0, 0.2) !important;
-    transition: all 0.3s ease;
+  transition: all 0.2s ease;
+  margin-bottom: 0 !important;
+  padding: 6px 10px !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.9) !important;
+  
+  &:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transform: translateX(2px);
+  }
     
-    &:hover {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-      transform: translateX(4px);
+    .timeline-time {
+    font-size: 13px !important;
+    line-height: 1.4 !important;
+      
+      .el-icon {
+      font-size: 14px !important;
+      }
     }
     
-    :deep(.el-card__body) {
-      padding: 12px 16px;
-      color: rgba(255, 255, 255, 0.85) !important;
+    .timeline-event {
+    font-size: 13px !important;
+    line-height: 1.4 !important;
+    display: flex;
+    gap: 8px;
+      
+      .event-icon {
+      font-size: 14px !important;
+      flex-shrink: 0;
+      margin-top: 2px;
+      }
+      
+      .event-text {
+      font-size: 13px !important;
+      line-height: 1.4 !important;
+      flex: 1;
+      }
     }
   }
   
   // 全局时间线卡片样式（drawer 外）
-  .timeline-card:not(.diagnosis-detail .timeline-card) {
-    border: 1px solid #e4e7ed;
-    transition: all 0.3s ease;
+.timeline-card:not(.diagnosis-detail .timeline-card) {
+  border: 1px solid #e4e7ed;
+  transition: all 0.2s ease;
+  margin-bottom: 0;
+  padding: 6px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #303133;
+  
+  &:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transform: translateX(2px);
+  }
+
+  .timeline-time,
+  .timeline-event {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  
+  .timeline-event {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
     
-    &:hover {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-      transform: translateX(4px);
+    .event-icon {
+      font-size: 14px;
+      margin-top: 2px;
+      flex-shrink: 0;
     }
     
-    :deep(.el-card__body) {
-      padding: 12px 16px;
+    .event-text {
+      flex: 1;
+      font-size: 13px;
     }
   }
+}
 
   // drawer 内的 timeline-time
   .diagnosis-detail .timeline-time {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 14px;
+    gap: 6px;
+    font-size: 13px;
     color: rgba(255, 255, 255, 0.9) !important;
     font-weight: 500;
+    line-height: 1.4;
     
     .el-icon {
-      font-size: 16px;
+      font-size: 14px;
       color: #409eff;
+      flex-shrink: 0;
     }
   }
   
@@ -362,28 +533,34 @@
   .timeline-time:not(.diagnosis-detail .timeline-time) {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 14px;
+    gap: 6px;
+    font-size: 13px;
     color: #303133;
     font-weight: 500;
+    line-height: 1.4;
     
     .el-icon {
-      font-size: 16px;
+      font-size: 14px;
       color: #409eff;
+      flex-shrink: 0;
     }
   }
 
   .timeline-event-card {
     background: #fdf6ec;
     border-left: 3px solid #e6a23c;
+    :deep(.el-card__body) {
+      padding: 8px 12px;
+      min-height: auto;
+    }
     
     .timeline-event {
       display: flex;
       align-items: flex-start;
-      gap: 10px;
+      gap: 8px;
       
       .event-icon {
-        font-size: 18px;
+        font-size: 14px;
         color: #e6a23c;
         flex-shrink: 0;
         margin-top: 2px;
@@ -391,9 +568,9 @@
       
       .event-text {
         flex: 1;
-        font-size: 14px;
+        font-size: 13px;
         color: #303133;
-        line-height: 1.6;
+        line-height: 1.4;
         word-break: break-word;
       }
     }
@@ -424,10 +601,58 @@
     transition: all 0.3s ease;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
     
+    // Pod 影响 - 蓝色主题
+    &.impact-item-pod {
+      border-left: 3px solid #409eff;
+      background: linear-gradient(to right, rgba(64, 158, 255, 0.05), #dcdfe6);
+      
+      &:hover {
+        box-shadow: 0 2px 8px rgba(64, 158, 255, 0.2);
+        border-color: #409eff;
+        background: linear-gradient(to right, rgba(64, 158, 255, 0.1), #e4e7ed);
+      }
+      
+      .impact-label .el-icon {
+        color: #409eff;
+      }
+    }
+    
+    // 服务影响 - 橙色主题
+    &.impact-item-service {
+      border-left: 3px solid #e6a23c;
+      background: linear-gradient(to right, rgba(230, 162, 60, 0.05), #dcdfe6);
+      
+      &:hover {
+        box-shadow: 0 2px 8px rgba(230, 162, 60, 0.2);
+        border-color: #e6a23c;
+        background: linear-gradient(to right, rgba(230, 162, 60, 0.1), #e4e7ed);
+      }
+      
+      .impact-label .el-icon {
+        color: #e6a23c;
+      }
+    }
+    
+    // 节点影响 - 红色主题（最重要）
+    &.impact-item-node {
+      border-left: 4px solid #f56c6c;
+      background: linear-gradient(to right, rgba(245, 108, 108, 0.08), #dcdfe6);
+      border-width: 4px;
+      
+      &:hover {
+        box-shadow: 0 2px 12px rgba(245, 108, 108, 0.3);
+        border-color: #f56c6c;
+        background: linear-gradient(to right, rgba(245, 108, 108, 0.12), #e4e7ed);
+        transform: translateX(2px);
+      }
+      
+      .impact-label .el-icon {
+        color: #f56c6c;
+      }
+    }
+    
     &:hover {
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-      border-color: #409eff;
-      background: #e4e7ed;
     }
   }
 
@@ -485,6 +710,52 @@
     justify-content: space-between;
     gap: 16px;
     box-shadow: 0 2px 8px rgba(64, 158, 255, 0.15);
+    transition: all 0.3s ease;
+    
+    // 高影响 - 红色主题
+    &.business-impact-high {
+      border-color: #f56c6c;
+      background: linear-gradient(to right, rgba(245, 108, 108, 0.1), #dcdfe6);
+      box-shadow: 0 2px 12px rgba(245, 108, 108, 0.25);
+      
+      .business-impact-label .el-icon {
+        color: #f56c6c;
+      }
+      
+      &:hover {
+        box-shadow: 0 4px 16px rgba(245, 108, 108, 0.35);
+      }
+    }
+    
+    // 中影响 - 橙色主题
+    &.business-impact-medium {
+      border-color: #e6a23c;
+      background: linear-gradient(to right, rgba(230, 162, 60, 0.1), #dcdfe6);
+      box-shadow: 0 2px 12px rgba(230, 162, 60, 0.25);
+      
+      .business-impact-label .el-icon {
+        color: #e6a23c;
+      }
+      
+      &:hover {
+        box-shadow: 0 4px 16px rgba(230, 162, 60, 0.35);
+      }
+    }
+    
+    // 低影响 - 绿色主题
+    &.business-impact-low {
+      border-color: #67c23a;
+      background: linear-gradient(to right, rgba(103, 194, 58, 0.1), #dcdfe6);
+      box-shadow: 0 2px 12px rgba(103, 194, 58, 0.25);
+      
+      .business-impact-label .el-icon {
+        color: #67c23a;
+      }
+      
+      &:hover {
+        box-shadow: 0 4px 16px rgba(103, 194, 58, 0.35);
+      }
+    }
     
     @media (max-width: 768px) {
       flex-direction: column;
@@ -686,35 +957,42 @@
         }
       }
       
-      .el-descriptions__label {
-        font-size: 13px !important;
-        font-weight: 600 !important;
-        color: #000000 !important;
-        background-color: #f0f2f5 !important;
-        padding: 8px 12px !important;
-        border-right: 2px solid #dcdfe6 !important;
-        white-space: normal !important;
-        word-break: break-word !important;
-        width: 50% !important;
-        min-width: 50% !important;
-        max-width: 50% !important;
-        box-sizing: border-box !important;
-      }
-      
-      .el-descriptions__content {
-        font-size: 13px !important;
-        font-weight: 500 !important;
-        color: #1a1a1a !important;
-        background-color: #fafbfc !important;
-        padding: 8px 12px !important;
-        word-break: break-word !important;
-        white-space: normal !important;
-        overflow-wrap: break-word !important;
-        width: 50% !important;
-        min-width: 50% !important;
-        max-width: 50% !important;
-        box-sizing: border-box !important;
-      }
+        .el-descriptions__label {
+          font-size: 13px !important;
+          font-weight: 600 !important;
+          color: #000000 !important;
+          background-color: #f0f2f5 !important;
+          padding: 8px 12px !important;
+          border-right: 2px solid #dcdfe6 !important;
+          white-space: normal !important;
+          word-break: break-word !important;
+          overflow-wrap: break-word !important;
+          width: 50% !important;
+          min-width: 50% !important;
+          max-width: 50% !important;
+          box-sizing: border-box !important;
+          display: table-cell !important;
+          vertical-align: top !important;
+          overflow: hidden !important;
+        }
+        
+        .el-descriptions__content {
+          font-size: 13px !important;
+          font-weight: 500 !important;
+          color: #1a1a1a !important;
+          background-color: #fafbfc !important;
+          padding: 8px 12px !important;
+          word-break: break-word !important;
+          white-space: normal !important;
+          overflow-wrap: break-word !important;
+          width: 50% !important;
+          min-width: 50% !important;
+          max-width: 50% !important;
+          box-sizing: border-box !important;
+          display: table-cell !important;
+          vertical-align: top !important;
+          overflow: hidden !important;
+        }
       
       td, th {
         &:first-child {
@@ -1810,10 +2088,14 @@
           border-right: 2px solid rgba(64, 158, 255, 0.4) !important;
           white-space: normal !important;
           word-break: break-word !important;
+          overflow-wrap: break-word !important;
           width: 50% !important;
           min-width: 50% !important;
           max-width: 50% !important;
           box-sizing: border-box !important;
+          display: table-cell !important;
+          vertical-align: top !important;
+          overflow: hidden !important;
         }
         
         .el-descriptions__content {
@@ -1829,6 +2111,9 @@
           min-width: 50% !important;
           max-width: 50% !important;
           box-sizing: border-box !important;
+          display: table-cell !important;
+          vertical-align: top !important;
+          overflow: hidden !important;
         }
         
         td, th {

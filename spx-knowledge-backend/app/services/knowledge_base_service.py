@@ -30,6 +30,7 @@ class KnowledgeBaseService(BaseService[KnowledgeBase]):
         self,
         page: int = 1,
         size: int = 20,
+        user_id: Optional[int] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """分页获取知识库列表，返回 (items(dict), total)
         包含 category_name 以便前端直接展示
@@ -44,6 +45,9 @@ class KnowledgeBaseService(BaseService[KnowledgeBase]):
             .outerjoin(KnowledgeBaseCategory, KnowledgeBase.category_id == KnowledgeBaseCategory.id)
             .filter(KnowledgeBase.is_deleted == False)
         )
+        # 如果提供了user_id，添加用户过滤（支持数据隔离）
+        if user_id is not None:
+            base_query = base_query.filter(KnowledgeBase.user_id == user_id)
         total = base_query.count()
 
         # 文档数统计子查询（未删除总数 与 已完成数）
@@ -101,14 +105,19 @@ class KnowledgeBaseService(BaseService[KnowledgeBase]):
     
     async def create_knowledge_base(
         self, 
-        kb_data: KnowledgeBaseCreate
+        kb_data: KnowledgeBaseCreate,
+        user_id: Optional[int] = None
     ) -> KnowledgeBase:
         """创建知识库"""
-        # 名称唯一性校验
-        existing = self.db.query(KnowledgeBase).filter(
+        # 名称唯一性校验（在同一用户下）
+        query = self.db.query(KnowledgeBase).filter(
             KnowledgeBase.name == kb_data.name,
             KnowledgeBase.is_deleted == False
-        ).first()
+        )
+        # 如果提供了user_id，添加用户过滤（支持数据隔离）
+        if user_id is not None:
+            query = query.filter(KnowledgeBase.user_id == user_id)
+        existing = query.first()
         if existing:
             raise CustomException(code=ErrorCode.VALIDATION_ERROR, message="知识库名称已存在")
         # 排除 None/未提供的可选字段（如 category_name）

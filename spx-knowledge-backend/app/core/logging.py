@@ -12,6 +12,50 @@ from typing import Optional, Any, Mapping
 from app.config.settings import settings
 
 
+class ConnectionResetFilter(logging.Filter):
+    """
+    过滤 Windows 上 asyncio 的连接重置错误
+    这些错误通常发生在客户端提前关闭连接时，不影响功能
+    """
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        # 过滤 Windows 上 asyncio 的连接重置错误
+        if record.name == 'asyncio' and record.levelno == logging.ERROR:
+            # 检查错误消息
+            msg = str(record.msg)
+            # 检查异常信息（可能在 getMessage() 中）
+            try:
+                full_msg = record.getMessage()
+            except Exception:
+                full_msg = msg
+            
+            # 检查异常信息（如果存在）
+            exc_info = getattr(record, 'exc_info', None)
+            exc_text = ''
+            if exc_info and exc_info[0]:
+                try:
+                    import traceback
+                    exc_text = ''.join(traceback.format_exception(*exc_info))
+                except Exception:
+                    pass
+            
+            # 合并所有可能的错误信息
+            all_text = f"{full_msg}\n{exc_text}"
+            
+            # 匹配 Windows ProactorEventLoop 连接关闭错误
+            # 这是 Windows 上客户端提前关闭连接时的常见情况
+            if '_ProactorBasePipeTransport._call_connection_lost' in all_text:
+                # 这是正常的连接关闭，不记录
+                return False
+            
+            # 匹配其他连接重置错误模式
+            if ('ConnectionResetError' in all_text and 
+                ('WinError 10054' in all_text or '远程主机强迫关闭' in all_text)):
+                # 这是正常的连接关闭，不记录
+                return False
+        return True
+
+
 class VectorFieldFilter(logging.Filter):
     """
     屏蔽日志中的向量大字段，避免输出巨型数组导致刷屏。
@@ -137,8 +181,16 @@ def setup_logging(
         except Exception as e:
             root_logger.warning(f"无法创建日志文件 {log_path}: {e}")
     
-    # 屏蔽向量字段日志
+    # 添加日志过滤器
+    connection_filter = ConnectionResetFilter()
+    root_logger.addFilter(connection_filter)
     root_logger.addFilter(VectorFieldFilter())
+    
+    # 特别为 asyncio 日志记录器添加过滤器（Windows 上常见连接重置错误）
+    asyncio_logger = logging.getLogger('asyncio')
+    asyncio_logger.addFilter(connection_filter)
+    # 设置 asyncio 日志级别，避免过多噪音
+    asyncio_logger.setLevel(logging.WARNING)
 
     # 配置第三方库的日志级别
     logging.getLogger('uvicorn').setLevel(logging.INFO)

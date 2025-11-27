@@ -782,6 +782,38 @@ class DiagnosisRecordService(BaseService[DiagnosisRecord]):
         items = query.order_by(self.model.created_at.desc()).offset(skip).limit(limit).all()
         return items, total
 
+    async def delete_record(self, record_id: int) -> bool:
+        record = (
+            self.db.query(self.model)
+            .filter(self.model.id == record_id)
+            .first()
+        )
+        if not record:
+            return False
+
+        # 检查是否已沉淀到知识库，如果是则删除 OpenSearch 中的索引
+        symptoms = record.symptoms or {}
+        if symptoms.get("knowledge_sedimented"):
+            try:
+                from app.services.opensearch_service import OpenSearchService
+                opensearch_service = OpenSearchService()
+                # 诊断记录使用 record.id 作为 chunk_id 存储到 OpenSearch
+                await opensearch_service.delete_document_chunk(record.id)
+                logger.info(f"已删除诊断记录在 OpenSearch 中的索引: diagnosis_id={record.id}, chunk_id={record.id}")
+            except Exception as e:
+                logger.warning(f"删除诊断记录 OpenSearch 索引失败: {e}，但继续执行数据库删除")
+
+        if not record.is_deleted:
+            record.is_deleted = True
+            record.deleted_at = datetime.utcnow()
+            self.db.commit()
+            self.db.refresh(record)
+
+        # 硬删除（级联删除相关迭代、记忆等数据）
+        self.db.delete(record)
+        self.db.commit()
+        return True
+
 
 class ResourceSnapshotService(BaseService[ResourceSnapshot]):
     """资源快照服务"""

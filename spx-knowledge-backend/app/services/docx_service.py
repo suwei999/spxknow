@@ -571,8 +571,11 @@ class DocxService:
         try:
             from app.config.settings import settings as _settings
             chunk_max = min(int(getattr(_settings, 'CHUNK_SIZE', 1000)), int(getattr(_settings, 'TEXT_EMBED_MAX_CHARS', 1024)))
+            # 最小分块大小：避免产生太多小块（默认 500 字符，约为 chunk_max 的一半）
+            chunk_min = int(getattr(_settings, 'CHUNK_MIN_SIZE', chunk_max // 2))
         except Exception:
             chunk_max = 1000
+            chunk_min = 500
         chunks: List[Dict[str, Any]] = []
         current_chunk_texts: List[str] = []
         current_chunk_start: Optional[int] = None
@@ -591,6 +594,17 @@ class DocxService:
             if not current_chunk_texts:
                 return
             chunk_content = '\n'.join(current_chunk_texts)
+            # 检查分块长度：如果超过 chunk_max，记录警告并截断
+            # 注意：由于使用 '\n'.join()，实际长度可能比 current_length 大（因为添加了换行符）
+            actual_length = len(chunk_content)
+            if actual_length > chunk_max:
+                logger.warning(
+                    f"[CHUNK] 警告：分块长度 {actual_length} 超过限制 {chunk_max}（超出 {actual_length - chunk_max} 字符），"
+                    f"chunk_index={chunk_index}, range=({current_chunk_start},{current_chunk_end})，"
+                    f"文本片段数={len(current_chunk_texts)}，将截断到 {chunk_max} 字符"
+                )
+                chunk_content = chunk_content[:chunk_max]
+                actual_length = chunk_max
             try:
                 logger.debug(
                     f"[CHUNK][text] idx={chunk_index} sec={current_section_id} "
@@ -615,24 +629,39 @@ class DocxService:
         def split_and_append(long_text: str, elem_idx: int):
             """将超长段落按 chunk_max 切分，逐段加入当前 section。
             每一小段的 element_index_start/end 都使用 elem_idx。
+            严格控制：每个分块的长度不能超过 chunk_max。
             """
             nonlocal current_length, current_chunk_texts, current_chunk_start, current_chunk_end
             logger.debug(f"[SPLIT] elem_idx={elem_idx} long_len={len(long_text)} chunk_max={chunk_max}")
             i = 0
             while i < len(long_text):
+                # 如果当前块已满，先刷新
+                if current_length >= chunk_max:
+                    flush_current_chunk()
+                
+                # 计算剩余空间（确保不超过 chunk_max）
                 remain = chunk_max - current_length
                 if remain <= 0:
+                    # 这种情况理论上不应该发生（因为上面已经 flush），但为了安全还是处理
                     flush_current_chunk()
                     remain = chunk_max
+                
+                # 取剩余空间和剩余文本的最小值
                 take = min(remain, len(long_text) - i)
+                if take <= 0:
+                    break
+                
                 piece = long_text[i:i + take]
                 if not current_chunk_texts:
                     current_chunk_start = elem_idx
                 current_chunk_texts.append(piece)
                 current_chunk_end = elem_idx
                 current_length += len(piece)
+                
+                # 再次检查：如果达到或超过上限，立即刷新（防止超过 chunk_max）
                 if current_length >= chunk_max:
                     flush_current_chunk()
+                
                 i += take
 
         last_text_elem_idx: Optional[int] = None
@@ -654,7 +683,27 @@ class DocxService:
                 continue
             text_length = len(text)
             if category in ['Title', 'ListItem']:
-                # 先落当前累积子块（限制在当前 section 内）
+                # 如果当前块太小（< chunk_min），尝试继续累积而不是立即刷新
+                # 这样可以减少小块数量，提高分块质量
+                current_actual_length = len('\n'.join(current_chunk_texts)) if current_chunk_texts else 0
+                if current_actual_length > 0 and current_actual_length < chunk_min:
+                    # 当前块太小，尝试继续累积（如果添加后不超过 chunk_max）
+                    newline_count = 1 if current_chunk_texts else 0
+                    estimated_length = current_actual_length + text_length + newline_count
+                    if estimated_length <= chunk_max:
+                        # 可以继续累积，将 Title/ListItem 也加入当前块
+                        logger.debug(f"[PARENT] 当前块太小({current_actual_length}<{chunk_min})，继续累积 Title/ListItem")
+                        if not current_chunk_texts:
+                            current_chunk_start = elem_idx
+                        current_chunk_texts.append(text)
+                        current_chunk_end = elem_idx
+                        current_length = len('\n'.join(current_chunk_texts))
+                        # 更新 section_id（但不创建新的父块）
+                        current_section_id += 1
+                        last_text_elem_idx = elem_idx
+                        continue
+                
+                # 当前块足够大或无法继续累积，先刷新
                 flush_current_chunk()
                 # 新的父块（标题）
                 current_section_id += 1
@@ -675,27 +724,78 @@ class DocxService:
                 current_chunk_start = None
                 current_chunk_end = None
             else:
-                # 若与上一个文本元素不相邻（中间夹了表格或其他元素），先切断
+                # 若与上一个文本元素不相邻（中间夹了表格或其他元素），先检查是否需要切断
                 if last_text_elem_idx is not None and elem_idx is not None and current_chunk_texts:
                     if elem_idx != (current_chunk_end if current_chunk_end is not None else last_text_elem_idx) + 1:
-                        logger.debug(f"[BOUNDARY] flush by gap: prev={last_text_elem_idx} current={elem_idx}")
-                        flush_current_chunk()
+                        # 元素索引不连续，但先检查当前块是否太小
+                        current_actual_length = len('\n'.join(current_chunk_texts))
+                        if current_actual_length < chunk_min:
+                            # 当前块太小，尝试继续累积（即使索引不连续）
+                            newline_count = 1 if current_chunk_texts else 0
+                            estimated_length = current_actual_length + text_length + newline_count
+                            if estimated_length <= chunk_max:
+                                logger.debug(
+                                    f"[BOUNDARY] 当前块太小({current_actual_length}<{chunk_min})，"
+                                    f"继续累积（索引不连续：prev={last_text_elem_idx} current={elem_idx}）"
+                                )
+                                # 继续累积，不刷新
+                            else:
+                                # 无法继续累积，刷新
+                                logger.debug(f"[BOUNDARY] flush by gap: prev={last_text_elem_idx} current={elem_idx}")
+                                flush_current_chunk()
+                        else:
+                            # 当前块足够大，刷新
+                            logger.debug(f"[BOUNDARY] flush by gap: prev={last_text_elem_idx} current={elem_idx}")
+                            flush_current_chunk()
 
                 if text_length > chunk_max:
                     split_and_append(text, elem_idx)
                 else:
                     # 正常累积，必要时先换新块
-                    if current_length + text_length > chunk_max:
+                    # 计算添加后的实际长度：需要考虑换行符
+                    # 如果 current_chunk_texts 不为空，添加新文本时会增加 1 个换行符
+                    newline_count = 1 if current_chunk_texts else 0
+                    estimated_length = current_length + text_length + newline_count
+                    
+                    # 严格检查：如果添加后超过 chunk_max，先刷新
+                    if estimated_length > chunk_max:
                         flush_current_chunk()
+                    
                     if not current_chunk_texts:
                         current_chunk_start = elem_idx
                     current_chunk_texts.append(text)
                     current_chunk_end = elem_idx
-                    current_length += text_length
+                    
+                    # 重新计算实际长度（包括所有换行符），确保准确性
+                    current_length = len('\n'.join(current_chunk_texts))
+                    
+                    # 再次检查：确保不会超过 chunk_max（理论上不应该，但为了安全）
+                    if current_length > chunk_max:
+                        logger.warning(
+                            f"[CHUNK] 警告：分块长度 {current_length} 超过限制 {chunk_max}（超出 {current_length - chunk_max} 字符），"
+                            f"element_index={elem_idx}, text_length={text_length}, "
+                            f"文本片段数={len(current_chunk_texts)}，将刷新当前块"
+                        )
+                        # 如果超过限制，移除刚添加的文本并刷新
+                        current_chunk_texts.pop()
+                        flush_current_chunk()
+                        # 重新添加（如果文本本身不超过 chunk_max）
+                        if text_length <= chunk_max:
+                            current_chunk_texts.append(text)
+                            current_chunk_start = elem_idx
+                            current_chunk_end = elem_idx
+                            current_length = text_length
+                        else:
+                            # 如果文本本身超过 chunk_max，使用 split_and_append
+                            split_and_append(text, elem_idx)
                 last_text_elem_idx = elem_idx if elem_idx is not None else last_text_elem_idx
         # 收尾：仅在当前 section 内 flush，不做全文聚合
         flush_current_chunk()
-        logger.info(f"[DOCX] 结构分块完成，共 {len(chunks)} 个分块（section_id 最大为 {current_section_id}，chunk_max={chunk_max}）")
+        
+        # 后处理：合并相邻的小块（如果合并后不超过 chunk_max）
+        chunks = self._merge_small_chunks(chunks, chunk_max, chunk_min)
+        
+        logger.info(f"[DOCX] 结构分块完成，共 {len(chunks)} 个分块（section_id 最大为 {current_section_id}，chunk_max={chunk_max}，chunk_min={chunk_min}）")
         try:
             # 打印每个块的概览，便于定位错位/重复
             for c in chunks:
@@ -707,3 +807,80 @@ class DocxService:
         except Exception:
             pass
         return chunks
+    
+    def _merge_small_chunks(self, chunks: List[Dict[str, Any]], chunk_max: int, chunk_min: int) -> List[Dict[str, Any]]:
+        """合并相邻的小块（如果合并后不超过 chunk_max）"""
+        if not chunks:
+            return chunks
+        
+        merged_chunks: List[Dict[str, Any]] = []
+        i = 0
+        
+        while i < len(chunks):
+            current_chunk = chunks[i].copy()
+            current_content = current_chunk.get('content', '')
+            current_length = len(current_content)
+            
+            # 如果当前块足够大（>= chunk_min），直接添加
+            if current_length >= chunk_min or current_chunk.get('is_parent', False):
+                merged_chunks.append(current_chunk)
+                i += 1
+                continue
+            
+            # 当前块太小，尝试与后续块合并
+            merged_content = current_content
+            merged_start = current_chunk.get('element_index_start')
+            merged_end = current_chunk.get('element_index_end')
+            merged_section_id = current_chunk.get('section_id')
+            j = i + 1
+            
+            # 尝试合并后续的小块
+            while j < len(chunks):
+                next_chunk = chunks[j]
+                next_content = next_chunk.get('content', '')
+                next_length = len(next_content)
+                
+                # 检查是否可以合并：
+                # 1. 下一个块不是父块（Title/ListItem）
+                # 2. 下一个块在同一个 section
+                # 3. 合并后不超过 chunk_max
+                if (not next_chunk.get('is_parent', False) and 
+                    next_chunk.get('section_id') == merged_section_id):
+                    # 计算合并后的长度（包括换行符）
+                    merged_length = len(merged_content) + 1 + next_length  # +1 是换行符
+                    
+                    if merged_length <= chunk_max:
+                        # 可以合并
+                        merged_content = merged_content + '\n' + next_content
+                        merged_end = next_chunk.get('element_index_end')
+                        j += 1
+                        continue
+                
+                # 无法继续合并，退出循环
+                break
+            
+            # 创建合并后的块
+            merged_chunk = {
+                'content': merged_content,
+                'chunk_index': len(merged_chunks),
+                'element_index_start': merged_start,
+                'element_index_end': merged_end,
+                'section_id': merged_section_id,
+                'is_parent': False,
+            }
+            merged_chunks.append(merged_chunk)
+            
+            # 跳过已合并的块
+            i = j
+        
+        # 更新 chunk_index
+        for idx, chunk in enumerate(merged_chunks):
+            chunk['chunk_index'] = idx
+        
+        if len(merged_chunks) < len(chunks):
+            logger.info(
+                f"[CHUNK_MERGE] 合并小块完成：原始分块数={len(chunks)}，"
+                f"合并后分块数={len(merged_chunks)}，减少了 {len(chunks) - len(merged_chunks)} 个分块"
+            )
+        
+        return merged_chunks

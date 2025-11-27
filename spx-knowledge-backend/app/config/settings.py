@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     ALLOWED_HOSTS: List[str] = ["*"]
+    # CORS配置
+    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"]
     
     # 数据库配置
     DATABASE_URL: str = "mysql+pymysql://user:password@localhost:3306/spx_knowledge"
@@ -89,6 +91,8 @@ class Settings(BaseSettings):
     QA_DEFAULT_MAX_SOURCES: int = 10
     QA_DEFAULT_MAX_HISTORY: int = 5
     QA_DEFAULT_MAX_RESULTS: int = 10
+    # QA对话历史总结模型（如果为 None 或空字符串，则使用问答模型）
+    QA_SUMMARY_MODEL: Optional[str] = None
     
     # 多模态处理配置
     MULTIMODAL_TEXT_MAX_LENGTH: int = 10000
@@ -121,6 +125,12 @@ class Settings(BaseSettings):
     IMAGE_EMBEDDING_DIMENSION: int = 512
     TEXT_EMBED_MAX_CHARS: int = 1024
     
+    # Excel 解析配置
+    EXCEL_ENABLE_FLATTENED_TEXT: bool = False
+    
+    # 预览生成配置
+    ENABLE_PREVIEW_GENERATION: bool = True  # 是否在文档处理时预生成预览（PDF/HTML）
+    
     # Rerank模型配置
     RERANK_ENABLED: bool = True  # 是否启用rerank模型
     # 推荐中英文支持较好的模型：bge-reranker-v2-m3（多语言支持）或 bge-reranker-large（中英文效果更好）
@@ -138,6 +148,9 @@ class Settings(BaseSettings):
     SEARCH_VECTOR_TOPK: int = 5  # 向量检索默认返回数量（与 RERANK_TOP_K 保持一致）
     # 精确搜索字段列表（用于 multi_match type=phrase），为空则默认 content
     SEARCH_EXACT_FIELDS: List[str] = ["content"]
+    # 搜索历史返回条数限制
+    SEARCH_HISTORY_DEFAULT_LIMIT: int = 5
+    SEARCH_HISTORY_MAX_LIMIT: int = 20
     
     # 实体/意图阈值
     ENTITY_PERSON_CONFIDENCE: float = 0.8
@@ -166,6 +179,30 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = 3600
     CACHE_MAX_SIZE: int = 1000
     CACHE_CLEANUP_INTERVAL: int = 300
+    
+    # Celery Worker 配置
+    # Celery worker 并发数（默认根据 CPU 数自动计算，建议 >= 4 以避免 k8s 同步任务占用）
+    # 如果 CPU 核心数 >= 4，默认使用 4-8 个并发；否则使用 2-4 个并发
+    # 设置为 None 表示自动计算，也可以手动指定（如 6、8 等）
+    CELERY_CONCURRENCY: Optional[int] = None  # None 表示自动计算
+    # Celery worker 监听的队列（默认包含所有队列）
+    # 如果 OBSERVABILITY_ENABLE_SCHEDULE 为 False，默认排除 observability 队列
+    # 设置为 None 表示使用默认值（根据 OBSERVABILITY_ENABLE_SCHEDULE 决定）
+    # 也可以手动指定，如：document,vector,index,image,version,cleanup,notification,celery
+    CELERY_QUEUES: Optional[str] = None  # None 表示使用默认值
+    # Celery 日志级别
+    CELERY_LOG_LEVEL: str = "INFO"
+    # Celery 任务优先级配置（0-255，数字越大优先级越高）
+    CELERY_TASK_PRIORITY_DOCUMENT: int = 10  # 文档处理任务（最高优先级）
+    CELERY_TASK_PRIORITY_VECTOR: int = 8  # 向量化任务
+    CELERY_TASK_PRIORITY_INDEX: int = 8  # 索引任务
+    CELERY_TASK_PRIORITY_IMAGE: int = 7  # 图片处理任务
+    CELERY_TASK_PRIORITY_VERSION: int = 6  # 版本任务
+    CELERY_TASK_PRIORITY_NOTIFICATION: int = 5  # 通知任务
+    CELERY_TASK_PRIORITY_OBSERVABILITY: int = 3  # K8s 同步任务（低优先级，后台任务）
+    CELERY_TASK_PRIORITY_CLEANUP: int = 2  # 清理任务（最低优先级）
+    CELERY_TASK_PRIORITY_DEFAULT: int = 5  # 默认优先级
+    
     OBSERVABILITY_RESOURCE_TYPES: List[str] = [
         "pods",
         "deployments",
@@ -215,6 +252,19 @@ class Settings(BaseSettings):
     # 安全
     SECRET_KEY: str = "your-secret-key-here"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    
+    # 登录安全
+    MAX_LOGIN_ATTEMPTS: int = 5
+    LOGIN_LOCKOUT_MINUTES: int = 30
+    
+    # 密码规则
+    MIN_PASSWORD_LENGTH: int = 8
+    MAX_PASSWORD_LENGTH: int = 50
+    
+    # 邮箱验证
+    EMAIL_VERIFICATION_ENABLED: bool = False
+    EMAIL_VERIFICATION_CODE_EXPIRE_MINUTES: int = 10
     
     # 日志
     LOG_LEVEL: str = "INFO"
@@ -234,11 +284,14 @@ class Settings(BaseSettings):
     
     # 上传
     MAX_FILE_SIZE: int = 100 * 1024 * 1024
-    ALLOWED_FILE_TYPES: List[str] = [".docx"]  # 仅支持 DOCX
+    ALLOWED_FILE_TYPES: List[str] = [".docx", ".pdf", ".txt", ".log"]
     
     # 文档处理
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
+    # 最小分块大小：避免产生太多小块（默认 500 字符，约为 CHUNK_SIZE 的一半）
+    # 如果分块小于此值，会尝试与相邻分块合并（合并后不超过 chunk_max）
+    CHUNK_MIN_SIZE: int = 500
     MAX_CHUNKS_PER_DOCUMENT: int = 1000
     PARSING_TIMEOUT: int = 300
     VECTORIZATION_TIMEOUT: int = 600

@@ -15,11 +15,22 @@ from app.core.exceptions import setup_exception_handlers
 from app.core.logging import logger
 from app.config.settings import settings
 from app.middleware.logging import logging_middleware
+import os
+import asyncio
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理 - 启动时检查中间件连接"""
+    # Windows 下配置 asyncio 以更好地处理连接关闭
+    if os.name == "nt":
+        try:
+            # 设置 Windows 事件循环策略（如果尚未设置）
+            if not isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsSelectorEventLoopPolicy):
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
+    
     # 启动时检查
     logger.info("正在检查中间件连接...")
     logger.info(f"配置文件位置: {settings.HOST}:{settings.PORT}")
@@ -87,10 +98,11 @@ app = FastAPI(
 # 添加CORS中间件
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_HOSTS,
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # 添加受信任主机中间件
@@ -102,6 +114,10 @@ app.add_middleware(
 # 请求日志中间件（记录每个请求的开始、结束、状态码与耗时）
 app.middleware("http")(logging_middleware)
 
+# 认证中间件（在所有/api路径上要求认证，除了认证相关的接口）
+from app.middleware.auth import auth_middleware
+app.middleware("http")(auth_middleware)
+
 # 注册API路由 - 按照设计文档要求使用 /api 前缀
 app.include_router(api_router, prefix="/api")
 # 新增查询上下文路由
@@ -112,14 +128,45 @@ app.include_router(tables_routes.router, prefix="/api")
 # 兼容前端 WebSocket 直接连接 /ws/... 的路径（不走 /api 前缀）
 app.include_router(ws_routes.router, prefix="/ws")
 
-# 兼容性图片代理（无 /api 前缀的场景）
-from fastapi import HTTPException
+# 兼容性图片代理（无 /api 前缀的场景，需要认证）
+from fastapi import HTTPException, Depends, Request, status
 from app.services.minio_storage_service import MinioStorageService
 from app.core.logging import logger
-from fastapi import Response
+from fastapi.responses import Response
+from app.dependencies.auth import get_current_user
 
 @app.get("/images/file")
-async def compat_image_proxy(object: str):
+async def compat_image_proxy(object: str, request: Request):
+    """兼容性图片代理（无 /api 前缀的场景，需要认证）"""
+    # 自己处理认证（因为不在 /api/ 路径下，中间件不会处理）
+    from app.core.security import verify_token
+    
+    # 从请求头或查询参数获取token
+    authorization = request.headers.get("Authorization")
+    token = None
+    
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ")[1]
+    else:
+        # 尝试从查询参数获取token（用于<img>标签请求）
+        token = request.query_params.get("token")
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少认证令牌",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    # 验证令牌
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="认证令牌无效",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
     try:
         minio = MinioStorageService()
         data = minio.download_file(object)

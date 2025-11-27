@@ -23,13 +23,23 @@ export class WebSocketClient {
 
   /**
    * 连接到WebSocket服务器
+   * 自动添加认证token（如果有）
    */
   connect(): void {
     try {
-      this.ws = new WebSocket(this.url)
+      // 获取token并添加到URL
+      const token = localStorage.getItem('access_token')
+      let finalUrl = this.url
+      
+      if (token) {
+        // 检查URL是否已有查询参数
+        const separator = this.url.includes('?') ? '&' : '?'
+        finalUrl = `${this.url}${separator}token=${encodeURIComponent(token)}`
+      }
+      
+      this.ws = new WebSocket(finalUrl)
       this.setupEventHandlers()
     } catch (error) {
-      console.error('WebSocket连接失败:', error)
       this.handleError(new Error('连接失败'))
     }
   }
@@ -42,7 +52,6 @@ export class WebSocketClient {
 
     // 连接打开
     this.ws.onopen = () => {
-      console.log('WebSocket已连接')
       this.reconnectAttempts = 0
       this.startHeartbeat()
       if (this.onConnectCallback) {
@@ -56,20 +65,63 @@ export class WebSocketClient {
         const data = JSON.parse(event.data)
         this.handleMessage(data)
       } catch (error) {
-        console.error('消息解析失败:', error)
+        // 消息解析失败，忽略
       }
     }
 
     // 错误处理
     this.ws.onerror = (error) => {
       console.error('WebSocket错误:', error)
+      // 检查是否是认证失败（403），如果是则跳转到登录页
+      // 注意：onerror 事件中无法直接获取状态码，需要在 onclose 中处理
       this.handleError(new Error('WebSocket错误'))
     }
 
     // 连接关闭
-    this.ws.onclose = () => {
-      console.log('WebSocket已关闭')
+    this.ws.onclose = (event) => {
       this.stopHeartbeat()
+      
+      console.log('WebSocket关闭:', {
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean
+      })
+      
+      // 检查关闭代码和原因，如果是认证失败，跳转到登录页
+      // WebSocket 关闭代码：
+      // 1008 = Policy Violation (通常用于认证失败)
+      // 1002 = Protocol Error (协议错误，也可能用于认证问题)
+      // 1006 = Abnormal Closure (异常关闭，可能是连接被拒绝)
+      const isAuthFailure = 
+        event.code === 1008 || 
+        event.code === 1002 || 
+        event.code === 1006 ||
+        (event.reason && (
+          event.reason.includes('缺少认证令牌') ||
+          event.reason.includes('认证令牌无效') ||
+          event.reason.includes('认证失败') ||
+          event.reason.includes('Missing authentication token') ||
+          event.reason.includes('Invalid authentication token')
+        ))
+      
+      if (isAuthFailure) {
+        console.warn('WebSocket认证失败，跳转到登录页:', {
+          code: event.code,
+          reason: event.reason
+        })
+        // 认证失败，清除本地token并跳转到登录页
+        localStorage.removeItem('access_token')
+        localStorage.removeItem('refresh_token')
+        
+        // 停止重连
+        this.reconnectAttempts = this.maxReconnectAttempts
+        
+        // 延迟跳转，避免在组件卸载时跳转
+        setTimeout(() => {
+          window.location.href = '/login'
+        }, 100)
+        return
+      }
       
       // 尝试重连
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
@@ -122,7 +174,6 @@ export class WebSocketClient {
     try {
       this.ws.send(JSON.stringify(data))
     } catch (error) {
-      console.error('发送消息失败:', error)
       this.handleError(new Error('发送消息失败'))
     }
   }
@@ -190,7 +241,6 @@ export class WebSocketClient {
    */
   private reconnect(): void {
     this.reconnectAttempts++
-    console.log(`尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`)
     
     // 清除之前的重连定时器
     if (this.reconnectTimer) {

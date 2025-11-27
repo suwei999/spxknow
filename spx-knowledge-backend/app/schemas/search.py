@@ -10,7 +10,7 @@ from app.schemas.base import BaseSchema, BaseResponseSchema
 class SearchRequest(BaseModel):
     """搜索请求模式"""
     query: str
-    knowledge_base_id: Optional[int] = None
+    knowledge_base_id: Optional[List[int]] = None  # 支持多个知识库ID
     category_id: Optional[int] = None
     search_type: str = "hybrid"  # vector, keyword, hybrid, exact
     limit: int = 10
@@ -37,6 +37,9 @@ class SearchResponse(BaseSchema):
     cells: Optional[List[List[str]]] = None
     matrix: Optional[List[List[str]]] = None
     table: Optional[Dict[str, Any]] = None
+    # 搜索结果高亮（可选）
+    highlighted_content: Optional[str] = None
+    highlighted_title: Optional[str] = None
 
 class SearchSuggestionRequest(BaseModel):
     """搜索建议请求模式"""
@@ -72,7 +75,7 @@ class SearchAdvancedRequest(BaseModel):
     wildcard: Optional[str] = None  # 通配符
     regex: Optional[str] = None  # 正则表达式
     filters: Optional[Dict[str, Any]] = None
-    knowledge_base_id: Optional[int] = None
+    knowledge_base_id: Optional[List[int]] = None  # 支持多个知识库ID
     limit: int = 10
     offset: int = 0
 

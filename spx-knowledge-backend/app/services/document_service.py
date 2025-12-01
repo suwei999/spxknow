@@ -17,6 +17,11 @@ from app.services.duplicate_detection_service import DuplicateDetectionService
 from app.core.exceptions import CustomException, ErrorCode
 from app.config.settings import settings
 import os
+import httpx
+import urllib.parse
+from urllib.parse import urlparse
+from io import BytesIO
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 class DocumentService(BaseService[Document]):
     """文档服务"""
@@ -160,6 +165,17 @@ class DocumentService(BaseService[Document]):
             if isinstance(metadata, dict) and not metadata.get("title"):
                 metadata["title"] = os.path.splitext(file.filename)[0]
 
+            # 提取安全扫描结果
+            security_scan = validation_result.get("security_scan", {})
+            security_scan_status = security_scan.get("scan_status", "pending")
+            security_scan_method = security_scan.get("scan_method", "none")
+            security_scan_result = {
+                "virus_scan": security_scan.get("virus_scan"),
+                "script_scan": security_scan.get("script_scan"),
+                "threats_found": security_scan.get("threats_found", []),
+                "scan_timestamp": upload_timestamp
+            }
+
             doc_data = {
                 "original_filename": file.filename,
                 "file_type": validation_result["format_validation"]["file_type"],
@@ -172,7 +188,12 @@ class DocumentService(BaseService[Document]):
                 "metadata": metadata,
                 "status": "uploaded",
                 "processing_progress": 0.0,
-                "user_id": user_id
+                "user_id": user_id,
+                # 安全扫描字段
+                "security_scan_status": security_scan_status,
+                "security_scan_method": security_scan_method,
+                "security_scan_result": security_scan_result,
+                "security_scan_timestamp": datetime.utcnow()
             }
             
             document = await self.create(doc_data)
@@ -271,6 +292,176 @@ class DocumentService(BaseService[Document]):
             raise CustomException(
                 code=ErrorCode.VALIDATION_ERROR,
                 message=f"文档上传失败: {str(e)}"
+            )
+    
+    async def upload_document_from_url(
+        self,
+        url: str,
+        knowledge_base_id: int,
+        category_id: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        filename: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        从URL导入文档 - 下载文件后执行完整的上传流程
+        
+        支持参数：
+        - url: 文档URL（必填）
+        - knowledge_base_id: 知识库ID（必填）
+        - category_id: 分类ID（可选）
+        - tags: 标签列表（可选）
+        - metadata: 元数据（可选）
+        - user_id: 用户ID（可选）
+        - filename: 自定义文件名（可选，默认从URL或Content-Disposition提取）
+        
+        返回内容：
+        - document_id: 文档ID
+        - task_id: 任务ID
+        - file_size: 文件大小
+        - file_type: 文件类型
+        - upload_timestamp: 上传时间戳
+        """
+        try:
+            logger.info(f"开始从URL导入文档: {url}, 知识库ID: {knowledge_base_id}")
+            
+            # 1. 下载文件
+            logger.info("步骤1: 开始下载文件")
+            async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"下载文件失败，HTTP状态码: {e.response.status_code}")
+                    raise CustomException(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"无法下载文件: HTTP {e.response.status_code}"
+                    )
+                except httpx.RequestError as e:
+                    logger.error(f"下载文件失败，请求错误: {e}")
+                    raise CustomException(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"无法下载文件: {str(e)}"
+                    )
+                
+                # 读取文件内容
+                file_content = response.content
+                file_size = len(file_content)
+                
+                # 检查文件大小（读取后再次检查，因为content-length可能不准确）
+                max_size = settings.MAX_FILE_SIZE
+                if file_size > max_size:
+                    raise CustomException(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"文件大小超过限制: {file_size / 1024 / 1024:.2f}MB > {max_size / 1024 / 1024:.2f}MB"
+                    )
+                
+                # 如果content-length存在，也提前检查（避免下载过大文件）
+                content_length = response.headers.get('content-length')
+                if content_length:
+                    expected_size = int(content_length)
+                    if expected_size > max_size:
+                        raise CustomException(
+                            code=ErrorCode.VALIDATION_ERROR,
+                            message=f"文件大小超过限制: {expected_size / 1024 / 1024:.2f}MB > {max_size / 1024 / 1024:.2f}MB"
+                        )
+                
+                # 确定文件名
+                if not filename:
+                    # 尝试从Content-Disposition头获取文件名
+                    content_disposition = response.headers.get('content-disposition', '')
+                    if 'filename=' in content_disposition:
+                        import re
+                        match = re.search(r'filename[*]?=["\']?([^"\';]+)', content_disposition)
+                        if match:
+                            filename = match.group(1)
+                    
+                    # 如果还是没有，从URL提取
+                    if not filename:
+                        parsed_url = urlparse(url)
+                        filename = os.path.basename(parsed_url.path) or 'document'
+                        # 如果URL没有扩展名，尝试从Content-Type推断
+                        if '.' not in filename:
+                            content_type = response.headers.get('content-type', '')
+                            ext_map = {
+                                'application/pdf': '.pdf',
+                                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+                                'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+                                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+                                'text/plain': '.txt',
+                                'text/markdown': '.md',
+                                'text/html': '.html',
+                            }
+                            for mime, ext in ext_map.items():
+                                if mime in content_type:
+                                    filename += ext
+                                    break
+                
+                # 解码文件名（处理URL编码）
+                filename = urllib.parse.unquote(filename)
+                
+                # 2. 创建UploadFile对象
+                logger.info(f"步骤2: 创建文件对象，文件名: {filename}, 大小: {file_size}")
+                file_io = BytesIO(file_content)
+                
+                # 确定Content-Type
+                content_type = response.headers.get('content-type', 'application/octet-stream')
+                # 移除charset等参数
+                if ';' in content_type:
+                    content_type = content_type.split(';')[0].strip()
+                
+                upload_file = StarletteUploadFile(
+                    filename=filename,
+                    file=file_io,
+                    headers={"content-type": content_type}
+                )
+                
+                # 3. 调用现有的上传流程
+                logger.info("步骤3: 调用文档上传流程")
+                # 确保metadata包含source_url
+                if not metadata:
+                    metadata = {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata['source_url'] = url
+                
+                result = await self.upload_document(
+                    file=upload_file,
+                    knowledge_base_id=knowledge_base_id,
+                    category_id=category_id,
+                    tags=tags,
+                    metadata=metadata,
+                    user_id=user_id
+                )
+                
+                # 确保source_url已保存到数据库（作为兜底，因为upload_document应该已经保存了）
+                if result.get('document_id'):
+                    doc = await self.get_document(result['document_id'])
+                    if doc:
+                        current_meta = doc.metadata or {}
+                        if isinstance(current_meta, dict):
+                            if 'source_url' not in current_meta:
+                                current_meta['source_url'] = url
+                                doc.metadata = current_meta
+                                self.db.commit()
+                                logger.debug(f"已更新文档 {doc.id} 的source_url元数据")
+                        else:
+                            current_meta = {'source_url': url}
+                            doc.metadata = current_meta
+                            self.db.commit()
+                            logger.debug(f"已设置文档 {doc.id} 的source_url元数据")
+                
+                logger.info(f"✅ 从URL导入文档成功: {url}, 文档ID: {result.get('document_id')}")
+                return result
+                
+        except CustomException:
+            raise
+        except Exception as e:
+            logger.error(f"从URL导入文档失败: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.VALIDATION_ERROR,
+                message=f"从URL导入文档失败: {str(e)}"
             )
     
     def update_document(

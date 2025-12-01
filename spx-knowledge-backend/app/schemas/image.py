@@ -22,6 +22,9 @@ class ImageResponse(BaseResponseSchema):
     vector_model: Optional[str] = None
     vector_dim: Optional[int] = None
     status: Optional[str] = None
+    retry_count: Optional[int] = None
+    error_message: Optional[str] = None
+    last_processed_at: Optional[datetime] = None
     # 模型字段名为 meta（列名为 metadata），需要别名映射
     metadata: Optional[dict] = Field(default=None, validation_alias='meta', serialization_alias='metadata')
 

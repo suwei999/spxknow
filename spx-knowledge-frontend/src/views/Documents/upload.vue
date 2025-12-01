@@ -8,6 +8,14 @@
         </div>
       </template>
 
+      <!-- 上传方式切换 -->
+      <div class="upload-tabs">
+        <el-radio-group v-model="uploadMode" size="default" @change="handleModeChange">
+          <el-radio-button label="file">本地上传</el-radio-button>
+          <el-radio-button label="url">URL导入</el-radio-button>
+        </el-radio-group>
+      </div>
+
       <el-form :model="form" label-width="120px">
         <el-form-item label="选择知识库" :required="true">
           <el-select 
@@ -32,6 +40,8 @@
           />
         </el-form-item>
 
+        <!-- 本地上传模式 -->
+        <template v-if="uploadMode === 'file'">
           <el-form-item label="选择文件">
             <el-upload
               ref="uploadRef"
@@ -60,6 +70,55 @@
             </el-button>
           </div>
         </el-form-item>
+        </template>
+
+        <!-- URL导入模式 -->
+        <template v-else>
+          <el-form-item label="文档URL" :required="true">
+            <el-input
+              v-model="form.url"
+              placeholder="请输入文档的下载链接，例如：https://example.com/document.pdf"
+              :disabled="uploading"
+              clearable
+            >
+              <template #prepend>
+                <el-icon><Link /></el-icon>
+              </template>
+            </el-input>
+            <div class="url-tips">
+              <el-alert
+                title="提示"
+                type="info"
+                :closable="false"
+                style="margin-top: 10px"
+              >
+                <template #default>
+                  <div>
+                    <p>• 支持直接下载的文档链接（PDF、Word、Excel、PPT等）</p>
+                    <p>• 系统会自动下载文件并进行安全检测</p>
+                    <p>• 文件大小限制：{{ formatFileSize(maxFileSize) }}</p>
+                  </div>
+                </template>
+              </el-alert>
+            </div>
+          </el-form-item>
+
+          <el-form-item label="自定义文件名" v-if="form.url">
+            <el-input
+              v-model="form.filename"
+              placeholder="可选，留空则使用URL中的文件名"
+              :disabled="uploading"
+              clearable
+            />
+          </el-form-item>
+
+          <el-form-item v-if="urlFileInfo">
+            <div class="file-info">
+              <span>检测到文件: {{ urlFileInfo.filename }}</span>
+              <span v-if="urlFileInfo.size">大小: {{ formatFileSize(urlFileInfo.size) }}</span>
+            </div>
+          </el-form-item>
+        </template>
 
         <!-- 标签选择 -->
         <el-form-item label="标签">
@@ -72,13 +131,17 @@
 
         <el-form-item>
           <el-button type="primary" size="large" @click="handleSubmit" :loading="uploading">
-            上传
+            {{ uploadMode === 'file' ? '上传' : '导入' }}
           </el-button>
           <el-button size="large" @click="$router.back()">取消</el-button>
         </el-form-item>
 
         <el-form-item v-if="uploadResult">
-          <el-result icon="success" title="上传成功" sub-title="文档已添加到知识库">
+          <el-result 
+            icon="success" 
+            :title="uploadMode === 'file' ? '上传成功' : '导入成功'" 
+            sub-title="文档已添加到知识库"
+          >
             <template #extra>
               <el-button type="primary" @click="$router.push(`/documents/${uploadResult.document_id}`)">
                 查看文档
@@ -98,11 +161,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload } from '@element-plus/icons-vue'
+import { Upload, Link } from '@element-plus/icons-vue'
 import { getKnowledgeBases } from '@/api/modules/knowledge-bases'
-import { uploadDocument } from '@/api/modules/documents'
+import { uploadDocument, uploadDocumentFromUrl } from '@/api/modules/documents'
 import { formatFileSize } from '@/utils/format'
 import TagSelector from '@/components/business/TagSelector.vue'
 import FilePreview from '@/components/business/FilePreview.vue'
@@ -113,10 +176,15 @@ const loading = ref(false)
 const uploading = ref(false)
 const file = ref<File | null>(null)
 const uploadResult = ref<any>(null)
+const uploadMode = ref<'file' | 'url'>('file')
+const urlFileInfo = ref<{ filename?: string; size?: number } | null>(null)
+const maxFileSize = 100 * 1024 * 1024 // 100MB
 
 const form = ref({
   knowledge_base_id: undefined as number | undefined,
-  tags: [] as string[]
+  tags: [] as string[],
+  url: '',
+  filename: ''
 })
 
 const uploadRef = ref()
@@ -147,34 +215,104 @@ const handleFileRemove = () => {
   file.value = null
 }
 
+const handleModeChange = () => {
+  // 切换模式时清空数据
+  file.value = null
+  form.value.url = ''
+  form.value.filename = ''
+  urlFileInfo.value = null
+  uploadResult.value = null
+}
+
 const handleSubmit = async () => {
   if (!form.value.knowledge_base_id) {
     ElMessage.warning('请选择知识库')
     return
   }
 
-  if (!file.value) {
-    ElMessage.warning('请选择文件')
+  if (uploadMode.value === 'file') {
+    // 本地上传
+    if (!file.value) {
+      ElMessage.warning('请选择文件')
+      return
+    }
+
+    uploading.value = true
+    try {
+      const formData = new FormData()
+      formData.append('file', file.value)
+      formData.append('knowledge_base_id', String(form.value.knowledge_base_id))
+      if (form.value.tags && form.value.tags.length > 0) {
+        formData.append('tags', JSON.stringify(form.value.tags))
+      }
+
+      const res = await uploadDocument(formData)
+      uploadResult.value = res.data || res
+      ElMessage.success('上传成功')
+    } catch (error: any) {
+      ElMessage.error(error?.response?.data?.message || error?.message || '上传失败')
+    } finally {
+      uploading.value = false
+    }
+  } else {
+    // URL导入
+    if (!form.value.url) {
+      ElMessage.warning('请输入文档URL')
+      return
+    }
+
+    // 验证URL格式
+    try {
+      new URL(form.value.url)
+    } catch {
+      ElMessage.warning('请输入有效的URL地址')
+      return
+    }
+
+    uploading.value = true
+    try {
+      const formData = new FormData()
+      formData.append('url', form.value.url)
+      formData.append('knowledge_base_id', String(form.value.knowledge_base_id))
+      if (form.value.tags && form.value.tags.length > 0) {
+        formData.append('tags', JSON.stringify(form.value.tags))
+      }
+      if (form.value.filename) {
+        formData.append('filename', form.value.filename)
+      }
+
+      const res = await uploadDocumentFromUrl(formData)
+      uploadResult.value = res.data || res
+      ElMessage.success('导入成功')
+    } catch (error: any) {
+      ElMessage.error(error?.response?.data?.message || error?.message || '导入失败')
+    } finally {
+      uploading.value = false
+    }
+  }
+}
+
+// 监听URL变化，尝试获取文件信息
+watch(() => form.value.url, async (newUrl) => {
+  if (!newUrl || uploadMode.value !== 'url') {
+    urlFileInfo.value = null
     return
   }
 
-  uploading.value = true
+  // 验证URL格式
   try {
-    const formData = new FormData()
-    formData.append('file', file.value)
-    formData.append('knowledge_base_id', String(form.value.knowledge_base_id))
-    if (form.value.tags && form.value.tags.length > 0) {
-      formData.append('tags', JSON.stringify(form.value.tags))
+    new URL(newUrl)
+    // 可以从URL中提取文件名
+    const urlObj = new URL(newUrl)
+    const pathname = urlObj.pathname
+    const filename = pathname.split('/').pop() || 'document'
+    if (filename && filename !== 'document') {
+      urlFileInfo.value = { filename }
     }
-
-    uploadResult.value = await uploadDocument(formData)
-    ElMessage.success('上传成功')
-  } catch (error) {
-    ElMessage.error('上传失败')
-  } finally {
-    uploading.value = false
+  } catch {
+    urlFileInfo.value = null
   }
-}
+})
 
 const handlePreviewFile = () => {
   if (file.value) {
@@ -253,8 +391,54 @@ loadKnowledgeBases()
   opacity: 0.95;
 }
 
+.upload-tabs {
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  
+  :deep(.el-radio-button__inner) {
+    background: rgba(30, 41, 59, 0.6) !important;
+    border-color: rgba(148, 163, 184, 0.3) !important;
+    color: #cbd5e1 !important;
+  }
+  
+  :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+    background: rgba(99, 102, 241, 0.4) !important;
+    border-color: rgba(99, 102, 241, 0.6) !important;
+    color: #e2e8f0 !important;
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.3) !important;
+  }
+}
+
 .kb-select {
   width: 360px;
+}
+
+.url-tips {
+  :deep(.el-alert) {
+    background: rgba(30, 41, 59, 0.7) !important;
+    border: 1px solid rgba(99, 102, 241, 0.3) !important;
+    border-radius: 8px;
+  }
+  
+  :deep(.el-alert__title) {
+    color: #e9eef5 !important;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  
+  :deep(.el-alert__content) {
+    p {
+      margin: 4px 0;
+      color: #cbd5e1 !important;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+  }
+  
+  :deep(.el-alert__icon) {
+    color: #93c5fd !important;
+  }
 }
 
 .file-info {
@@ -304,21 +488,82 @@ loadKnowledgeBases()
 
 /* 输入框占位符与文本颜色 */
 :deep(.el-input__inner) {
-  color: var(--el-text-color-primary);
+  color: #e2e8f0 !important;
+  background: rgba(30, 41, 59, 0.6) !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
 }
+
 :deep(.el-input__inner::placeholder) {
-  color: #cbd5e1;
+  color: #94a3b8 !important;
   opacity: 1;
 }
 
-/* 警告条文字颜色 */
+:deep(.el-input__inner:focus) {
+  border-color: rgba(99, 102, 241, 0.6) !important;
+  background: rgba(30, 41, 59, 0.8) !important;
+}
+
+:deep(.el-input-group__prepend) {
+  background: rgba(30, 41, 59, 0.6) !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+  color: #93c5fd !important;
+}
+
+:deep(.el-select .el-input__inner) {
+  color: #e2e8f0 !important;
+}
+
+:deep(.el-select-dropdown) {
+  background: rgba(30, 41, 59, 0.95) !important;
+  border: 1px solid rgba(99, 102, 241, 0.3) !important;
+}
+
+:deep(.el-select-dropdown__item) {
+  color: #e2e8f0 !important;
+}
+
+:deep(.el-select-dropdown__item:hover) {
+  background: rgba(99, 102, 241, 0.2) !important;
+}
+
+:deep(.el-select-dropdown__item.is-selected) {
+  color: #93c5fd !important;
+  background: rgba(99, 102, 241, 0.3) !important;
+}
+
+/* 警告条文字颜色（通用，针对知识库选择提示） */
+:deep(.el-alert) {
+  background: rgba(30, 41, 59, 0.7) !important;
+  border: 1px solid rgba(251, 191, 36, 0.3) !important;
+}
+
 :deep(.el-alert__title) {
-  color: #1f2937;
+  color: #fbbf24 !important;
+  font-weight: 600;
+}
+
+:deep(.el-alert--warning) {
+  background: rgba(30, 41, 59, 0.7) !important;
+  border-color: rgba(251, 191, 36, 0.3) !important;
 }
 
 /* 主操作按钮视觉增强 */
 :deep(.el-button.el-button--primary) {
   box-shadow: 0 4px 16px rgba(59,130,246,0.35);
+  background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
+  border: none !important;
+}
+
+:deep(.el-button:not(.el-button--primary)) {
+  background: rgba(30, 41, 59, 0.6) !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+  color: #e2e8f0 !important;
+}
+
+:deep(.el-button:not(.el-button--primary):hover) {
+  background: rgba(30, 41, 59, 0.8) !important;
+  border-color: rgba(148, 163, 184, 0.5) !important;
+  color: #f1f5f9 !important;
 }
 
 /* 上传成功提示的可读性增强 */
@@ -333,6 +578,30 @@ loadKnowledgeBases()
 }
 :deep(.el-result .icon-success) {
   filter: drop-shadow(0 0 10px rgba(16,185,129,0.35));
+}
+
+/* 标签选择器样式优化 */
+:deep(.tag-selector) {
+  .el-tag {
+    background: rgba(99, 102, 241, 0.2) !important;
+    border-color: rgba(99, 102, 241, 0.4) !important;
+    color: #cbd5e1 !important;
+  }
+  
+  .el-input__inner {
+    background: rgba(30, 41, 59, 0.6) !important;
+    border-color: rgba(148, 163, 184, 0.3) !important;
+    color: #e2e8f0 !important;
+  }
+}
+
+/* 自定义文件名输入框 */
+:deep(.el-form-item:has(.el-input input[placeholder*="可选"])) {
+  .el-input__inner {
+    background: rgba(30, 41, 59, 0.6) !important;
+    border-color: rgba(148, 163, 184, 0.3) !important;
+    color: #e2e8f0 !important;
+  }
 }
 </style>
 

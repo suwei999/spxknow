@@ -501,9 +501,33 @@ def process_document_task(self, document_id: int):
                 chunk_line_start: Optional[int] = None
                 chunk_line_end: Optional[int] = None
                 chunk_section_hint: Optional[str] = None
+                # HTML 特有字段
+                chunk_heading_level: Optional[int] = None
+                chunk_heading_path: Optional[List[str]] = None
+                chunk_semantic_tag: Optional[str] = None
+                chunk_list_type: Optional[str] = None
+                chunk_code_language: Optional[str] = None
+
+                def determine_html_chunk_type(entries: List[Dict[str, Any]]) -> Optional[str]:
+                    """确定 HTML 分块类型"""
+                    if not is_html:
+                        return None
+                    # 检查第一个元素确定分块类型
+                    if entries:
+                        first_entry = entries[0]
+                        if first_entry.get('code_language'):
+                            return 'code_block'
+                        if first_entry.get('list_type'):
+                            return 'list'
+                        if first_entry.get('semantic_tag'):
+                            return 'semantic_block'
+                        if first_entry.get('heading_level'):
+                            return 'heading_section'
+                    return 'paragraph'
 
                 def emit_chunk():
                     nonlocal current_parts, current_len, chunk_start_idx, chunk_end_idx, chunk_start_order, chunk_end_order, chunk_counter, chunk_line_start, chunk_line_end, chunk_section_hint
+                    nonlocal chunk_heading_level, chunk_heading_path, chunk_semantic_tag, chunk_list_type, chunk_code_language
                     content = ''.join(current_parts).strip()
                     if not content:
                         current_parts = []
@@ -515,9 +539,20 @@ def process_document_task(self, document_id: int):
                         chunk_line_start = None
                         chunk_line_end = None
                         chunk_section_hint = None
+                        chunk_heading_level = None
+                        chunk_heading_path = None
+                        chunk_semantic_tag = None
+                        chunk_list_type = None
+                        chunk_code_language = None
                         return
                     base_order = chunk_start_order or 0
                     pos_value = base_order * 1000 + chunk_counter
+                    
+                    # 确定 HTML 分块类型
+                    html_chunk_type = None
+                    if is_html:
+                        html_chunk_type = determine_html_chunk_type(text_buffer)
+                    
                     chunk_meta = {
                         'element_index_start': chunk_start_idx,
                         'element_index_end': chunk_end_idx,
@@ -530,6 +565,21 @@ def process_document_task(self, document_id: int):
                         'line_end': chunk_line_end,
                         'section_hint': chunk_section_hint,
                     }
+                    
+                    # 添加 HTML 特有字段
+                    if is_html:
+                        if html_chunk_type:
+                            chunk_meta['chunk_type'] = html_chunk_type
+                        if chunk_heading_level is not None:
+                            chunk_meta['heading_level'] = chunk_heading_level
+                        if chunk_heading_path:
+                            chunk_meta['heading_path'] = chunk_heading_path
+                        if chunk_semantic_tag:
+                            chunk_meta['semantic_tag'] = chunk_semantic_tag
+                        if chunk_list_type:
+                            chunk_meta['list_type'] = chunk_list_type
+                        if chunk_code_language:
+                            chunk_meta['code_language'] = chunk_code_language
                     chunk_item = {
                         'type': 'text',
                         'content': content,
@@ -550,6 +600,11 @@ def process_document_task(self, document_id: int):
                     chunk_line_start = None
                     chunk_line_end = None
                     chunk_section_hint = None
+                    chunk_heading_level = None
+                    chunk_heading_path = None
+                    chunk_semantic_tag = None
+                    chunk_list_type = None
+                    chunk_code_language = None
 
                 for idx, entry in enumerate(text_buffer):
                     text_value = entry.get('text') or ''
@@ -566,6 +621,18 @@ def process_document_task(self, document_id: int):
                             chunk_line_start = entry.get('line_start', chunk_line_start)
                             if chunk_section_hint is None:
                                 chunk_section_hint = entry.get('section_hint')
+                            # HTML 特有字段：从第一个元素获取
+                            if is_html:
+                                if chunk_heading_level is None:
+                                    chunk_heading_level = entry.get('heading_level')
+                                if chunk_heading_path is None:
+                                    chunk_heading_path = entry.get('heading_path')
+                                if chunk_semantic_tag is None:
+                                    chunk_semantic_tag = entry.get('semantic_tag')
+                                if chunk_list_type is None:
+                                    chunk_list_type = entry.get('list_type')
+                                if chunk_code_language is None:
+                                    chunk_code_language = entry.get('code_language')
                         remain = chunk_max - current_len
                         take = min(remain, length - pointer)
                         piece = text_value[pointer:pointer + take]
@@ -578,6 +645,23 @@ def process_document_task(self, document_id: int):
                             chunk_line_end = line_end_candidate
                         if chunk_section_hint is None:
                             chunk_section_hint = entry.get('section_hint')
+                        # HTML 特有字段：更新到最后处理的元素
+                        if is_html:
+                            heading_level_candidate = entry.get('heading_level')
+                            if heading_level_candidate is not None:
+                                chunk_heading_level = heading_level_candidate
+                            heading_path_candidate = entry.get('heading_path')
+                            if heading_path_candidate:
+                                chunk_heading_path = heading_path_candidate
+                            semantic_tag_candidate = entry.get('semantic_tag')
+                            if semantic_tag_candidate:
+                                chunk_semantic_tag = semantic_tag_candidate
+                            list_type_candidate = entry.get('list_type')
+                            if list_type_candidate:
+                                chunk_list_type = list_type_candidate
+                            code_language_candidate = entry.get('code_language')
+                            if code_language_candidate:
+                                chunk_code_language = code_language_candidate
                         pointer += take
                         if current_len >= chunk_max:
                             emit_chunk()
@@ -594,7 +678,7 @@ def process_document_task(self, document_id: int):
                     text_value = (element.get('text') or '').strip()
                     if not text_value:
                         continue
-                    text_buffer.append({
+                    buffer_entry = {
                         'text': text_value,
                         'element_index': element.get('element_index'),
                         'doc_order': element.get('doc_order'),
@@ -602,7 +686,17 @@ def process_document_task(self, document_id: int):
                         'line_end': element.get('line_end'),
                         'section_hint': element.get('section_hint'),
                         'code_language': element.get('code_language') if elem_type == 'code' else None,
-                    })
+                    }
+                    # HTML 特有字段：传递到 text_buffer
+                    if is_html:
+                        buffer_entry['heading_level'] = element.get('heading_level')
+                        buffer_entry['heading_path'] = element.get('heading_path')
+                        buffer_entry['semantic_tag'] = element.get('semantic_tag')
+                        buffer_entry['list_type'] = element.get('list_type')
+                        # code_language 已经在上面处理，但如果是 code 类型，确保传递
+                        if elem_type == 'code':
+                            buffer_entry['code_language'] = element.get('code_language')
+                    text_buffer.append(buffer_entry)
                 elif elem_type == 'table':
                     flush_text_buffer()
                     continue
@@ -1555,6 +1649,20 @@ def process_document_task(self, document_id: int):
                     logger.info(
                         f"[任务ID: {task_id}] 图片 {image_row.id} 向量生成完成，维度: {len(image_vector)}"
                     )
+
+                # ✅ 记录向量化结果到 MySQL，供前端状态展示
+                try:
+                    vector_dim = len(image_vector) if image_vector else None
+                    if vector_dim:
+                        image_row.vector_model = settings.CLIP_MODEL_NAME
+                        image_row.vector_dim = vector_dim
+                    image_row.last_processed_at = datetime.datetime.utcnow()
+                    if image_row.status not in ("completed", "failed"):
+                        image_row.status = "completed"
+                    db.commit()
+                except Exception as db_exc:
+                    logger.warning(f"[任务ID: {task_id}] 回写图片向量信息失败 image_id={image_row.id}: {db_exc}")
+                    db.rollback()
 
                 try:
                     image_metadata = img.get('metadata', {}) or {}

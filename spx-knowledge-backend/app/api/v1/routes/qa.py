@@ -8,23 +8,31 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from datetime import datetime
 import json
+import httpx
+import re
 
 from app.schemas.qa import (
     QASessionCreate, QASessionResponse, QASessionListResponse,
     QAMultimodalQuestionRequest, QAMultimodalQuestionResponse,
     QAImageSearchRequest, QAImageSearchResponse,
     QAHistoryResponse, QAHistorySearchRequest, QAHistorySearchResponse,
-    QAModelResponse, QASessionConfigUpdate, KnowledgeBaseListResponse
+    QAModelResponse, QASessionConfigUpdate, KnowledgeBaseListResponse,
+    QAExternalSearchRequest, QAExternalSearchResponse
 )
 from app.services.qa_service import QAService
 from app.services.multimodal_processing_service import MultimodalProcessingService
 from app.services.fallback_strategy_service import FallbackStrategyService
 from app.services.qa_history_service import QAHistoryService
+from app.services.external_search_service import ExternalSearchService, ExternalSearchRateLimitError
+from app.services.ollama_service import OllamaService
+from app.services.opensearch_service import OpenSearchService
+from app.models.qa_external_search import QAExternalSearchRecord
 from app.dependencies.database import get_db
 from app.core.logging import logger
 from app.config.settings import settings
 
 router = APIRouter()
+external_search_service = ExternalSearchService()
 
 
 def get_current_user_id(request: Request) -> int:
@@ -428,6 +436,236 @@ async def search_images(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"图片搜索失败: {str(e)}"
         )
+
+
+@router.post("/external-search", response_model=QAExternalSearchResponse)
+async def qa_external_search(
+    payload: QAExternalSearchRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """触发 SearxNG 联网搜索兜底"""
+    if not settings.SEARXNG_URL or not settings.EXTERNAL_SEARCH_ENABLED:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="外部搜索未启用")
+
+    try:
+        user_id = get_current_user_id(request)
+    except HTTPException:
+        user_id = None
+
+    intent = await _classify_external_intent(payload.question)
+    logger.info("[外部搜索] 问题意图识别结果 intent=%s question=%s", intent, payload.question[:80])
+    metadata = {
+        "knowledge_base_hits": payload.knowledge_base_hits,
+        "top_score": payload.top_score,
+        "answer_confidence": payload.answer_confidence,
+        "context_preview": (payload.context or "")[:500] if payload.context else None,
+        "detected_intent": intent,
+    }
+
+    summary_text: Optional[str] = None
+    record: Optional[QAExternalSearchRecord] = None
+
+    try:
+        result = await external_search_service.search(
+            question=payload.question,
+            context=payload.context,
+            user_id=user_id,
+            limit=payload.limit,
+            metadata=metadata,
+            intent=intent,
+        )
+        logger.info(
+            "[外部搜索] SearxNG 查询完成 intent=%s from_cache=%s latency=%s result_count=%s",
+            intent,
+            result.get("from_cache"),
+            result.get("latency"),
+            len(result.get("results", []) or []),
+        )
+        if settings.EXTERNAL_SEARCH_SUMMARY_ENABLED:
+            summary_text = await _summarize_external_results(
+                question=payload.question,
+                results=result.get("results", []),
+                db=db,
+            )
+
+        # 写入 MySQL
+        try:
+            record = QAExternalSearchRecord(
+                question=payload.question.strip(),
+                search_query=result.get("query"),
+                session_id=payload.conversation_id,
+                user_id=str(user_id) if user_id is not None else None,
+                summary=summary_text,
+                results=result.get("results", []),
+                trigger_metadata=metadata,
+                from_cache=bool(result.get("from_cache")),
+                latency=result.get("latency"),
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+        except Exception as db_exc:
+            db.rollback()
+            logger.warning(f"外部搜索记录入库失败: {db_exc}")
+            record = None
+
+        # 写入 OpenSearch
+        if record:
+            document = {
+                "record_id": record.id,
+                "question": record.question,
+                "search_query": record.search_query,
+                "summary": summary_text,
+                "session_id": record.session_id,
+                "user_id": record.user_id,
+                "results": result.get("results", []),
+                "metadata": metadata,
+                "from_cache": bool(result.get("from_cache")),
+                "latency": result.get("latency"),
+                "created_at": (record.created_at or datetime.utcnow()).isoformat(),
+            }
+            try:
+                os_service = OpenSearchService()
+                await os_service.index_document(
+                    os_service.external_search_index,
+                    f"external_search_{record.id}",
+                    document,
+                )
+            except Exception as os_exc:
+                logger.warning(f"外部搜索记录索引失败: {os_exc}")
+
+        return QAExternalSearchResponse(
+            triggered=True,
+            from_cache=result.get("from_cache", False),
+            query=result.get("query"),
+            latency=result.get("latency"),
+            results=result.get("results", []),
+            summary=summary_text,
+        )
+    except ExternalSearchRateLimitError as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.error(f"调用 SearxNG 失败: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="外部搜索服务异常") from exc
+    except Exception as exc:
+        logger.error(f"外部搜索API错误: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="外部搜索失败") from exc
+
+
+async def _summarize_external_results(
+    question: str,
+    results: List[Dict[str, Any]],
+    db: Session,
+) -> Optional[str]:
+    """调用 LLM 对外部搜索结果生成摘要"""
+    if (
+        not results
+        or not settings.EXTERNAL_SEARCH_SUMMARY_ENABLED
+    ):
+        return None
+
+    model_name = (
+        settings.EXTERNAL_SEARCH_SUMMARY_MODEL
+        or settings.QA_SUMMARY_MODEL
+        or settings.OLLAMA_MODEL
+    )
+    if not model_name:
+        return None
+
+    limited = results[: max(1, settings.EXTERNAL_SEARCH_SUMMARY_MAX_ITEMS)]
+    lines: List[str] = []
+    for idx, item in enumerate(limited, 1):
+        title = (item.get("title") or "").strip() or "未命名"
+        source = (item.get("source") or item.get("url") or "").strip()
+        snippet = (item.get("snippet") or "").strip()
+        if len(snippet) > 220:
+            snippet = snippet[:220] + "..."
+        lines.append(
+            f"{idx}. 标题: {title}\n   来源: {source}\n   摘要: {snippet or '暂无摘要'}"
+        )
+    context = "\n".join(lines)
+    prompt = (
+        "你是一名企业内部的知识助手，请根据以下外部搜索结果，"
+        "针对用户的问题总结 3-4 条中文要点。确保内容准确，不要杜撰。"
+        "如果信息不足以回答，请说明“外部信息不足”。"
+        f"\n用户问题：{question}\n外部搜索结果：\n{context}\n请开始总结："
+    )
+
+    ollama = OllamaService(db)
+    try:
+        summary = await ollama.generate_text(prompt, model=model_name)
+        cleaned = _clean_summary_text(summary)
+        logger.info(
+            "[外部搜索] 摘要生成完成 model=%s has_summary=%s", model_name, bool(cleaned)
+        )
+        return cleaned
+    except Exception as exc:
+        logger.warning(f"外部搜索摘要生成失败: {exc}")
+        return None
+
+
+async def _classify_external_intent(question: str) -> str:
+    """调用 LLM 识别外部搜索的意图类别"""
+    model_name = (
+        settings.EXTERNAL_SEARCH_INTENT_MODEL
+        or settings.QA_SUMMARY_MODEL
+        or settings.OLLAMA_MODEL
+    )
+    if not model_name:
+        return "general"
+
+    prompt = (
+        "你是一个分类器，请判断用户问题更接近哪一类搜索意图。"
+        "候选类别只有：news（新闻、热点、头条）、tech（技术教程/故障排查）、general（无法判断或其他）。"
+        "输出格式为 JSON，如 {\"intent\": \"news\"}，不要添加其它内容。\n"
+        f"用户问题：{question}"
+    )
+    ollama = OllamaService(None)
+    try:
+        response = await ollama.generate_text(prompt, model=model_name)
+        intent = _extract_intent_from_response(response)
+        logger.debug("[外部搜索] 意图识别响应: %s -> %s", response, intent)
+        return intent
+    except Exception as exc:
+        logger.warning(f"外部搜索意图识别失败: {exc}")
+        return "general"
+
+
+def _extract_intent_from_response(response: str) -> str:
+    """从模型输出解析 intent，容错处理非 JSON 场景"""
+    import json
+    clean = (response or "").strip()
+    if not clean:
+        return "general"
+    try:
+        # 尝试找到第一个 JSON 片段
+        if not clean.startswith("{"):
+            start = clean.find("{")
+            end = clean.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                clean = clean[start : end + 1]
+        data = json.loads(clean)
+        intent = (data.get("intent") or "general").lower()
+        if intent not in {"news", "tech", "general"}:
+            intent = "general"
+        return intent
+    except Exception:
+        lower_resp = clean.lower()
+        if any(k in lower_resp for k in ["news", "headline", "热点", "新闻"]):
+            return "news"
+        if any(k in lower_resp for k in ["tech", "技术", "教程", "故障"]):
+            return "tech"
+        return "general"
+
+
+def _clean_summary_text(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    cleaned = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+    return cleaned.strip() or None
 
 # 5. 流式问答功能
 

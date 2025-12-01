@@ -23,7 +23,51 @@
         </el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatDateTime(document.created_at) }}</el-descriptions-item>
         <el-descriptions-item label="更新时间">{{ formatDateTime(document.updated_at) }}</el-descriptions-item>
+      <el-descriptions-item label="安全扫描状态">
+        <el-tag :type="getSecurityScanStatusType(document.security_scan_status || 'pending')" size="small">
+          {{ getSecurityScanStatusText(document.security_scan_status || 'pending') }}
+        </el-tag>
+        <span v-if="document.security_scan_method" style="margin-left: 8px; color: #909399; font-size: 12px;">
+          ({{ getSecurityScanMethodText(document.security_scan_method) }})
+        </span>
+      </el-descriptions-item>
+      <el-descriptions-item v-if="document.security_scan_timestamp" label="扫描时间">
+        {{ formatDateTime(document.security_scan_timestamp) }}
+      </el-descriptions-item>
       </el-descriptions>
+
+      <!-- 安全扫描详情 -->
+      <el-card v-if="document.security_scan_result" style="margin-top: 16px;">
+        <template #header>
+          <span>安全扫描详情</span>
+        </template>
+        <el-descriptions :column="1" size="small" border>
+          <el-descriptions-item label="扫描方法">
+            {{ getSecurityScanMethodText(document.security_scan_method) }}
+          </el-descriptions-item>
+          <el-descriptions-item v-if="document.security_scan_result?.virus_scan" label="ClamAV 扫描">
+            <el-tag :type="getVirusScanStatusType(document.security_scan_result.virus_scan?.status)" size="small">
+              {{ getVirusScanStatusText(document.security_scan_result.virus_scan?.status) }}
+            </el-tag>
+            <span v-if="document.security_scan_result.virus_scan?.message" style="margin-left: 8px; color: #909399; font-size: 12px;">
+              {{ document.security_scan_result.virus_scan.message }}
+            </span>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="document.security_scan_result?.script_scan" label="脚本检测">
+            <el-tag :type="document.security_scan_result.script_scan?.safe ? 'success' : 'warning'" size="small">
+              {{ document.security_scan_result.script_scan?.safe ? '安全' : '可疑' }}
+            </el-tag>
+            <span v-if="document.security_scan_result.script_scan?.found_keywords?.length" style="margin-left: 8px; color: #E6A23C; font-size: 12px;">
+              发现关键词: {{ document.security_scan_result.script_scan.found_keywords.join(', ') }}
+            </span>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="document.security_scan_result?.threats_found?.length" label="威胁列表">
+            <el-tag type="danger" size="small" v-for="threat in document.security_scan_result.threats_found" :key="threat" style="margin-right: 4px;">
+              {{ threat }}
+            </el-tag>
+          </el-descriptions-item>
+        </el-descriptions>
+      </el-card>
 
       <el-divider>文档内容</el-divider>
 
@@ -103,7 +147,13 @@
         <el-tab-pane label="分块列表" name="chunks">
           <el-table :data="chunks" v-loading="chunksLoading" class="chunk-table">
             <el-table-column prop="chunk_index" label="序号" width="80" />
-            <el-table-column prop="chunk_type" label="类型" width="120" />
+            <el-table-column label="类型" width="120">
+              <template #default="{ row }">
+                <el-tag :type="getChunkTypeTagType(row.chunk_type)" size="small">
+                  {{ getChunkTypeLabel(row.chunk_type) }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="char_count" label="字符数" width="120" />
             <el-table-column label="操作" width="140">
               <template #default="{ row }">
@@ -119,6 +169,7 @@
             class="chunk-dialog"
           >
             <template #default>
+              <!-- 图片分块 -->
               <div v-if="currentChunk && currentChunk.chunk_type === 'image'">
                 <img
                   v-if="currentChunk.image_url"
@@ -133,6 +184,44 @@
                   </el-descriptions>
                 </div>
               </div>
+              
+              <!-- 代码块分块 -->
+              <div v-else-if="currentChunk && currentChunk.chunk_type === 'code_block'">
+                <div class="chunk-meta" v-if="currentChunk.meta">
+                  <el-descriptions :column="1" size="small" border>
+                    <el-descriptions-item label="代码语言">
+                      {{ getChunkMeta(currentChunk, 'code_language') || '未知' }}
+                    </el-descriptions-item>
+                  </el-descriptions>
+                </div>
+                <div class="chunk-code-content" v-html="highlightCode(currentChunk?.content || '', getChunkMeta(currentChunk, 'code_language'))"></div>
+              </div>
+              
+              <!-- HTML 特有分块（标题章节、语义块、列表、段落） -->
+              <div v-else-if="currentChunk && isHtmlChunk(currentChunk)">
+                <div class="chunk-meta" v-if="currentChunk.meta">
+                  <el-descriptions :column="1" size="small" border>
+                    <el-descriptions-item label="分块类型">
+                      {{ getChunkTypeLabel(currentChunk.chunk_type) }}
+                    </el-descriptions-item>
+                    <el-descriptions-item v-if="getChunkMeta(currentChunk, 'heading_level')" label="标题层级">
+                      H{{ getChunkMeta(currentChunk, 'heading_level') }}
+                    </el-descriptions-item>
+                    <el-descriptions-item v-if="getChunkMeta(currentChunk, 'heading_path')?.length" label="标题路径">
+                      {{ getChunkMeta(currentChunk, 'heading_path')?.join(' > ') || '—' }}
+                    </el-descriptions-item>
+                    <el-descriptions-item v-if="getChunkMeta(currentChunk, 'semantic_tag')" label="语义标签">
+                      {{ getChunkMeta(currentChunk, 'semantic_tag') }}
+                    </el-descriptions-item>
+                    <el-descriptions-item v-if="getChunkMeta(currentChunk, 'list_type')" label="列表类型">
+                      {{ getChunkMeta(currentChunk, 'list_type') }}
+                    </el-descriptions-item>
+                  </el-descriptions>
+                </div>
+                <pre class="chunk-content">{{ currentChunk?.content || '' }}</pre>
+              </div>
+              
+              <!-- 其他分块 -->
               <pre v-else class="chunk-content">{{ currentChunk?.content || '' }}</pre>
             </template>
           </el-dialog>
@@ -612,12 +701,132 @@ const getStatusText = (status: string) => {
   return map[status] || status
 }
 
+// HTML 分块类型标签映射
+const getChunkTypeLabel = (chunkType: string): string => {
+  const map: Record<string, string> = {
+    'text': '文本',
+    'table': '表格',
+    'image': '图片',
+    'heading_section': '标题章节',
+    'code_block': '代码块',
+    'semantic_block': '语义块',
+    'list': '列表',
+    'paragraph': '段落'
+  }
+  return map[chunkType] || chunkType
+}
+
+// HTML 分块类型标签颜色映射
+const getChunkTypeTagType = (chunkType: string): string => {
+  const map: Record<string, string> = {
+    'text': 'info',
+    'table': 'warning',
+    'image': 'success',
+    'heading_section': 'primary',
+    'code_block': 'danger',
+    'semantic_block': '',
+    'list': 'info',
+    'paragraph': ''
+  }
+  return map[chunkType] || 'info'
+}
+
+// 获取分块元数据
+const getChunkMeta = (chunk: any, key: string): any => {
+  if (!chunk?.meta) return null
+  try {
+    const meta = typeof chunk.meta === 'string' ? JSON.parse(chunk.meta) : chunk.meta
+    return meta[key]
+  } catch {
+    return null
+  }
+}
+
+// 判断是否为 HTML 特有分块
+const isHtmlChunk = (chunk: any): boolean => {
+  const htmlChunkTypes = ['heading_section', 'code_block', 'semantic_block', 'list', 'paragraph']
+  return htmlChunkTypes.includes(chunk?.chunk_type)
+}
+
+// 代码高亮
+const highlightCode = (code: string, language?: string): string => {
+  if (!code) return ''
+  try {
+    if (language && hljs.getLanguage(language)) {
+      return hljs.highlight(code, { language }).value
+    }
+    return hljs.highlightAuto(code).value
+  } catch {
+    return escapeHtml(code)
+  }
+}
+
 // 版本类型：用于颜色标注
 const getVersionType = (v: any): string => {
   const desc = String(v?.description || '')
   if (/回退|恢复|revert/i.test(desc)) return 'revert'
   if (/编辑|修改|变更|edit|update/i.test(desc)) return 'edit'
   return 'init'
+}
+
+// 安全扫描状态类型
+const getSecurityScanStatusType = (status: string) => {
+  const map: Record<string, string> = {
+    'safe': 'success',
+    'infected': 'danger',
+    'error': 'warning',
+    'skipped': 'info',
+    'scanning': 'warning',
+    'pending': ''
+  }
+  return map[status] || 'info'
+}
+
+// 安全扫描状态文本
+const getSecurityScanStatusText = (status: string) => {
+  const map: Record<string, string> = {
+    'safe': '安全',
+    'infected': '感染',
+    'error': '错误',
+    'skipped': '跳过',
+    'scanning': '扫描中',
+    'pending': '待扫描'
+  }
+  return map[status] || status || '未知'
+}
+
+// 安全扫描方法文本
+const getSecurityScanMethodText = (method: string) => {
+  const map: Record<string, string> = {
+    'clamav': 'ClamAV 扫描',
+    'pattern_only': '模式匹配',
+    'none': '未扫描'
+  }
+  return map[method] || method || '未知'
+}
+
+// ClamAV 扫描状态类型
+const getVirusScanStatusType = (status: string) => {
+  const map: Record<string, string> = {
+    'safe': 'success',
+    'infected': 'danger',
+    'error': 'warning',
+    'warning': 'warning',
+    'skipped': 'info'
+  }
+  return map[status] || 'info'
+}
+
+// ClamAV 扫描状态文本
+const getVirusScanStatusText = (status: string) => {
+  const map: Record<string, string> = {
+    'safe': '安全',
+    'infected': '感染',
+    'error': '错误',
+    'warning': '警告',
+    'skipped': '跳过'
+  }
+  return map[status] || status || '未知'
 }
 
 onMounted(() => {
@@ -1126,8 +1335,31 @@ onMounted(() => {
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   }
 
+  .chunk-code-content {
+    padding: 16px;
+    background: #f5f5f5;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin-top: 16px;
+    
+    :deep(pre) {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+    }
+    
+    :deep(code) {
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      display: block;
+      white-space: pre;
+    }
+  }
+
   .chunk-meta {
     margin-top: 8px;
+    margin-bottom: 16px;
   }
 }
 </style>

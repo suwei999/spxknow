@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTML 文档测试文件</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; }
+        h3 { color: #7f8c8d; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #3498db; color: white; }
+        code { background-color: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+        pre { background-color: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        .highlight { background-color: #f39c12; padding: 2px 4px; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>HTML 文档测试文件</h1>
+        <p>这是一个用于测试 HTML 文档解析功能的测试文件，包含各种常见的 HTML 元素和结构。</p>
+    </header>
+
+    <nav>
+        <h2>目录</h2>
+        <ul>
+            <li><a href="#headings">标题结构</a></li>
+            <li><a href="#paragraphs">段落文本</a></li>
+            <li><a href="#lists">列表</a></li>
+            <li><a href="#tables">表格</a></li>
+            <li><a href="#code">代码块</a></li>
+            <li><a href="#images">图片</a></li>
+            <li><a href="#links">链接</a></li>
+        </ul>
+    </nav>
+
+    <main>
+        <article id="headings">
+            <h2>标题结构测试</h2>
+            <p>以下展示了不同级别的标题：</p>
+            
+            <h1>一级标题 (H1)</h1>
+            <p>这是一级标题下的段落内容。</p>
+            
+            <h2>二级标题 (H2)</h2>
+            <p>这是二级标题下的段落内容。</p>
+            
+            <h3>三级标题 (H3)</h3>
+            <p>这是三级标题下的段落内容。</p>
+            
+            <h4>四级标题 (H4)</h4>
+            <p>这是四级标题下的段落内容。</p>
+            
+            <h5>五级标题 (H5)</h5>
+            <p>这是五级标题下的段落内容。</p>
+            
+            <h6>六级标题 (H6)</h6>
+            <p>这是六级标题下的段落内容。</p>
+        </article>
+
+        <section id="paragraphs">
+            <h2>段落和文本格式</h2>
+            
+            <p>这是一个普通段落，包含一些<strong>粗体文本</strong>和<em>斜体文本</em>，以及<code>行内代码</code>。</p>
+            
+            <p>这是另一个段落，包含<mark>高亮文本</mark>和<u>下划线文本</u>，还有<small>小号文本</small>和<sub>下标</sub>以及<sup>上标</sup>。</p>
+            
+            <blockquote>
+                <p>这是一个引用块，通常用于引用他人的话语或重要内容。引用块应该被正确识别和处理。</p>
+                <cite>— 来源说明</cite>
+            </blockquote>
+            
+            <p>段落中可能包含<abbr title="超文本标记语言">HTML</abbr>缩写，以及<dfn>术语定义</dfn>。</p>
+        </section>
+
+        <section id="lists">
+            <h2>列表测试</h2>
+            
+            <h3>无序列表</h3>
+            <ul>
+                <li>第一项：这是无序列表的第一项</li>
+                <li>第二项：包含<strong>粗体</strong>和<em>斜体</em>文本</li>
+                <li>第三项：包含嵌套列表
+                    <ul>
+                        <li>嵌套项 1</li>
+                        <li>嵌套项 2</li>
+                    </ul>
+                </li>
+                <li>第四项：普通列表项</li>
+            </ul>
+            
+            <h3>有序列表</h3>
+            <ol>
+                <li>第一步：准备环境</li>
+                <li>第二步：安装依赖
+                    <ol type="a">
+                        <li>安装 Python 包</li>
+                        <li>配置数据库</li>
+                    </ol>
+                </li>
+                <li>第三步：运行程序</li>
+                <li>第四步：验证结果</li>
+            </ol>
+            
+            <h3>定义列表</h3>
+            <dl>
+                <dt>HTML</dt>
+                <dd>超文本标记语言，用于创建网页的标准标记语言。</dd>
+                <dt>CSS</dt>
+                <dd>层叠样式表，用于描述网页的呈现样式。</dd>
+                <dt>JavaScript</dt>
+                <dd>一种高级编程语言，用于实现网页的交互功能。</dd>
+            </dl>
+        </section>
+
+        <section id="tables">
+            <h2>表格测试</h2>
+            
+            <h3>简单表格</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>姓名</th>
+                        <th>年龄</th>
+                        <th>职业</th>
+                        <th>城市</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>张三</td>
+                        <td>28</td>
+                        <td>软件工程师</td>
+                        <td>北京</td>
+                    </tr>
+                    <tr>
+                        <td>李四</td>
+                        <td>32</td>
+                        <td>产品经理</td>
+                        <td>上海</td>
+                    </tr>
+                    <tr>
+                        <td>王五</td>
+                        <td>25</td>
+                        <td>设计师</td>
+                        <td>深圳</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <h3>复杂表格（带合并单元格）</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th rowspan="2">部门</th>
+                        <th colspan="2">2024年</th>
+                        <th colspan="2">2025年</th>
+                    </tr>
+                    <tr>
+                        <th>Q1</th>
+                        <th>Q2</th>
+                        <th>Q1</th>
+                        <th>Q2</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>技术部</td>
+                        <td>100万</td>
+                        <td>120万</td>
+                        <td>150万</td>
+                        <td>180万</td>
+                    </tr>
+                    <tr>
+                        <td>市场部</td>
+                        <td>80万</td>
+                        <td>90万</td>
+                        <td>110万</td>
+                        <td>130万</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="code">
+            <h2>代码块测试</h2>
+            
+            <h3>Python 代码示例</h3>
+            <pre><code class="language-python">def hello_world():
+    """打印 Hello World"""
+    print("Hello, World!")
+    return True
+
+# 调用函数
+result = hello_world()
+if result:
+    print("函数执行成功")
+</code></pre>
+            
+            <h3>JavaScript 代码示例</h3>
+            <pre><code class="language-javascript">function calculateSum(a, b) {
+    return a + b;
+}
+
+const result = calculateSum(10, 20);
+console.log(`结果: ${result}`);
+</code></pre>
+            
+            <h3>SQL 代码示例</h3>
+            <pre><code class="language-sql">SELECT 
+    id,
+    name,
+    email,
+    created_at
+FROM users
+WHERE status = 'active'
+ORDER BY created_at DESC
+LIMIT 10;
+</code></pre>
+        </section>
+
+        <section id="images">
+            <h2>图片测试</h2>
+            
+            <h3>Base64 编码图片</h3>
+            <p>以下是一个 Base64 编码的小图标（1x1 像素的红色点）：</p>
+            <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="测试图片" />
+            
+            <h3>图片说明</h3>
+            <figure>
+                <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzM0OThkYiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjE4IiBmaWxsPSJ3aGl0ZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPlN2ZyBJbWFnZTwvdGV4dD48L3N2Zz4=" alt="SVG 测试图片" />
+                <figcaption>这是一个 SVG 格式的测试图片</figcaption>
+            </figure>
+        </section>
+
+        <section id="links">
+            <h2>链接测试</h2>
+            
+            <p>这是一个<a href="https://www.example.com" target="_blank">外部链接</a>，指向示例网站。</p>
+            
+            <p>这是一个<a href="#headings">内部锚点链接</a>，指向页面内的标题部分。</p>
+            
+            <p>这是一个<a href="mailto:test@example.com">邮件链接</a>。</p>
+            
+            <p>这是一个<a href="tel:+8613800138000">电话链接</a>。</p>
+        </section>
+
+        <section id="semantic">
+            <h2>语义化标签测试</h2>
+            
+            <article>
+                <header>
+                    <h3>文章标题</h3>
+                    <p><time datetime="2025-01-28">2025年1月28日</time></p>
+                </header>
+                
+                <p>这是文章的主要内容部分，使用了语义化的 <code>&lt;article&gt;</code> 标签。</p>
+                
+                <aside>
+                    <h4>相关链接</h4>
+                    <ul>
+                        <li><a href="#">相关文章 1</a></li>
+                        <li><a href="#">相关文章 2</a></li>
+                    </ul>
+                </aside>
+                
+                <footer>
+                    <p>文章作者：测试用户</p>
+                </footer>
+            </article>
+        </section>
+
+        <section id="forms">
+            <h2>表单元素测试</h2>
+            
+            <form>
+                <fieldset>
+                    <legend>用户信息</legend>
+                    <label for="name">姓名：</label>
+                    <input type="text" id="name" name="name" placeholder="请输入姓名" />
+                    
+                    <label for="email">邮箱：</label>
+                    <input type="email" id="email" name="email" placeholder="example@email.com" />
+                    
+                    <label for="message">留言：</label>
+                    <textarea id="message" name="message" rows="4" placeholder="请输入留言内容"></textarea>
+                </fieldset>
+            </form>
+        </section>
+    </main>
+
+    <footer>
+        <hr />
+        <p><small>© 2025 HTML 测试文档。本文件用于测试 HTML 解析功能。</small></p>
+        <address>
+            联系地址：测试地址 123 号<br />
+            联系电话：+86 138-0000-0000
+        </address>
+    </footer>
+
+    <!-- 注释：这是一个 HTML 注释，不应该在解析后的内容中出现 -->
+    
+    <script>
+        // 这是一个 JavaScript 代码块，用于测试脚本处理
+        console.log("这是测试脚本");
+        function testFunction() {
+            return "测试";
+        }
+    </script>
+</body>
+</html>
+

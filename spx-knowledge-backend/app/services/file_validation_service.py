@@ -217,6 +217,13 @@ class FileValidationService:
                         code=ErrorCode.VALIDATION_ERROR,
                         message=f"文件包含病毒: {', '.join(threats)}"
                     )
+            elif settings.CLAMAV_REQUIRED:
+                # 如果 ClamAV 必需但不可用，拒绝上传
+                logger.error("❌ ClamAV 服务不可用，但 CLAMAV_REQUIRED=true，拒绝上传")
+                raise CustomException(
+                    code=ErrorCode.VALIDATION_ERROR,
+                    message="ClamAV 服务不可用，无法进行安全扫描。请联系管理员检查 ClamAV 服务状态。"
+                )
             
             # 2. 恶意脚本检测
             logger.info("执行恶意脚本检测")
@@ -229,14 +236,40 @@ class FileValidationService:
                 # 不直接拒绝，记录警告
                 script_scan_result['severity'] = 'warning'
             
+            # 确定扫描状态
+            if virus_scan_result:
+                if virus_scan_result.get('status') == 'safe':
+                    scan_status = "safe"
+                elif virus_scan_result.get('status') == 'error':
+                    scan_status = "error"
+                elif virus_scan_result.get('skip_scan'):
+                    scan_status = "skipped"
+                else:
+                    scan_status = "safe"  # 默认安全
+            else:
+                # 如果没有 ClamAV 扫描结果，根据脚本检测结果判断
+                if script_scan_result.get('safe'):
+                    scan_status = "safe"
+                else:
+                    # 发现可疑脚本，但 ClamAV 未扫描，状态为 skipped（表示 ClamAV 跳过）
+                    scan_status = "skipped"
+            
+            # 确定扫描方法
+            if virus_scan_result and not virus_scan_result.get('skip_scan'):
+                scan_method = "clamav"  # ClamAV 扫描成功
+            elif not virus_scan_result:
+                scan_method = "pattern_only"  # 只有模式匹配
+            else:
+                scan_method = "none"  # 未扫描
+            
             # 构建结果
             result = {
                 "valid": True,
                 "virus_scan": virus_scan_result,
                 "script_scan": script_scan_result,
-                "scan_status": "clean" if script_scan_result.get('safe') else "warning",
-                "scan_method": "clamav_and_pattern" if virus_scan_result else "pattern_only",
-                "threats_found": []
+                "scan_status": scan_status,
+                "scan_method": scan_method,
+                "threats_found": virus_scan_result.get('threats', []) if virus_scan_result else []
             }
             
             logger.info(f"✅ 安全扫描通过: {file.filename}")

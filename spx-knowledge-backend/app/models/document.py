@@ -25,6 +25,11 @@ class Document(BaseModel):
     status = Column(String(50), default="uploaded", comment="处理状态")
     processing_progress = Column(Float, default=0.0, comment="处理进度")
     error_message = Column(Text, comment="错误信息")
+    # 安全扫描字段
+    security_scan_status = Column(String(50), default="pending", comment="安全扫描状态: pending(待扫描), scanning(扫描中), safe(安全), infected(感染), error(错误), skipped(跳过)")
+    security_scan_method = Column(String(50), comment="扫描方法: clamav, pattern_only, none")
+    security_scan_result = Column(JSON, comment="安全扫描结果JSON")
+    security_scan_timestamp = Column(DateTime, comment="安全扫描时间")
     # 版本管理字段 - 根据文档修改功能设计添加
     last_modified_at = Column(DateTime, comment="最后修改时间")
     modification_count = Column(Integer, default=0, comment="修改次数")

@@ -364,3 +364,34 @@ class QAPerformanceMetrics(BaseModel):
     similarity_scores: List[float]
     source_count: int
     processing_steps: List[str]
+
+# 12. 外部搜索相关 Schema
+
+class QAExternalSearchRequest(BaseModel):
+    """外部搜索请求"""
+    question: str = Field(..., min_length=1)
+    context: Optional[str] = None
+    conversation_id: Optional[str] = None
+    knowledge_base_hits: Optional[int] = Field(default=None, ge=0)
+    top_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    answer_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    limit: Optional[int] = Field(default=None, ge=1, le=10)
+    force: bool = False
+
+class QAExternalSearchResult(BaseModel):
+    """外部搜索结果"""
+    title: Optional[str] = None
+    url: str
+    snippet: Optional[str] = None
+    source: Optional[str] = None
+    engines: Optional[List[str]] = None
+
+class QAExternalSearchResponse(BaseModel):
+    """外部搜索响应"""
+    triggered: bool = True
+    from_cache: bool = False
+    query: Optional[str] = None
+    latency: Optional[float] = None
+    results: List[QAExternalSearchResult]
+    message: Optional[str] = None
+    summary: Optional[str] = None

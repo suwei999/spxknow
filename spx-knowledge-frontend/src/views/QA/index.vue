@@ -45,6 +45,20 @@
                 <el-button size="small" type="primary" plain @click="configDialogVisible = true">
                   配置
                 </el-button>
+                <el-tooltip content="当知识库命中不足时可尝试联网搜索" placement="top">
+                  <span>
+                    <el-button
+                      size="small"
+                      type="warning"
+                      plain
+                      :disabled="!canExternalSearch || externalLoading"
+                      :loading="externalLoading"
+                      @click="handleExternalSearch"
+                    >
+                      联网搜索
+                    </el-button>
+                  </span>
+                </el-tooltip>
               </div>
             </div>
           </template>
@@ -84,6 +98,48 @@
               </div>
               <div class="message-time">{{ formatDateTime(message.created_at) }}</div>
             </div>
+          </div>
+
+          <div
+            class="external-results-panel"
+            v-if="externalResults.length || externalError"
+          >
+            <div class="panel-header">
+              <span>外部搜索结果</span>
+              <el-button link size="small" @click="clearExternalResults">清空</el-button>
+            </div>
+            <div v-if="externalSummary" class="external-summary">
+              <div class="summary-title">模型总结</div>
+              <p class="summary-content">{{ externalSummary }}</p>
+            </div>
+            <el-alert
+              v-if="externalError"
+              :title="externalError"
+              type="warning"
+              :closable="false"
+              class="external-alert"
+            />
+            <div v-if="externalResults.length" class="external-list">
+              <div
+                v-for="(item, idx) in externalResults"
+                :key="item.url || idx"
+                class="external-item"
+              >
+                <div class="external-title">
+                  <a :href="item.url" target="_blank" rel="noopener">
+                    {{ item.title || item.url }}
+                  </a>
+                  <el-tag size="small" v-if="item.source" type="info" effect="plain">{{ item.source }}</el-tag>
+                </div>
+                <div class="external-snippet">
+                  {{ item.snippet || '暂无摘要' }}
+                </div>
+              </div>
+            </div>
+            <el-empty
+              v-else-if="!externalError"
+              description="暂无外部信息"
+            />
           </div>
 
           <div class="chat-input">
@@ -219,7 +275,7 @@
 import { ref, reactive, onMounted, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
-import { createQASession, getQASessions, getQASessionDetail, askQuestion, updateSessionConfig, deleteQASession, getKnowledgeBases } from '@/api/modules/qa'
+import { createQASession, getQASessions, getQASessionDetail, askQuestion, updateSessionConfig, deleteQASession, getKnowledgeBases, externalSearch } from '@/api/modules/qa'
 import { formatDateTime } from '@/utils/format'
 
 const messages = ref<any[]>([])
@@ -232,9 +288,23 @@ const configDialogVisible = ref(false)
 const savingConfig = ref(false)
 const knowledgeBases = ref<any[]>([])
 const loadingKnowledgeBases = ref(false)
+const canExternalSearch = ref(false)
+const externalLoading = ref(false)
+const externalResults = ref<any[]>([])
+const externalSummary = ref('')
+const externalError = ref('')
+const lastQuestionText = ref('')
+const lastAnswerStats = reactive({
+  sourceCount: 0,
+  topScore: 0,
+  confidence: 1
+})
 
 const DEFAULT_THRESHOLD = 0.66
 const DEFAULT_MAX_SOURCES = 10
+const EXTERNAL_MIN_DOC_HITS = 2
+const EXTERNAL_MIN_SCORE = 0.55
+const EXTERNAL_MIN_CONFIDENCE = 0.6
 
 const searchTypeOptions = [
   { label: '混合检索', value: 'hybrid' },
@@ -298,6 +368,7 @@ const loadSessions = async () => {
 
 const selectSession = (session: any) => {
   currentSession.value = session
+  resetExternalOutputs()
   loadMessages(session.session_id || session.id)
 }
 
@@ -495,6 +566,9 @@ const handleSendQuestion = async () => {
     created_at: new Date().toISOString()
   })
 
+  lastQuestionText.value = question
+  resetExternalOutputs()
+
   inputText.value = ''
   answering.value = true
 
@@ -524,6 +598,8 @@ const handleSendQuestion = async () => {
       processing_info: processing
     })
 
+    updateExternalSignals(sources, answer)
+
     await nextTick()
     scrollToBottom()
     
@@ -541,6 +617,7 @@ const handleSendQuestion = async () => {
     }
     // 移除用户问题（因为失败）
     messages.value.pop()
+    canExternalSearch.value = !!lastQuestionText.value
   } finally {
     answering.value = false
   }
@@ -676,6 +753,102 @@ const renderMessageContent = (message: any) => {
 const getDocumentLink = (docId: any): string => {
   if (!docId) return '#'
   return `/documents/${docId}`
+}
+
+const stripToPlainText = (value: string): string => {
+  if (!value) return ''
+  return value
+    .replace(/<\/?[^>]+(>|$)/g, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .trim()
+}
+
+const buildExternalContext = () => {
+  const recent = messages.value.slice(-6)
+  if (!recent.length) return ''
+  return recent
+    .map((msg) => {
+      const role = msg.type === 'user' ? '问' : '答'
+      return `[${role}] ${stripToPlainText(msg.content || '')}`
+    })
+    .join('\n')
+}
+
+const shouldEnableExternal = (
+  hits: number,
+  score: number,
+  confidence: number,
+  answerType?: string
+) => {
+  if (!lastQuestionText.value) return false
+  if (!hits) return true
+  if (hits < EXTERNAL_MIN_DOC_HITS) return true
+  if (score && score < EXTERNAL_MIN_SCORE) return true
+  if (confidence && confidence < EXTERNAL_MIN_CONFIDENCE) return true
+  if (answerType && ['no_info', 'error'].includes(answerType.toLowerCase())) return true
+  return false
+}
+
+const updateExternalSignals = (sources: any[], answer: any) => {
+  const hits = Array.isArray(sources) ? sources.length : 0
+  const scores = hits ? sources.map((s: any) => Number(s.similarity_score) || 0) : []
+  const topScore = scores.length ? Math.max(...scores) : 0
+  const confidence = Number(answer?.confidence ?? answer?.processing_info?.confidence ?? 0)
+
+  lastAnswerStats.sourceCount = hits
+  lastAnswerStats.topScore = topScore
+  lastAnswerStats.confidence = confidence || 0
+
+  canExternalSearch.value = shouldEnableExternal(hits, topScore, confidence, answer?.answer_type)
+}
+
+const resetExternalOutputs = () => {
+  externalResults.value = []
+  externalSummary.value = ''
+  externalError.value = ''
+  canExternalSearch.value = false
+  lastAnswerStats.sourceCount = 0
+  lastAnswerStats.topScore = 0
+  lastAnswerStats.confidence = 0
+}
+
+const handleExternalSearch = async () => {
+  if (!lastQuestionText.value) {
+    ElMessage.warning('请先提问以获取上下文')
+    return
+  }
+  externalLoading.value = true
+  externalError.value = ''
+  try {
+    const payload: any = {
+      question: lastQuestionText.value,
+      context: buildExternalContext(),
+      conversation_id: currentSession.value?.session_id || currentSession.value?.id,
+      knowledge_base_hits: lastAnswerStats.sourceCount || undefined,
+      top_score: lastAnswerStats.topScore || undefined,
+      answer_confidence: lastAnswerStats.confidence || undefined,
+      limit: 5
+    }
+    const res = await externalSearch(payload)
+    const data = res?.data ?? res ?? {}
+    externalResults.value = Array.isArray(data.results) ? data.results : []
+    externalSummary.value = data.summary || ''
+    if (!externalResults.value.length) {
+      externalError.value = data.message || '未找到相关的外部信息'
+    }
+  } catch (error: any) {
+    externalError.value = error?.response?.data?.detail || error?.message || '联网搜索失败'
+  } finally {
+    externalLoading.value = false
+  }
+}
+
+const clearExternalResults = () => {
+  externalResults.value = []
+  externalSummary.value = ''
+  externalError.value = ''
 }
 
 onMounted(() => {
@@ -920,6 +1093,84 @@ onMounted(() => {
           font-size: 12px;
           color: rgba(148, 163, 184, 0.9);
           margin-top: 5px;
+        }
+      }
+    }
+
+    .external-results-panel {
+      margin-top: 16px;
+      padding: 16px;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.35);
+
+      .panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-weight: 600;
+        color: #e2e8f0;
+        margin-bottom: 12px;
+      }
+
+      .external-alert {
+        margin-bottom: 12px;
+      }
+
+      .external-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .external-summary {
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 10px;
+        padding: 12px;
+        margin-bottom: 12px;
+        background: rgba(15, 23, 42, 0.5);
+
+        .summary-title {
+          font-weight: 600;
+          color: #f1f5f9;
+          margin-bottom: 6px;
+        }
+
+        .summary-content {
+          margin: 0;
+          color: rgba(226, 232, 240, 0.88);
+          line-height: 1.5;
+          white-space: pre-wrap;
+        }
+      }
+
+      .external-item {
+        padding: 12px;
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.55);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+
+        .external-title {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-weight: 600;
+          margin-bottom: 6px;
+
+          a {
+            color: #60a5fa;
+            text-decoration: none;
+
+            &:hover {
+              text-decoration: underline;
+            }
+          }
+        }
+
+        .external-snippet {
+          font-size: 13px;
+          color: rgba(226, 232, 240, 0.85);
+          line-height: 1.5;
         }
       }
     }

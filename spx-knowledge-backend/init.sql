@@ -163,6 +163,8 @@ CREATE TABLE IF NOT EXISTS `document_images` (
     `vector_model` VARCHAR(50) COMMENT '向量模型',
     `vector_dim` INT COMMENT '向量维度',
     `status` VARCHAR(50) DEFAULT 'pending' COMMENT '处理状态',
+    `retry_count` INT DEFAULT 0 COMMENT '重试次数',
+    `last_processed_at` DATETIME NULL COMMENT '最近处理时间',
     `error_message` TEXT COMMENT '错误信息',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -248,6 +250,29 @@ CREATE TABLE IF NOT EXISTS `qa_statistics` (
     INDEX `idx_qa_stats_kb_id` (`knowledge_base_id`),
     INDEX `idx_qa_stats_date` (`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='问答统计表';
+
+-- ============================================
+-- 10.1 外部搜索记录表
+-- ============================================
+CREATE TABLE IF NOT EXISTS `qa_external_searches` (
+    `id` INT NOT NULL AUTO_INCREMENT COMMENT '记录ID',
+    `question` TEXT NOT NULL COMMENT '用户原始问题',
+    `search_query` TEXT COMMENT '发送到SearxNG的查询语句',
+    `session_id` VARCHAR(100) COMMENT '会话ID',
+    `user_id` VARCHAR(100) COMMENT '用户ID',
+    `summary` TEXT COMMENT '模型总结',
+    `results` JSON COMMENT '外部搜索结果JSON',
+    `trigger_metadata` JSON COMMENT '触发元数据',
+    `from_cache` BOOLEAN DEFAULT FALSE COMMENT '是否命中缓存',
+    `latency` FLOAT COMMENT '耗时（秒）',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
+    PRIMARY KEY (`id`),
+    INDEX `idx_external_session` (`session_id`),
+    INDEX `idx_external_user` (`user_id`),
+    INDEX `idx_external_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='外部搜索记录表';
 
 -- ============================================
 -- 11. Celery任务表

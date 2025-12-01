@@ -166,6 +166,7 @@ class HtmlService:
                     "level": level,
                     "title": heading_text,
                     "position": len(heading_structure),
+                    "tag_name": tag.name,  # 添加 tag_name 字段
                 }
             )
             current_heading_path = self._update_heading_path(current_heading_path, level, heading_text)

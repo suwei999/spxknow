@@ -44,6 +44,7 @@ class OpenSearchService:
             self.qa_index = settings.QA_INDEX_NAME
             self.qa_answer_index = getattr(settings, "QA_ANSWER_INDEX_NAME", "qa_answers")
             self.resource_events_index = getattr(settings, "RESOURCE_EVENTS_INDEX_NAME", "resource_events")
+            self.external_search_index = getattr(settings, "EXTERNAL_SEARCH_INDEX_NAME", "external_searches")
             self._ensure_indices_exist()
             self._initialized = True
     
@@ -137,6 +138,10 @@ class OpenSearchService:
             # 创建资源事件索引
             if not self.client.indices.exists(index=self.resource_events_index):
                 self._create_resource_events_index()
+
+            # 创建外部搜索索引
+            if not self.client.indices.exists(index=self.external_search_index):
+                self._create_external_search_index()
             
             logger.info("OpenSearch索引检查完成")
             
@@ -571,6 +576,48 @@ class OpenSearchService:
             raise CustomException(
                 code=ErrorCode.OPENSEARCH_INDEX_FAILED,
                 message=f"资源事件索引创建失败: {str(e)}"
+            )
+
+    def _create_external_search_index(self):
+        """创建外部搜索索引"""
+        try:
+            logger.info(f"创建外部搜索索引: {self.external_search_index}")
+
+            index_mapping = {
+                "settings": {
+                    "number_of_shards": 1,
+                    "number_of_replicas": 1,
+                    "analysis": {
+                        "analyzer": {
+                            "ik_max_word": {
+                                "type": settings.TEXT_ANALYZER
+                            }
+                        }
+                    }
+                },
+                "mappings": {
+                    "properties": {
+                        "question": {"type": "text", "analyzer": settings.TEXT_ANALYZER},
+                        "search_query": {"type": "text", "analyzer": settings.TEXT_ANALYZER},
+                        "summary": {"type": "text", "analyzer": settings.TEXT_ANALYZER},
+                        "session_id": {"type": "keyword"},
+                        "user_id": {"type": "keyword"},
+                        "from_cache": {"type": "boolean"},
+                        "latency": {"type": "float"},
+                        "metadata": {"type": "object"},
+                        "results": {"type": "object"},
+                        "created_at": {"type": "date"},
+                    }
+                }
+            }
+
+            self.client.indices.create(index=self.external_search_index, body=index_mapping)
+            logger.info(f"外部搜索索引创建成功: {self.external_search_index}")
+        except Exception as e:
+            logger.error(f"创建外部搜索索引失败: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.OPENSEARCH_INDEX_FAILED,
+                message=f"外部搜索索引创建失败: {str(e)}"
             )
 
     async def ensure_resource_events_index(self) -> None:

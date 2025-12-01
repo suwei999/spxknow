@@ -172,3 +172,20 @@ export const getStreamURL = (sessionId: string) => {
   return `${wsBaseURL}/api/qa/sessions/${sessionId}/stream`
 }
 
+// 外部联网搜索
+export const externalSearch = (data: {
+  question: string
+  context?: string
+  conversation_id?: string
+  knowledge_base_hits?: number
+  top_score?: number
+  answer_confidence?: number
+  limit?: number
+}) => {
+  return request({
+    url: '/qa/external-search',
+    method: 'post',
+    data
+  })
+}
+

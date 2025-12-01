@@ -14,6 +14,8 @@ from app.core.logging import logger
 from app.config.settings import settings
 from app.services.opensearch_service import OpenSearchService
 from app.services.minio_storage_service import MinioStorageService
+from app.models.image import DocumentImage
+from fastapi import Body
 
 router = APIRouter()
 
@@ -313,6 +315,26 @@ async def get_image(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"获取图片详情失败: {str(e)}"
         )
+
+@router.post("/{image_id}/retry-ocr")
+async def retry_image_ocr(
+    image_id: int,
+    db: Session = Depends(get_db)
+):
+    """重新触发图片OCR + 向量化 + 索引"""
+    service = ImageService(db)
+    image = service.db.query(DocumentImage).filter(
+        DocumentImage.id == image_id,
+        DocumentImage.is_deleted == False
+    ).first()
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="图片不存在")
+    if image.status == "completed":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片已处理完成，无需重试")
+    success = service.process_image_sync(image_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="重试失败，请稍后再试")
+    return {"status": "success", "message": "图片OCR已重新执行"}
 
 @router.get("/file")
 async def get_image_file(

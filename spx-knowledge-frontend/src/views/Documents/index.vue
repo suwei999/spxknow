@@ -42,6 +42,13 @@
             </div>
           </template>
         </el-table-column>
+        <el-table-column prop="security_scan_status" label="安全扫描" width="120">
+          <template #default="{ row }">
+            <el-tag :type="getSecurityScanStatusType(row.security_scan_status || 'pending')" size="small">
+              {{ getSecurityScanStatusText(row.security_scan_status || 'pending') }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="200">
           <template #default="{ row }">
             <el-button size="small" @click="handleDetail(row)">详情</el-button>
@@ -372,6 +379,32 @@ const getStatusText = (status: string) => {
     'pending': '待处理'
   }
   return map[status] || status
+}
+
+// 安全扫描状态类型
+const getSecurityScanStatusType = (status: string) => {
+  const map: Record<string, string> = {
+    'safe': 'success',
+    'infected': 'danger',
+    'error': 'warning',
+    'skipped': 'info',
+    'scanning': 'warning',
+    'pending': ''
+  }
+  return map[status] || 'info'
+}
+
+// 安全扫描状态文本
+const getSecurityScanStatusText = (status: string) => {
+  const map: Record<string, string> = {
+    'safe': '安全',
+    'infected': '感染',
+    'error': '错误',
+    'skipped': '跳过',
+    'scanning': '扫描中',
+    'pending': '待扫描'
+  }
+  return map[status] || status || '未知'
 }
 
 const wsClient = ref<WebSocketClient | null>(null)

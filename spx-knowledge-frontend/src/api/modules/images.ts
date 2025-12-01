@@ -101,6 +101,13 @@ export const getImageList = (params?: {
   })
 }
 
+export const retryImageOcr = (imageId: number) => {
+  return request({
+    url: `/images/${imageId}/retry-ocr`,
+    method: 'post'
+  })
+}
+
 // 图片上传（补齐后端接口）
 export const uploadImage = (data: FormData) => {
   return request({

@@ -84,6 +84,18 @@ class Settings(BaseSettings):
     IMAGE_PIPELINE_MODE: str = "memory"  # memory|temp
     DEBUG_KEEP_TEMP_FILES: bool = False
     
+    # OCR / Qwen VL 配置
+    OCR_ENGINE: str = "qwen_vl"
+    OCR_MAX_RETRIES: int = 1
+    OCR_RETRY_DELAY_SECONDS: int = 0
+    OCR_PREPROCESS_ENABLED: bool = True
+    OCR_PREPROCESS_MAX_SIZE: int = 2048
+    OCR_PREPROCESS_DENOISE: bool = False
+    OLLAMA_OCR_MODEL: str = "qwen2-vl:7b"
+    OLLAMA_OCR_BASE_URL: str | None = None
+    OLLAMA_OCR_TIMEOUT: int = 120
+    OLLAMA_OCR_MAX_RETRIES: int = 2
+    
     # QA系统配置
     QA_DEFAULT_PAGE_SIZE: int = 20
     QA_MAX_PAGE_SIZE: int = 100
@@ -235,6 +247,21 @@ class Settings(BaseSettings):
     OBSERVABILITY_LOG_CONTEXT_LINES: int = 3  # 错误日志上下文行数（前后各几行）
     OBSERVABILITY_LOG_MAX_LINE_LENGTH: int = 10000  # 单行日志最大长度（超过此长度将被截断，单位：字符）
     SEARXNG_URL: Optional[str] = None
+    EXTERNAL_SEARCH_ENABLED: bool = True
+    EXTERNAL_SEARCH_MIN_DOC_HITS: int = 2
+    EXTERNAL_SEARCH_MIN_SCORE: float = 0.55
+    EXTERNAL_SEARCH_MIN_CONFIDENCE: float = 0.6
+    EXTERNAL_SEARCH_RESULT_LIMIT: int = 5
+    EXTERNAL_SEARCH_CACHE_TTL: int = 600  # 秒
+    EXTERNAL_SEARCH_RATE_LIMIT_PER_USER: int = 30
+    EXTERNAL_SEARCH_RATE_LIMIT_WINDOW: int = 3600  # 秒
+    EXTERNAL_SEARCH_TIMEOUT: int = 12
+    EXTERNAL_SEARCH_SUMMARY_ENABLED: bool = True
+    EXTERNAL_SEARCH_SUMMARY_MAX_ITEMS: int = 5
+    EXTERNAL_SEARCH_SUMMARY_MODEL: Optional[str] = None
+    EXTERNAL_SEARCH_INDEX_NAME: str = "external_searches"
+    EXTERNAL_SEARCH_CATEGORIES: Optional[str] = None
+    EXTERNAL_SEARCH_INTENT_MODEL: Optional[str] = None
     
     # 文本质量阈值
     MAX_NEWLINE_RATIO: float = 0.5
@@ -276,6 +303,7 @@ class Settings(BaseSettings):
     
     # ClamAV
     CLAMAV_ENABLED: bool = True
+    CLAMAV_REQUIRED: bool = False  # 如果为 true，ClamAV 不可用时拒绝上传
     CLAMAV_SOCKET_PATH: Optional[str] = None
     CLAMAV_TCP_HOST: Optional[str] = "localhost"
     CLAMAV_TCP_PORT: int = 3310

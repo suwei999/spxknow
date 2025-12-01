@@ -30,6 +30,18 @@ export const uploadDocument = (data: FormData) => {
   })
 }
 
+// 从URL导入文档
+export const uploadDocumentFromUrl = (data: FormData) => {
+  return request({
+    url: '/documents/upload-from-url',
+    method: 'post',
+    data,
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
+}
+
 // 文档状态查询
 export const getDocumentStatus = (id: number) => {
   return request({

@@ -96,7 +96,12 @@ async def get_documents(
                 "file_size": d.file_size,
                 "status": d.status,
                 "knowledge_base_id": d.knowledge_base_id,
-                "knowledge_base_name": kb_map.get(d.knowledge_base_id)
+                "knowledge_base_name": kb_map.get(d.knowledge_base_id),
+                # 安全扫描字段
+                "security_scan_status": getattr(d, 'security_scan_status', 'pending'),
+                "security_scan_method": getattr(d, 'security_scan_method', None),
+                "security_scan_result": getattr(d, 'security_scan_result', None),
+                "security_scan_timestamp": getattr(d, 'security_scan_timestamp', None),
             })
 
         logger.info(f"API响应: 返回 {len(documents)} 个文档")
@@ -117,6 +122,103 @@ async def get_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"获取文档列表失败: {str(e)}"
         )
+
+@router.post("/upload-from-url")
+async def upload_document_from_url(
+    request: Request,
+    url: str = Form(...),
+    knowledge_base_id: int = Form(...),
+    category_id: Optional[int] = Form(None),
+    tags: Optional[str] = Form(None),
+    metadata: Optional[str] = Form(None),
+    filename: Optional[str] = Form(None),
+    db: Session = Depends(get_db)
+):
+    """
+    从URL导入文档 - 下载文件后执行完整的上传流程
+    
+    请求参数：
+    - url: 文档URL (必填)
+    - knowledge_base_id: 知识库ID (必填)
+    - category_id: 分类ID (可选)
+    - tags: 标签列表JSON字符串 (可选)
+    - metadata: 元数据JSON字符串 (可选)
+    - filename: 自定义文件名 (可选)
+    
+    响应内容：
+    - document_id: 文档唯一标识
+    - task_id: 处理任务标识
+    - file_info: 文件信息
+    - knowledge_base_info: 知识库信息
+    - tag_info: 标签信息
+    - upload_time: 上传时间
+    """
+    try:
+        logger.info(f"API请求: 从URL导入文档 {url}")
+        
+        # 获取当前用户ID（用于数据隔离）
+        user_id = get_current_user_id(request)
+        
+        # 解析tags
+        parsed_tags = []
+        if tags:
+            try:
+                parsed_tags = json.loads(tags)
+            except json.JSONDecodeError:
+                logger.warning(f"标签格式错误: {tags}，使用空列表")
+                parsed_tags = []
+        
+        # 解析metadata
+        parsed_metadata = {}
+        if metadata:
+            try:
+                parsed_metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                logger.warning(f"元数据格式错误: {metadata}，使用空对象")
+                parsed_metadata = {}
+        
+        logger.info(f"解析参数: category_id={category_id}, tags={parsed_tags}, metadata={parsed_metadata}")
+        
+        # 调用服务从URL导入文档
+        service = DocumentService(db)
+        result = await service.upload_document_from_url(
+            url=url,
+            knowledge_base_id=knowledge_base_id,
+            category_id=category_id,
+            tags=parsed_tags,
+            metadata=parsed_metadata,
+            user_id=user_id,
+            filename=filename
+        )
+        
+        logger.info(f"API响应: 从URL导入文档成功，文档ID: {result['document_id']}, 任务ID: {result.get('task_id')}")
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "document_id": result['document_id'],
+                "task_id": result.get('task_id'),
+                "file_info": {
+                    "filename": filename or result.get('original_filename', 'unknown'),
+                    "size": result.get('file_size'),
+                    "type": result.get('file_type')
+                },
+                "knowledge_base_info": {
+                    "knowledge_base_id": knowledge_base_id,
+                    "category_id": category_id
+                },
+                "tag_info": {
+                    "tags": parsed_tags
+                },
+                "upload_time": result.get('upload_timestamp')
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"从URL导入文档API错误: {e}", exc_info=True)
+        return {"code": 1, "message": f"从URL导入文档失败: {str(e)}"}
 
 @router.post("/upload")
 async def upload_document(
@@ -259,6 +361,11 @@ async def get_document(
             "knowledge_base_name": kb_name,
             "created_at": doc.created_at,
             "updated_at": doc.updated_at,
+            # 安全扫描字段
+            "security_scan_status": getattr(doc, 'security_scan_status', 'pending'),
+            "security_scan_method": getattr(doc, 'security_scan_method', None),
+            "security_scan_result": getattr(doc, 'security_scan_result', None),
+            "security_scan_timestamp": getattr(doc, 'security_scan_timestamp', None),
         }
         
         logger.info(f"API响应: 返回文档详情 {doc.original_filename}")

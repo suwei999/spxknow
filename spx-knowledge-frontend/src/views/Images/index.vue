@@ -43,16 +43,84 @@
             class="image-item"
             @click="handleImageClick(image)"
           >
-            <img :src="image.image_path" :alt="image.description" />
+            <!-- 图片预览区域 -->
+            <div class="image-preview">
+              <img :src="image.image_path" :alt="image.description" />
+              <div class="image-overlay">
+                <el-icon class="preview-icon"><ZoomIn /></el-icon>
+              </div>
+            </div>
+            
+            <!-- 信息区域 -->
             <div class="image-info">
-              <div class="image-title">{{ image.description || `图片 #${image.id}` }}</div>
-              <div class="image-meta">
-                <div class="meta-left">
-                  <el-tag v-if="image.image_type" size="small" type="info">{{ image.image_type }}</el-tag>
-                  <el-tag v-if="image.document_id" size="small" type="warning">文档{{ image.document_id }}</el-tag>
+              <!-- 标题和基本信息 -->
+              <div class="info-header">
+                <div class="image-title" :title="image.description || `图片 #${image.id}`">
+                  {{ image.description || `图片 #${image.id}` }}
                 </div>
-                <div class="meta-right">
+                <div class="image-badges">
+                  <el-tag v-if="image.image_type" size="small" type="info" effect="plain">
+                    {{ image.image_type }}
+                  </el-tag>
+                  <el-tag v-if="image.document_id" size="small" type="warning" effect="plain">
+                    文档{{ image.document_id }}
+                  </el-tag>
+                </div>
+              </div>
+
+              <!-- 状态信息 -->
+              <div class="status-section">
+                <div class="status-tags">
+                  <el-tag
+                    v-if="image.status"
+                    size="small"
+                    :type="statusTagType(image.status)"
+                  >
+                    {{ statusLabel(image.status) }}
+                  </el-tag>
+                  <el-tag
+                    size="small"
+                    :type="image?.vector_model && image?.vector_dim ? 'success' : 'info'"
+                    effect="plain"
+                  >
+                    {{ vectorStatusLabel(image) }}
+                  </el-tag>
+                </div>
+                <div class="file-size">
+                  <el-icon><Document /></el-icon>
                   <span>{{ formatFileSize(image.file_size || 0) }}</span>
+                </div>
+              </div>
+
+              <!-- OCR文本预览 -->
+              <div class="ocr-section">
+                <div v-if="image.ocr_text" class="ocr-preview">
+                  <el-icon class="ocr-icon"><DocumentCopy /></el-icon>
+                  <span class="ocr-text">{{ truncateText(image.ocr_text, 50) }}</span>
+                </div>
+                <div v-else class="ocr-empty">
+                  <el-icon class="ocr-icon"><DocumentDelete /></el-icon>
+                  <span>未检测到文字</span>
+                </div>
+              </div>
+
+              <!-- 底部信息 -->
+              <div class="info-footer">
+                <div v-if="image.last_processed_at" class="process-time">
+                  <el-icon><Clock /></el-icon>
+                  <span>{{ formatDateTime(image.last_processed_at) }}</span>
+                </div>
+                <div class="image-actions" @click.stop>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    :loading="retryingId === image.id"
+                    :disabled="(image.status || '').toLowerCase() === 'completed' || (image.status || '').toLowerCase() === 'processing'"
+                    @click="handleRetry(image)"
+                  >
+                    <el-icon><Refresh /></el-icon>
+                    <span>重新识别</span>
+                  </el-button>
                 </div>
               </div>
             </div>
@@ -86,6 +154,10 @@
             <el-descriptions-item label="向量模型">{{ selectedImage.vector_model || '-' }}</el-descriptions-item>
             <el-descriptions-item label="向量维度">{{ selectedImage.vector_dim || '-' }}</el-descriptions-item>
             <el-descriptions-item label="处理状态">{{ selectedImage.status || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="重试次数">{{ selectedImage.retry_count ?? 0 }}</el-descriptions-item>
+            <el-descriptions-item label="最近处理时间">
+              {{ formatDateTime(selectedImage.last_processed_at) }}
+            </el-descriptions-item>
             <el-descriptions-item label="创建时间" v-if="selectedImage.created_at">
               {{ new Date(selectedImage.created_at).toLocaleString() }}
             </el-descriptions-item>
@@ -98,14 +170,35 @@
             <p>{{ selectedImage.description }}</p>
           </div>
           
-          <div v-if="selectedImage.ocr_text" class="info-section">
+          <div class="info-section">
             <h4>OCR识别文字</h4>
-            <p class="ocr-text">{{ selectedImage.ocr_text }}</p>
+            <template v-if="selectedImage.ocr_text">
+              <p class="ocr-text">{{ selectedImage.ocr_text }}</p>
+            </template>
+            <template v-else>
+              <p class="ocr-empty">未检测到文字</p>
+            </template>
+          </div>
+
+          <div v-if="selectedImage.error_message" class="info-section">
+            <h4>错误信息</h4>
+            <p class="error-text">{{ selectedImage.error_message }}</p>
           </div>
           
           <div v-if="selectedImage.meta" class="info-section">
             <h4>元数据</h4>
             <pre class="meta-data">{{ typeof selectedImage.meta === 'string' ? selectedImage.meta : JSON.stringify(selectedImage.meta, null, 2) }}</pre>
+          </div>
+
+          <div class="detail-actions">
+            <el-button
+              type="primary"
+              :loading="retryingId === selectedImage.id"
+              :disabled="(selectedImage.status || '').toLowerCase() === 'completed' || (selectedImage.status || '').toLowerCase() === 'processing'"
+              @click="handleRetry(selectedImage)"
+            >
+              重新识别
+            </el-button>
           </div>
         </div>
       </div>
@@ -115,9 +208,10 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ElMessage, ElDescriptions, ElDescriptionsItem, ElDivider } from 'element-plus'
-import { getImageList, getImageDetail } from '@/api/modules/images'
-import { formatFileSize } from '@/utils/format'
+import { ElMessage } from 'element-plus'
+import { ZoomIn, Document, DocumentCopy, DocumentDelete, Clock, Refresh } from '@element-plus/icons-vue'
+import { getImageList, getImageDetail, retryImageOcr } from '@/api/modules/images'
+import { formatFileSize, formatDateTime, truncateText } from '@/utils/format'
 
 const loading = ref(false)
 const images = ref<any[]>([])
@@ -127,6 +221,7 @@ const size = ref(24)
 const total = ref(0)
 const imageDialogVisible = ref(false)
 const selectedImage = ref<any>(null)
+const retryingId = ref<number | null>(null)
 
 const filterForm = ref({
   document_id: undefined as number | undefined
@@ -226,6 +321,64 @@ const handleImageClick = async (image: any) => {
 onMounted(() => {
   loadData()
 })
+
+const statusTagType = (status?: string) => {
+  switch ((status || '').toLowerCase()) {
+    case 'completed':
+      return 'success'
+    case 'failed':
+      return 'danger'
+    case 'processing':
+      return 'warning'
+    default:
+      return 'info'
+  }
+}
+
+const statusLabel = (status?: string) => {
+  switch ((status || '').toLowerCase()) {
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    case 'processing':
+      return '处理中'
+    case 'pending':
+      return '待处理'
+    default:
+      return status || '未知'
+  }
+}
+
+const vectorStatusLabel = (image: any) => {
+  if (image?.vector_model && image?.vector_dim) return '已向量化'
+  if (image?.status === 'failed') return '向量待重试'
+  return '待向量化'
+}
+
+const canRetry = (image: any) => {
+  const status = (image?.status || '').toLowerCase()
+  return status !== 'completed' && status !== 'processing' && !retryingId.value
+}
+
+const handleRetry = async (image: any) => {
+  if (!image || image.status === 'completed') return
+  retryingId.value = image.id
+  try {
+    await retryImageOcr(image.id)
+    ElMessage.success('已触发重新识别，请稍候刷新状态')
+    await loadData()
+    if (selectedImage.value?.id === image.id) {
+      const detailRes = await getImageDetail(image.id)
+      const detail = detailRes?.data || detailRes
+      selectedImage.value = detail
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '重试失败')
+  } finally {
+    retryingId.value = null
+  }
+}
 </script>
 
 <style lang="scss" scoped>
@@ -258,55 +411,213 @@ onMounted(() => {
     &.grid-view {
       .image-list {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 16px;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 20px;
+
+        @media (max-width: 768px) {
+          grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+          gap: 16px;
+        }
+
+        @media (max-width: 480px) {
+          grid-template-columns: 1fr;
+          gap: 12px;
+        }
       }
     }
 
     .image-item {
-      border: 1px solid #e5e5e5;
-      border-radius: 4px;
+      border: 1px solid #e4e7ed;
+      border-radius: 8px;
       overflow: hidden;
       cursor: pointer;
-      transition: box-shadow 0.3s;
+      transition: all 0.3s ease;
+      background: #fff;
+      display: flex;
+      flex-direction: column;
 
       &:hover {
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        border-color: #409eff;
+        transform: translateY(-2px);
       }
 
-      img {
+      .image-preview {
+        position: relative;
         width: 100%;
         height: 200px;
-        object-fit: cover;
+        overflow: hidden;
+        background: #f5f7fa;
+        flex-shrink: 0;
+
+        img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          transition: transform 0.3s ease;
+        }
+
+        .image-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.3s ease;
+
+          .preview-icon {
+            font-size: 32px;
+            color: #fff;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+          }
+        }
+
+        &:hover {
+          img {
+            transform: scale(1.05);
+          }
+
+          .image-overlay {
+            background: rgba(0, 0, 0, 0.4);
+
+            .preview-icon {
+              opacity: 1;
+            }
+          }
+        }
       }
 
       .image-info {
-        padding: 12px;
-        
-        .image-title {
-          font-weight: 500;
-          margin-bottom: 8px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+        padding: 16px;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+
+        .info-header {
+          .image-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #303133;
+            margin-bottom: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            line-height: 1.4;
+          }
+
+          .image-badges {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+          }
         }
 
-        .image-meta {
+        .status-section {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          font-size: 12px;
-          color: #999;
-          gap: 8px;
+          padding: 8px 0;
+          border-top: 1px solid #f0f0f0;
+          border-bottom: 1px solid #f0f0f0;
 
-          .meta-left {
+          .status-tags {
             display: flex;
-            gap: 4px;
+            gap: 6px;
             flex-wrap: wrap;
           }
 
-          .meta-right {
-            flex-shrink: 0;
+          .file-size {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            color: #909399;
+
+            .el-icon {
+              font-size: 14px;
+            }
+          }
+        }
+
+        .ocr-section {
+          min-height: 40px;
+          padding: 8px;
+          background: #f5f7fa;
+          border-radius: 4px;
+
+          .ocr-preview {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+            font-size: 12px;
+            color: #606266;
+            line-height: 1.5;
+
+            .ocr-icon {
+              font-size: 14px;
+              color: #409eff;
+              margin-top: 2px;
+              flex-shrink: 0;
+            }
+
+            .ocr-text {
+              flex: 1;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              display: -webkit-box;
+              -webkit-line-clamp: 2;
+              -webkit-box-orient: vertical;
+            }
+          }
+
+          .ocr-empty {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #c0c4cc;
+
+            .ocr-icon {
+              font-size: 14px;
+            }
+          }
+        }
+
+        .info-footer {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-top: auto;
+          padding-top: 8px;
+          border-top: 1px solid #f0f0f0;
+
+          .process-time {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            color: #909399;
+
+            .el-icon {
+              font-size: 14px;
+            }
+          }
+
+          .image-actions {
+            .el-button {
+              padding: 4px 12px;
+              font-size: 12px;
+
+              .el-icon {
+                margin-right: 4px;
+              }
+            }
           }
         }
       }
@@ -354,6 +665,23 @@ onMounted(() => {
           max-height: 300px;
           overflow-y: auto;
         }
+
+        .error-text {
+          background: #fef2f2;
+          color: #b91c1c;
+          padding: 12px;
+          border-radius: 4px;
+          white-space: pre-wrap;
+        }
+
+        .ocr-empty {
+          margin: 0;
+          color: #94a3b8;
+        }
+      }
+      .detail-actions {
+        margin-top: 16px;
+        text-align: right;
       }
     }
   }

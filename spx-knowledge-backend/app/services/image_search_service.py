@@ -16,6 +16,7 @@ from app.services.rerank_service import RerankService
 from app.core.logging import logger
 from app.config.settings import settings
 from app.core.exceptions import CustomException, ErrorCode
+from app.services.ollama_service import OllamaService
 
 class ImageSearchService:
     """图片搜索服务 - 严格按照设计文档实现"""
@@ -34,7 +35,7 @@ class ImageSearchService:
         file: UploadFile,
         similarity_threshold: float = settings.SEARCH_VECTOR_THRESHOLD,
         limit: int = settings.QA_DEFAULT_MAX_RESULTS,
-        knowledge_base_id: Optional[int] = None
+        knowledge_base_id: Optional[List[int]] = None
     ) -> List[ImageSearchResponse]:
         """以图找图搜索 - 根据设计文档实现"""
         try:
@@ -482,66 +483,14 @@ class ImageSearchService:
         """提取OCR文字 - 根据设计文档实现"""
         try:
             logger.info(f"开始OCR文字识别: {file.filename}")
-            
-            # 根据设计文档，使用Tesseract + EasyOCR进行OCR识别
-            # 支持中英文文字识别
-            
-            import tempfile
-            import shutil
-            import pytesseract
-            import easyocr
-            
-            # 创建临时文件
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
-                temp_path = temp_file.name
-            
-            # 保存上传的图片到临时文件
-            with open(temp_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            
-            ocr_text = ""
-            
-            try:
-                # 使用Tesseract进行OCR识别
-                logger.debug("使用Tesseract进行OCR识别")
-                tesseract_text = pytesseract.image_to_string(temp_path, lang='chi_sim+eng')
-                if tesseract_text.strip():
-                    ocr_text += f"[Tesseract] {tesseract_text.strip()}\n"
-                
-            except Exception as e:
-                logger.warning(f"Tesseract OCR识别失败: {e}")
-            
-            try:
-                # 使用EasyOCR进行OCR识别
-                logger.debug("使用EasyOCR进行OCR识别")
-                reader = easyocr.Reader(['ch_sim', 'en'])
-                easyocr_results = reader.readtext(temp_path)
-                
-                easyocr_text = ""
-                for (bbox, text, confidence) in easyocr_results:
-                    if confidence > 0.5:  # 置信度阈值
-                        easyocr_text += text + " "
-                
-                if easyocr_text.strip():
-                    ocr_text += f"[EasyOCR] {easyocr_text.strip()}\n"
-                
-            except Exception as e:
-                logger.warning(f"EasyOCR识别失败: {e}")
-            
-            # 清理临时文件
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-            
-            # 清理和格式化OCR文本
-            ocr_text = ocr_text.strip()
-            if not ocr_text:
-                ocr_text = ""
-            
-            logger.info(f"OCR文字识别完成: {file.filename}, 识别文字长度: {len(ocr_text)}")
-            return ocr_text
-            
+            content = await file.read()
+            if not content:
+                return ""
+            mime = file.content_type or "image/png"
+            ollama = OllamaService(self.db)
+            text = ollama.extract_text_from_image(content, image_mime=mime)
+            logger.info(f"OCR文字识别完成: {file.filename}, 长度: {len(text)}")
+            return text
         except Exception as e:
             logger.error(f"OCR文字识别错误: {e}", exc_info=True)
             return ""

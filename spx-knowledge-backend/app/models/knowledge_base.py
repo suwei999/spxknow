@@ -13,6 +13,7 @@ class KnowledgeBase(BaseModel):
     name = Column(String(255), nullable=False, comment="知识库名称")
     description = Column(Text, comment="知识库描述")
     category_id = Column(Integer, ForeignKey("knowledge_base_categories.id"), comment="分类ID")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, comment="用户ID（数据隔离）")
     is_active = Column(Boolean, default=True, comment="是否激活")
     
     # 关系

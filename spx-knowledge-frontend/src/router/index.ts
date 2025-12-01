@@ -4,10 +4,31 @@ import type { RouteRecordRaw } from 'vue-router'
 // 路由配置
 const routes: RouteRecordRaw[] = [
   {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/Auth/Login.vue'),
+    meta: {
+      title: '登录',
+      requiresAuth: false
+    }
+  },
+  {
+    path: '/register',
+    name: 'Register',
+    component: () => import('@/views/Auth/Register.vue'),
+    meta: {
+      title: '注册',
+      requiresAuth: false
+    }
+  },
+  {
     path: '/',
     name: 'Layout',
     component: () => import('@/components/layout/AppLayout.vue'),
     redirect: '/home',
+    meta: {
+      requiresAuth: true
+    },
     children: [
       {
         path: 'home',
@@ -15,7 +36,8 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Home.vue'),
         meta: {
           title: '首页',
-          keepAlive: true
+          keepAlive: true,
+          requiresAuth: true
         }
       },
       {
@@ -170,6 +192,33 @@ const routes: RouteRecordRaw[] = [
           title: '图片管理',
           keepAlive: true
         }
+      },
+      {
+        path: 'statistics',
+        name: 'Statistics',
+        component: () => import('@/views/Statistics/index.vue'),
+        meta: {
+          title: '数据统计',
+          keepAlive: true
+        }
+      },
+      {
+        path: 'exports',
+        name: 'Exports',
+        component: () => import('@/views/Exports/index.vue'),
+        meta: {
+          title: '导出管理',
+          keepAlive: true
+        }
+      },
+      {
+        path: 'observability',
+        name: 'Observability',
+        component: () => import('@/views/Observability/index.vue'),
+        meta: {
+          title: '运维诊断',
+          keepAlive: false
+        }
       }
     ]
   },
@@ -197,13 +246,45 @@ const router = createRouter({
 
 // 路由守卫
 import { useAppStore } from '@/stores/modules/app'
+import { useUserStore } from '@/stores/modules/user'
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const appStore = useAppStore()
+  const userStore = useUserStore()
   
   // 设置标题
   if (to.meta?.title) {
     document.title = `${to.meta.title} - ${appStore.appTitle}`
+  }
+  
+  // 检查是否需要认证
+  const requiresAuth = to.matched.some(record => record.meta.requiresAuth)
+  
+  if (requiresAuth) {
+    // 检查是否有token
+    const token = localStorage.getItem('access_token')
+    if (!token) {
+      next('/login')
+      return
+    }
+    
+    // 如果有token但没有用户信息，尝试获取
+    if (!userStore.user) {
+      try {
+        await userStore.fetchUserInfo()
+      } catch (error) {
+        // 获取失败，清除token并跳转登录
+        userStore.clearAuth()
+        next('/login')
+        return
+      }
+    }
+  } else {
+    // 如果已登录，访问登录/注册页面时跳转到首页
+    if ((to.path === '/login' || to.path === '/register') && userStore.isAuthenticated) {
+      next('/')
+      return
+    }
   }
   
   next()

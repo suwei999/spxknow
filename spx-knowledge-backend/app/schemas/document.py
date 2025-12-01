@@ -49,3 +49,8 @@ class DocumentResponse(BaseResponseSchema):
     status: str = "uploaded"
     processing_progress: float = 0.0
     error_message: Optional[str] = None
+    # 安全扫描字段
+    security_scan_status: Optional[str] = "pending"
+    security_scan_method: Optional[str] = None
+    security_scan_result: Optional[Dict[str, Any]] = None
+    security_scan_timestamp: Optional[datetime] = None

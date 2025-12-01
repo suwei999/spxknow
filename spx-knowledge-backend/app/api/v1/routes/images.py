@@ -3,7 +3,7 @@ Image API Routes
 根据文档处理流程设计实现图片搜索API接口
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response, Request
 from typing import List, Optional
 from app.schemas.image import ImageResponse, ImageSearchRequest, ImageSearchResponse
 from app.services.image_service import ImageService
@@ -14,6 +14,8 @@ from app.core.logging import logger
 from app.config.settings import settings
 from app.services.opensearch_service import OpenSearchService
 from app.services.minio_storage_service import MinioStorageService
+from app.models.image import DocumentImage
+from fastapi import Body
 
 router = APIRouter()
 
@@ -22,7 +24,8 @@ async def get_images(
     skip: int = 0,
     limit: int = 100,
     document_id: Optional[int] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None
 ):
     """获取图片列表"""
     try:
@@ -45,6 +48,13 @@ async def get_images(
                 return object_name
             return f"{base}/{object_name}"
 
+        # 从请求中获取token（如果有），添加到URL中（用于<img>标签认证）
+        token = ""
+        if request:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header.replace("Bearer ", "")
+
         for img in images:
             # 动态属性赋值：如果有缩略图，用缩略图；否则用原图
             preview = getattr(img, 'thumbnail_path', None) or getattr(img, 'image_path', None)
@@ -52,7 +62,10 @@ async def get_images(
             if preview:
                 try:
                     from urllib.parse import quote
-                    proxy_url = f"/api/images/file?object={quote(preview, safe='')}"
+                    if token:
+                        proxy_url = f"/api/images/file?object={quote(preview, safe='')}&token={token}"
+                    else:
+                        proxy_url = f"/api/images/file?object={quote(preview, safe='')}"
                     setattr(img, 'image_path', proxy_url)
                 except Exception:
                     pass
@@ -105,12 +118,29 @@ async def search_by_image(
     file: UploadFile = File(...),
     similarity_threshold: float = settings.SEARCH_VECTOR_THRESHOLD,
     limit: int = 10,
-    knowledge_base_id: Optional[int] = None,
+    knowledge_base_id: Optional[List[int]] = None,
     db: Session = Depends(get_db)
 ):
     """以图找图搜索 - 使用CLIP图像编码器进行512维向量搜索"""
     try:
-        logger.info(f"API请求: 以图找图搜索，文件: {file.filename}, 相似度阈值: {similarity_threshold}")
+        logger.info(f"API请求: 以图找图搜索，文件: {file.filename}, 相似度阈值: {similarity_threshold}, 知识库ID: {knowledge_base_id}")
+        
+        # 验证知识库ID（如果提供了）
+        if knowledge_base_id:
+            from app.models.knowledge_base import KnowledgeBase
+            kb_ids = knowledge_base_id if isinstance(knowledge_base_id, list) else [knowledge_base_id]
+            if len(kb_ids) > 0:
+                kbs = db.query(KnowledgeBase).filter(
+                    KnowledgeBase.id.in_(kb_ids),
+                    KnowledgeBase.is_active == True
+                ).all()
+                found_ids = {kb.id for kb in kbs}
+                missing_ids = set(kb_ids) - found_ids
+                if missing_ids:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"以下知识库ID不存在或未激活: {', '.join(map(str, missing_ids))}"
+                    )
         
         service = ImageSearchService(db)
         results = await service.search_by_image(
@@ -212,7 +242,8 @@ async def get_image_vectors(
 @router.get("/{image_id}", response_model=ImageResponse)
 async def get_image(
     image_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None
 ):
     """获取图片详情"""
     try:
@@ -255,11 +286,21 @@ async def get_image(
         except Exception:
             pass
 
-        # 统一返回可访问的图片URL
+        # 统一返回可访问的图片URL（包含token用于认证）
         try:
             from urllib.parse import quote
+            # 从请求中获取token（如果有），添加到URL中
+            token = ""
+            if request:
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    token = auth_header.replace("Bearer ", "")
+            
             if img_path:
-                proxy_url = f"/api/images/file?object={quote(img_path, safe='')}"
+                if token:
+                    proxy_url = f"/api/images/file?object={quote(img_path, safe='')}&token={token}"
+                else:
+                    proxy_url = f"/api/images/file?object={quote(img_path, safe='')}"
                 setattr(image, 'image_path', proxy_url)
         except Exception:
             pass
@@ -275,10 +316,39 @@ async def get_image(
             detail=f"获取图片详情失败: {str(e)}"
         )
 
+@router.post("/{image_id}/retry-ocr")
+async def retry_image_ocr(
+    image_id: int,
+    db: Session = Depends(get_db)
+):
+    """重新触发图片OCR + 向量化 + 索引"""
+    service = ImageService(db)
+    image = service.db.query(DocumentImage).filter(
+        DocumentImage.id == image_id,
+        DocumentImage.is_deleted == False
+    ).first()
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="图片不存在")
+    if image.status == "completed":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片已处理完成，无需重试")
+    success = service.process_image_sync(image_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="重试失败，请稍后再试")
+    return {"status": "success", "message": "图片OCR已重新执行"}
+
 @router.get("/file")
-async def get_image_file(object: str):
-    """图片代理：通过 MinIO 读取并返回图片二进制，避免前端直连 MinIO。"""
+async def get_image_file(
+    object: str,
+    request: Request
+):
+    """图片代理：通过 MinIO 读取并返回图片二进制，避免前端直连 MinIO。需要认证"""
     try:
+        # 从请求中获取当前用户ID（由中间件设置）
+        user = getattr(request.state, 'user', None)
+        if not user:
+            from fastapi import HTTPException, status
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
+        
         minio = MinioStorageService()
         data = minio.download_file(object)
 

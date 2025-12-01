@@ -28,6 +28,13 @@ ollama>=0.1.0
 
 # Document Processing
 unstructured>=0.10.0
+openpyxl>=3.1.0
+pandas>=2.0.0
+xlrd>=2.0.0
+python-docx>=1.1.0
+python-pptx>=1.0.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
 
 # Data Validation
 pydantic>=2.0.0
@@ -39,6 +46,7 @@ python-multipart>=0.0.6
 # Security
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
 
 # Image Processing
 pillow>=10.0.0
@@ -66,3 +74,7 @@ httpx>=0.24.0
 # Utilities
 python-dotenv>=1.0.0
 pytz>=2023.3
+charset-normalizer>=3.2.0
+
+# Markdown Processing
+mistune>=3.0.0

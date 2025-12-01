@@ -46,9 +46,11 @@ class AnswerType(str, Enum):
     """答案类型枚举"""
     KNOWLEDGE_BASE = "knowledge_base"
     LLM_ENHANCED = "llm_enhanced"
+    LLM_ONLY = "llm_only"
     GENERAL = "general"
     NO_INFO = "no_info"
     ERROR = "error"
+    CONVERSATION_CONTEXT = "conversation_context"  # 基于对话上下文的回答（不查询知识库）
 
 # 1. 知识库相关Schema
 
@@ -106,6 +108,7 @@ class QASessionListResponse(BaseModel):
 
 class QASessionConfigUpdate(BaseModel):
     """更新会话配置请求"""
+    knowledge_base_id: Optional[int] = None
     search_type: Optional[SearchType] = None
     max_sources: Optional[int] = Field(None, ge=1, le=50)
     similarity_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
@@ -124,7 +127,7 @@ class QAMultimodalQuestionRequest(BaseModel):
 
 class SourceInfo(BaseModel):
     """来源信息"""
-    document_id: str
+    document_id: Optional[str] = None  # ✅ 允许 None（用于 LLM 生成的回答，无文档来源）
     document_title: str
     knowledge_base_name: str
     content_snippet: str
@@ -361,3 +364,34 @@ class QAPerformanceMetrics(BaseModel):
     similarity_scores: List[float]
     source_count: int
     processing_steps: List[str]
+
+# 12. 外部搜索相关 Schema
+
+class QAExternalSearchRequest(BaseModel):
+    """外部搜索请求"""
+    question: str = Field(..., min_length=1)
+    context: Optional[str] = None
+    conversation_id: Optional[str] = None
+    knowledge_base_hits: Optional[int] = Field(default=None, ge=0)
+    top_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    answer_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    limit: Optional[int] = Field(default=None, ge=1, le=10)
+    force: bool = False
+
+class QAExternalSearchResult(BaseModel):
+    """外部搜索结果"""
+    title: Optional[str] = None
+    url: str
+    snippet: Optional[str] = None
+    source: Optional[str] = None
+    engines: Optional[List[str]] = None
+
+class QAExternalSearchResponse(BaseModel):
+    """外部搜索响应"""
+    triggered: bool = True
+    from_cache: bool = False
+    query: Optional[str] = None
+    latency: Optional[float] = None
+    results: List[QAExternalSearchResult]
+    message: Optional[str] = None
+    summary: Optional[str] = None

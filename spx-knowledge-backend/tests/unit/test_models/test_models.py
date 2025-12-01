@@ -53,12 +53,12 @@ def test_document_chunk_model():
         content="这是一个测试分块",
         chunk_index=0,
         chunk_type="text",
-        metadata='{"key": "value"}'
+        meta='{"key": "value"}'
     )
     
     assert chunk.document_id == 1
     assert chunk.content == "这是一个测试分块"
     assert chunk.chunk_index == 0
     assert chunk.chunk_type == "text"
-    assert chunk.metadata == '{"key": "value"}'
+    assert chunk.meta == '{"key": "value"}'
     assert chunk.is_deleted == False

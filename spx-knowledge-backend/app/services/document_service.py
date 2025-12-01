@@ -5,6 +5,7 @@ Document Service
 from typing import List, Optional, Dict, Any
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.models.document import Document
 from app.schemas.document import DocumentCreate, DocumentUpdate
 from app.services.base import BaseService
@@ -16,6 +17,11 @@ from app.services.duplicate_detection_service import DuplicateDetectionService
 from app.core.exceptions import CustomException, ErrorCode
 from app.config.settings import settings
 import os
+import httpx
+import urllib.parse
+from urllib.parse import urlparse
+from io import BytesIO
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 class DocumentService(BaseService[Document]):
     """文档服务"""
@@ -30,17 +36,31 @@ class DocumentService(BaseService[Document]):
         self, 
         skip: int = 0, 
         limit: int = 100,
-        knowledge_base_id: Optional[int] = None
+        knowledge_base_id: Optional[int] = None,
+        user_id: Optional[int] = None
     ) -> List[Document]:
         """获取文档列表 - 根据文档处理流程设计实现"""
         try:
-            logger.info(f"获取文档列表，跳过: {skip}, 限制: {limit}, 知识库ID: {knowledge_base_id}")
+            logger.info(f"获取文档列表，跳过: {skip}, 限制: {limit}, 知识库ID: {knowledge_base_id}, 用户ID: {user_id}")
             
-            filters = {}
+            query = self.db.query(Document).filter(Document.is_deleted == False)
             if knowledge_base_id:
-                filters["knowledge_base_id"] = knowledge_base_id
+                query = query.filter(Document.knowledge_base_id == knowledge_base_id)
+            if user_id is not None:
+                query = query.filter(
+                    or_(Document.user_id == user_id, Document.user_id.is_(None))
+                )
             
-            documents = await self.get_multi(skip=skip, limit=limit, **filters)
+            documents = query.offset(skip).limit(limit).all()
+            
+            if user_id is not None:
+                needs_update = [doc for doc in documents if getattr(doc, "user_id", None) is None]
+                if needs_update:
+                    logger.info(f"发现 {len(needs_update)} 个历史文档缺少 user_id，回填为用户 {user_id}")
+                    for doc in needs_update:
+                        doc.user_id = user_id
+                    self.db.commit()
+            
             logger.info(f"获取到 {len(documents)} 个文档")
             return documents
             
@@ -71,7 +91,8 @@ class DocumentService(BaseService[Document]):
         knowledge_base_id: int,
         category_id: Optional[int] = None,
         tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         上传文档 - 严格按照设计文档实现完整流程
@@ -144,6 +165,17 @@ class DocumentService(BaseService[Document]):
             if isinstance(metadata, dict) and not metadata.get("title"):
                 metadata["title"] = os.path.splitext(file.filename)[0]
 
+            # 提取安全扫描结果
+            security_scan = validation_result.get("security_scan", {})
+            security_scan_status = security_scan.get("scan_status", "pending")
+            security_scan_method = security_scan.get("scan_method", "none")
+            security_scan_result = {
+                "virus_scan": security_scan.get("virus_scan"),
+                "script_scan": security_scan.get("script_scan"),
+                "threats_found": security_scan.get("threats_found", []),
+                "scan_timestamp": upload_timestamp
+            }
+
             doc_data = {
                 "original_filename": file.filename,
                 "file_type": validation_result["format_validation"]["file_type"],
@@ -155,7 +187,13 @@ class DocumentService(BaseService[Document]):
                 "tags": tags,
                 "metadata": metadata,
                 "status": "uploaded",
-                "processing_progress": 0.0
+                "processing_progress": 0.0,
+                "user_id": user_id,
+                # 安全扫描字段
+                "security_scan_status": security_scan_status,
+                "security_scan_method": security_scan_method,
+                "security_scan_result": security_scan_result,
+                "security_scan_timestamp": datetime.utcnow()
             }
             
             document = await self.create(doc_data)
@@ -164,8 +202,55 @@ class DocumentService(BaseService[Document]):
             # 5. 触发异步处理任务
             logger.info("步骤5: 触发异步处理任务")
             from app.tasks.document_tasks import process_document_task
-            task = process_document_task.delay(document.id)
-            logger.info(f"文档处理任务已启动，任务ID: {task.id}")
+            from app.tasks.celery_app import celery_app
+            try:
+                # 检查 Celery broker 连接
+                try:
+                    celery_app.control.inspect().active()
+                    logger.debug("Celery broker 连接正常")
+                except Exception as broker_err:
+                    logger.warning(f"Celery broker 连接检查失败: {broker_err}")
+                
+                # 发送任务（设置高优先级，确保文档处理任务优先执行）
+                task = process_document_task.apply_async(
+                    args=(document.id,),
+                    priority=settings.CELERY_TASK_PRIORITY_DOCUMENT
+                )
+                logger.info(
+                    f"✅ 文档处理任务已发送: 任务ID={task.id}, 文档ID={document.id}, "
+                    f"任务状态={task.state}, 队列=document"
+                )
+                
+                # 检查任务状态
+                if task.state == 'PENDING':
+                    # 注意：如果 Worker 使用了 --without-gossip 和 --without-mingle，
+                    # inspect() 无法检测到 Worker，这是正常的
+                    logger.warning(
+                        f"⚠️ 任务 {task.id} 处于 PENDING 状态，可能的原因："
+                        f"1. Worker 未运行或未监听 document 队列"
+                        f"2. Worker 繁忙或被其他任务占用"
+                        f"3. Redis 连接问题"
+                        f"4. Worker 使用了 --without-gossip/--without-mingle（无法通过 inspect 检测）"
+                    )
+                    # 尝试检查 Worker 状态（如果 Worker 启用了 gossip/mingle）
+                    try:
+                        inspect = celery_app.control.inspect(timeout=1.0)
+                        active_queues = inspect.active_queues()
+                        if active_queues:
+                            logger.info(f"✅ 检测到活跃的 Worker 队列: {active_queues}")
+                        else:
+                            # 不报错，因为 Worker 可能使用了 --without-gossip
+                            logger.debug("无法通过 inspect 检测到 Worker（可能使用了 --without-gossip/--without-mingle）")
+                    except Exception as inspect_err:
+                        # 不报错，因为 Worker 可能使用了 --without-gossip
+                        logger.debug(f"无法检查 Worker 状态（可能使用了 --without-gossip）: {inspect_err}")
+                elif task.state == 'RECEIVED':
+                    logger.info(f"✅ 任务 {task.id} 已被 Worker 接收，开始处理")
+                else:
+                    logger.info(f"任务 {task.id} 状态: {task.state}")
+            except Exception as e:
+                logger.error(f"❌ 触发文档处理任务失败: {e}", exc_info=True)
+                raise
             
             # 6. 上传元数据到MinIO
             logger.info("步骤6: 上传元数据到MinIO")
@@ -180,6 +265,7 @@ class DocumentService(BaseService[Document]):
                 "category_id": category_id,
                 "tags": tags,
                 "metadata": metadata,
+                "user_id": user_id,
                 "validation_result": validation_result,
                 "storage_result": storage_result,
                 "duplicate_result": duplicate_result,
@@ -206,6 +292,176 @@ class DocumentService(BaseService[Document]):
             raise CustomException(
                 code=ErrorCode.VALIDATION_ERROR,
                 message=f"文档上传失败: {str(e)}"
+            )
+    
+    async def upload_document_from_url(
+        self,
+        url: str,
+        knowledge_base_id: int,
+        category_id: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        filename: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        从URL导入文档 - 下载文件后执行完整的上传流程
+        
+        支持参数：
+        - url: 文档URL（必填）
+        - knowledge_base_id: 知识库ID（必填）
+        - category_id: 分类ID（可选）
+        - tags: 标签列表（可选）
+        - metadata: 元数据（可选）
+        - user_id: 用户ID（可选）
+        - filename: 自定义文件名（可选，默认从URL或Content-Disposition提取）
+        
+        返回内容：
+        - document_id: 文档ID
+        - task_id: 任务ID
+        - file_size: 文件大小
+        - file_type: 文件类型
+        - upload_timestamp: 上传时间戳
+        """
+        try:
+            logger.info(f"开始从URL导入文档: {url}, 知识库ID: {knowledge_base_id}")
+            
+            # 1. 下载文件
+            logger.info("步骤1: 开始下载文件")
+            async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"下载文件失败，HTTP状态码: {e.response.status_code}")
+                    raise CustomException(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"无法下载文件: HTTP {e.response.status_code}"
+                    )
+                except httpx.RequestError as e:
+                    logger.error(f"下载文件失败，请求错误: {e}")
+                    raise CustomException(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"无法下载文件: {str(e)}"
+                    )
+                
+                # 读取文件内容
+                file_content = response.content
+                file_size = len(file_content)
+                
+                # 检查文件大小（读取后再次检查，因为content-length可能不准确）
+                max_size = settings.MAX_FILE_SIZE
+                if file_size > max_size:
+                    raise CustomException(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message=f"文件大小超过限制: {file_size / 1024 / 1024:.2f}MB > {max_size / 1024 / 1024:.2f}MB"
+                    )
+                
+                # 如果content-length存在，也提前检查（避免下载过大文件）
+                content_length = response.headers.get('content-length')
+                if content_length:
+                    expected_size = int(content_length)
+                    if expected_size > max_size:
+                        raise CustomException(
+                            code=ErrorCode.VALIDATION_ERROR,
+                            message=f"文件大小超过限制: {expected_size / 1024 / 1024:.2f}MB > {max_size / 1024 / 1024:.2f}MB"
+                        )
+                
+                # 确定文件名
+                if not filename:
+                    # 尝试从Content-Disposition头获取文件名
+                    content_disposition = response.headers.get('content-disposition', '')
+                    if 'filename=' in content_disposition:
+                        import re
+                        match = re.search(r'filename[*]?=["\']?([^"\';]+)', content_disposition)
+                        if match:
+                            filename = match.group(1)
+                    
+                    # 如果还是没有，从URL提取
+                    if not filename:
+                        parsed_url = urlparse(url)
+                        filename = os.path.basename(parsed_url.path) or 'document'
+                        # 如果URL没有扩展名，尝试从Content-Type推断
+                        if '.' not in filename:
+                            content_type = response.headers.get('content-type', '')
+                            ext_map = {
+                                'application/pdf': '.pdf',
+                                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+                                'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+                                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+                                'text/plain': '.txt',
+                                'text/markdown': '.md',
+                                'text/html': '.html',
+                            }
+                            for mime, ext in ext_map.items():
+                                if mime in content_type:
+                                    filename += ext
+                                    break
+                
+                # 解码文件名（处理URL编码）
+                filename = urllib.parse.unquote(filename)
+                
+                # 2. 创建UploadFile对象
+                logger.info(f"步骤2: 创建文件对象，文件名: {filename}, 大小: {file_size}")
+                file_io = BytesIO(file_content)
+                
+                # 确定Content-Type
+                content_type = response.headers.get('content-type', 'application/octet-stream')
+                # 移除charset等参数
+                if ';' in content_type:
+                    content_type = content_type.split(';')[0].strip()
+                
+                upload_file = StarletteUploadFile(
+                    filename=filename,
+                    file=file_io,
+                    headers={"content-type": content_type}
+                )
+                
+                # 3. 调用现有的上传流程
+                logger.info("步骤3: 调用文档上传流程")
+                # 确保metadata包含source_url
+                if not metadata:
+                    metadata = {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata['source_url'] = url
+                
+                result = await self.upload_document(
+                    file=upload_file,
+                    knowledge_base_id=knowledge_base_id,
+                    category_id=category_id,
+                    tags=tags,
+                    metadata=metadata,
+                    user_id=user_id
+                )
+                
+                # 确保source_url已保存到数据库（作为兜底，因为upload_document应该已经保存了）
+                if result.get('document_id'):
+                    doc = await self.get_document(result['document_id'])
+                    if doc:
+                        current_meta = doc.metadata or {}
+                        if isinstance(current_meta, dict):
+                            if 'source_url' not in current_meta:
+                                current_meta['source_url'] = url
+                                doc.metadata = current_meta
+                                self.db.commit()
+                                logger.debug(f"已更新文档 {doc.id} 的source_url元数据")
+                        else:
+                            current_meta = {'source_url': url}
+                            doc.metadata = current_meta
+                            self.db.commit()
+                            logger.debug(f"已设置文档 {doc.id} 的source_url元数据")
+                
+                logger.info(f"✅ 从URL导入文档成功: {url}, 文档ID: {result.get('document_id')}")
+                return result
+                
+        except CustomException:
+            raise
+        except Exception as e:
+            logger.error(f"从URL导入文档失败: {e}", exc_info=True)
+            raise CustomException(
+                code=ErrorCode.VALIDATION_ERROR,
+                message=f"从URL导入文档失败: {str(e)}"
             )
     
     def update_document(
@@ -492,8 +748,11 @@ class DocumentService(BaseService[Document]):
             
             self.db.commit()
             
-            # 触发异步任务重新处理文档
-            task = process_document_task.delay(doc_id)
+            # 触发异步任务重新处理文档（设置高优先级）
+            task = process_document_task.apply_async(
+                args=(doc_id,),
+                priority=settings.CELERY_TASK_PRIORITY_DOCUMENT
+            )
             logger.info(f"文档重新处理任务已启动，任务ID: {task.id}")
             
             return True

@@ -5,7 +5,6 @@ Image Processing Tasks
 from celery import current_task
 from app.tasks.celery_app import celery_app
 from app.services.image_service import ImageService
-from app.services.vector_service import VectorService
 from app.models.image import DocumentImage
 from app.models.document import Document
 from sqlalchemy.orm import Session
@@ -32,47 +31,10 @@ def process_image_task(self, image_id: int):
             meta={"current": 0, "total": 100, "status": "开始处理图片"}
         )
         
-        # 图片处理
         image_service = ImageService(db)
-        
-        # 获取图片信息
-        image_info = image_service.get_image_info(image.image_path)
-        if image_info:
-            image.width = image_info.get("width")
-            image.height = image_info.get("height")
-            db.commit()
-        
-        current_task.update_state(
-            state="PROGRESS",
-            meta={"current": 30, "total": 100, "status": "图片信息提取完成"}
-        )
-        
-        # OCR识别（同步调用）
-        ocr_text = image_service.extract_ocr_text(image.image_path)
-        if ocr_text:
-            image.ocr_text = ocr_text
-            db.commit()
-        
-        current_task.update_state(
-            state="PROGRESS",
-            meta={"current": 60, "total": 100, "status": "OCR识别完成"}
-        )
-        
-        # 生成图片向量（同步调用）
-        vector_service = VectorService(db)
-        image_vector = vector_service.generate_image_embedding(image.image_path)
-        
-        # 这里应该将图片向量存储到OpenSearch
-        # 暂时跳过具体实现
-        
-        current_task.update_state(
-            state="PROGRESS",
-            meta={"current": 90, "total": 100, "status": "图片向量化完成"}
-        )
-        
-        # 更新图片状态
-        image.status = "completed"
-        db.commit()
+        success = image_service.process_image_sync(image.id)
+        if not success:
+            raise Exception("图片处理失败")
         
         current_task.update_state(
             state="SUCCESS",
@@ -84,9 +46,12 @@ def process_image_task(self, image_id: int):
     except Exception as e:
         # 更新图片状态为失败
         if image:
-            image.status = "failed"
-            image.error_message = str(e)
-            db.commit()
+            try:
+                image.status = "failed"
+                image.error_message = str(e)
+                db.commit()
+            except Exception:
+                pass
         
         current_task.update_state(
             state="FAILURE",

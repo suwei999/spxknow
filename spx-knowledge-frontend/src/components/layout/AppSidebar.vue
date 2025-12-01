@@ -35,6 +35,21 @@
         <el-icon><Picture /></el-icon>
         <span>图片管理</span>
       </el-menu-item>
+      
+      <el-menu-item index="/statistics">
+        <el-icon><DataAnalysis /></el-icon>
+        <span>数据统计</span>
+      </el-menu-item>
+      
+      <el-menu-item index="/exports">
+        <el-icon><Download /></el-icon>
+        <span>导出管理</span>
+      </el-menu-item>
+      
+      <el-menu-item index="/observability">
+        <el-icon><DataBoard /></el-icon>
+        <span>运维诊断</span>
+      </el-menu-item>
     </el-menu>
   </aside>
 </template>
@@ -42,13 +57,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { 
-  House, 
-  Collection, 
-  Document, 
-  Search, 
-  ChatLineRound, 
-  Picture 
+import {
+  House,
+  Collection,
+  Document,
+  Search,
+  ChatLineRound,
+  Picture,
+  DataAnalysis,
+  Download,
+  DataBoard
 } from '@element-plus/icons-vue'
 
 interface Props {

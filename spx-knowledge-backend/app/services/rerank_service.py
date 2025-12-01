@@ -5,23 +5,45 @@ Rerank Service
 
 from typing import List, Dict, Any, Optional, Tuple
 import os
+import threading
 from app.core.logging import logger
 from app.core.exceptions import CustomException, ErrorCode
 from app.config.settings import settings
 
 
 class RerankService:
-    """Rerank服务 - 使用bge-reranker模型对搜索结果重新排序"""
+    """Rerank服务 - 使用bge-reranker模型对搜索结果重新排序（单例模式）"""
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        """单例模式实现"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(RerankService, cls).__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
     
     def __init__(self):
-        self.model = None
-        self.tokenizer = None
-        self.enabled = settings.RERANK_ENABLED
-        self.model_name = settings.RERANK_MODEL_NAME
-        self.model_path = settings.RERANK_MODEL_PATH
-        # 自动检测GPU可用性，如果配置为cuda但GPU不可用，降级到cpu
-        self.device = self._get_device(settings.RERANK_DEVICE)
-        self._initialize_model()
+        """初始化Rerank模型（仅执行一次）"""
+        if self._initialized:
+            return
+        
+        with self._lock:
+            if self._initialized:
+                return
+            
+            self.model = None
+            self.tokenizer = None
+            self.enabled = settings.RERANK_ENABLED
+            self.model_name = settings.RERANK_MODEL_NAME
+            self.model_path = settings.RERANK_MODEL_PATH
+            # 自动检测GPU可用性，如果配置为cuda但GPU不可用，降级到cpu
+            self.device = self._get_device(settings.RERANK_DEVICE)
+            self._initialize_model()
+            self._initialized = True
     
     def _get_device(self, configured_device: str) -> str:
         """获取实际使用的设备，自动检测GPU可用性

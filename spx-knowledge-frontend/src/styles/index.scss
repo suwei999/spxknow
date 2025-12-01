@@ -1,17 +1,17 @@
 // 样式入口文件
 
-// 变量
-@import './variables.scss';
+// 变量（使用 as * 使变量在全局可用，保持向后兼容）
+@use './variables.scss' as *;
 
 // 基础样式
-@import './base.scss';
+@use './base.scss';
 
 // 布局样式
-@import './layouts.scss';
+@use './layouts.scss';
 
 // 组件样式
-@import './components.scss';
+@use './components.scss';
 
 // 工具类
-@import './utilities.scss';
+@use './utilities.scss';
 

@@ -1,18 +1,27 @@
-"""Document Processing Tasks (DOCX / PDF, no Unstructured)"""
+"""Document Processing Tasks (DOCX / PDF / TXT, no Unstructured)"""
 
 import os
 import tempfile
 import time
 import hashlib
+import datetime
+import shutil
+from typing import Any, Dict, List, Optional
 from celery import current_task
 from app.tasks.celery_app import celery_app
 from app.services.docx_service import DocxService
 from app.services.pdf_service import PdfService
+from app.services.txt_service import TxtService
+from app.services.markdown_service import MarkdownService
+from app.services.excel_service import ExcelService, ExcelParseOptions
+from app.services.pptx_service import PptxService
+from app.services.html_service import HtmlService
 from app.services.vector_service import VectorService
 from app.services.cache_service import CacheService
 from app.services.opensearch_service import OpenSearchService
 from app.services.minio_storage_service import MinioStorageService
 from app.services.image_service import ImageService
+from app.services.office_converter import convert_office_to_pdf, convert_office_to_html, compress_pdf
 from app.config.settings import settings
 from app.models.document import Document
 from app.models.chunk import DocumentChunk
@@ -25,7 +34,7 @@ from app.core.constants import DOC_STATUS_PARSING, DOC_STATUS_CHUNKING, DOC_STAT
 # 确保在Celery进程中注册所有模型，解决字符串关系解析问题
 import app.models  # noqa: F401
 
-@celery_app.task(bind=True)
+@celery_app.task(bind=True, ignore_result=True)
 def process_document_task(self, document_id: int):
     """处理文档任务（DOCX / PDF，完全不使用 Unstructured）"""
     db = SessionLocal()
@@ -56,8 +65,13 @@ def process_document_task(self, document_id: int):
         file_type = (document.file_type or '').lower()
         is_docx = file_suffix == 'docx' or file_type == 'docx'
         is_pdf = file_suffix == 'pdf' or file_type == 'pdf'
-        if not (is_docx or is_pdf):
-            raise Exception("当前处理流程仅支持 DOCX / PDF 文档")
+        is_txt = file_suffix in ('txt', 'log') or file_type == 'txt'
+        is_md = file_suffix in ('md', 'markdown', 'mkd') or file_type in ('md', 'markdown')
+        is_excel = file_suffix in ('xlsx', 'xls', 'xlsb', 'csv') or file_type in ('excel', 'xlsx', 'xls', 'csv')
+        is_pptx = file_suffix == 'pptx' or file_type == 'pptx'
+        is_html = file_suffix in ('html', 'htm') or file_type in ('html', 'htm')
+        if not (is_docx or is_pdf or is_txt or is_md or is_excel or is_pptx or is_html):
+            raise Exception("当前处理流程仅支持 DOCX / PDF / TXT / MD / Excel / PPTX / HTML 文档")
         
         # 更新文档状态为解析中
         logger.debug(f"[任务ID: {task_id}] 步骤2/7: 更新文档状态为解析中")
@@ -133,30 +147,261 @@ def process_document_task(self, document_id: int):
 
             logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 DocxService 解析文档 (DOCX 本地解析)")
             parser = DocxService(db)
-        else:
+            parse_result = parser.parse_document(parsed_file_path)
+        elif is_pdf:
             logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 PdfService 解析文档 (PDF 本地解析)")
             parser = PdfService(db)
-
-        parse_result = parser.parse_document(parsed_file_path)
+            parse_result = parser.parse_document(parsed_file_path)
+        elif is_excel:
+            logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 ExcelService 解析 Excel 文档")
+            parser = ExcelService(db)
+            # Excel 需要解析选项，注意 Document.meta 才是元数据字段
+            excel_meta = document.meta or {}
+            if isinstance(excel_meta, str):
+                try:
+                    import json as _json
+                    excel_meta = _json.loads(excel_meta)
+                except Exception:
+                    excel_meta = {}
+            # 从配置读取 chunk_max，确保与 TEXT_EMBED_MAX_CHARS 一致
+            chunk_max = int(getattr(settings, 'TEXT_EMBED_MAX_CHARS', 1024))
+            parse_options = ExcelParseOptions(
+                sheet_whitelist=excel_meta.get('sheet_whitelist'),
+                row_limit_per_sheet=excel_meta.get('row_limit_per_sheet'),
+                window_rows=excel_meta.get('window_rows', 50),
+                overlap_rows=excel_meta.get('overlap_rows', 10),
+                chunk_max=chunk_max,  # 使用配置值，与文本分块保持一致
+            )
+            parse_result = parser.parse_document(parsed_file_path, parse_options)
+        elif is_md:
+            logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 MarkdownService 解析 Markdown 文档")
+            parser = MarkdownService(db)
+            parse_result = parser.parse_document(parsed_file_path)
+        elif is_pptx:
+            logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 PptxService 解析 PowerPoint 文档")
+            parser = PptxService(db)
+            parse_result = parser.parse_document(parsed_file_path)
+        elif is_html:
+            logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 HtmlService 解析 HTML 文档")
+            parser = HtmlService(db)
+            parse_result = parser.parse_document(parsed_file_path)
+        else:
+            logger.info(f"[任务ID: {task_id}] 步骤4/7: 使用 TxtService 解析纯文本文档")
+            parser = TxtService(db)
+            parse_result = parser.parse_document(parsed_file_path)
         parse_time = time.time() - parse_start
+        
+        # 检查解析结果
+        if parse_result is None:
+            error_msg = f"文档解析失败: parse_document 返回 None (文件类型: {file_suffix or file_type})"
+            logger.error(f"[任务ID: {task_id}] {error_msg}")
+            raise Exception(error_msg)
+        
         text_content = parse_result.get('text_content', '')
         elements_count = int(parse_result.get('metadata', {}).get('element_count', 0) or 0)
         logger.info(f"[任务ID: {task_id}] 解析完成: 耗时={parse_time:.2f}秒, 提取元素数={elements_count}, 文本长度={len(text_content)} 字符")
+
+        parse_metadata = parse_result.get('metadata', {}) or {}
+        doc_meta = document.meta or {}
+        doc_meta = doc_meta.copy() if isinstance(doc_meta, dict) else {}
+        doc_meta.update(
+            {
+                "text_length": len(text_content),
+                "element_count": elements_count,
+            }
+        )
+        for key in ("original_encoding", "line_count", "encoding_confidence", "segment_count", 
+                    "markdown_version", "has_code_blocks", "has_tables", "code_languages", 
+                    "table_count", "heading_structure", "heading_count", "link_count",
+                    "code_block_count", "list_count", "semantic_tags", "has_forms",
+                    "html_version", "encoding", "base_url", "link_refs", "image_refs",
+                    "slide_count", "layout_types", "has_notes", "image_count",
+                    "presentation_size", "slides"):
+            if parse_metadata.get(key) is not None:
+                doc_meta[key] = parse_metadata[key]
+        document.meta = doc_meta
+        db.commit()
+        
+        # 3.5. 生成预览（如果启用且是Office文档）
+        is_office = file_suffix in {'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx'} or file_type in {'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx'}
+        is_excel_for_preview = file_suffix in {'xls', 'xlsx'} or file_type in {'xls', 'xlsx'}
+        logger.debug(f"[任务ID: {task_id}] 预览生成检查: ENABLE_PREVIEW_GENERATION={settings.ENABLE_PREVIEW_GENERATION}, is_office={is_office}, is_excel={is_excel_for_preview}, temp_file_exists={os.path.exists(temp_file_path) if temp_file_path else False}")
+        if settings.ENABLE_PREVIEW_GENERATION and is_office and os.path.exists(temp_file_path):
+            try:
+                logger.info(f"[任务ID: {task_id}] 步骤3.5/7: 开始生成Office文档预览 (文件类型: {file_suffix or file_type})")
+                current_task.update_state(
+                    state="PROGRESS",
+                    meta={"current": 25, "total": 100, "status": "生成文档预览"}
+                )
+                
+                # 构建预览对象路径
+                created: datetime.datetime = getattr(document, 'created_at', None) or datetime.datetime.utcnow()
+                year = created.strftime('%Y')
+                month = created.strftime('%m')
+                preview_base = f"documents/{year}/{month}/{document.id}/preview"
+                preview_object = f"{preview_base}/preview.pdf"
+                preview_object_screen = f"{preview_base}/preview_screen.pdf"
+                preview_object_html = f"{preview_base}/preview.html"
+                
+                # 生成PDF预览
+                pdf_path = None
+                pdf_temp_dir = None
+                try:
+                    logger.info(f"[任务ID: {task_id}] 开始转换PDF预览: {temp_file_path}")
+                    pdf_path = convert_office_to_pdf(temp_file_path)
+                    if pdf_path:
+                        pdf_temp_dir = os.path.dirname(pdf_path)
+                        logger.info(f"[任务ID: {task_id}] PDF转换成功: {pdf_path}, 大小={os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0} bytes")
+                    else:
+                        logger.warning(f"[任务ID: {task_id}] PDF转换失败: convert_office_to_pdf 返回 None")
+                    if pdf_path and os.path.exists(pdf_path):
+                        try:
+                            # 检查PDF大小，决定是否压缩
+                            size_bytes = os.path.getsize(pdf_path)
+                            threshold_mb = 10  # 10MB 阈值
+                            use_screen = size_bytes > threshold_mb * 1024 * 1024
+                            
+                            if use_screen:
+                                # 生成压缩版本
+                                logger.info(f"[任务ID: {task_id}] PDF文件较大 ({size_bytes / 1024 / 1024:.2f}MB > {threshold_mb}MB)，开始压缩")
+                                screen_pdf = os.path.join(temp_dir, 'preview_screen.pdf')
+                                if compress_pdf(pdf_path, screen_pdf, quality='screen') and os.path.exists(screen_pdf):
+                                    screen_size = os.path.getsize(screen_pdf)
+                                    logger.info(f"[任务ID: {task_id}] PDF压缩成功: 原始={size_bytes / 1024 / 1024:.2f}MB, 压缩后={screen_size / 1024 / 1024:.2f}MB")
+                                    with open(screen_pdf, 'rb') as pf:
+                                        minio_service.client.put_object(
+                                            minio_service.bucket_name,
+                                            preview_object_screen,
+                                            data=pf,
+                                            length=screen_size,
+                                            content_type='application/pdf'
+                                        )
+                                    document.converted_pdf_url = preview_object_screen
+                                    logger.info(f"[任务ID: {task_id}] 已上传压缩PDF预览到MinIO: {preview_object_screen}")
+                                else:
+                                    # 压缩失败，使用原始PDF
+                                    logger.warning(f"[任务ID: {task_id}] PDF压缩失败，使用原始PDF上传")
+                                    with open(pdf_path, 'rb') as pf:
+                                        minio_service.client.put_object(
+                                            minio_service.bucket_name,
+                                            preview_object,
+                                            data=pf,
+                                            length=os.path.getsize(pdf_path),
+                                            content_type='application/pdf'
+                                        )
+                                    document.converted_pdf_url = preview_object
+                                    logger.info(f"[任务ID: {task_id}] 已上传原始PDF预览到MinIO: {preview_object}")
+                            else:
+                                # 直接上传原始PDF
+                                logger.info(f"[任务ID: {task_id}] PDF文件较小 ({size_bytes / 1024 / 1024:.2f}MB <= {threshold_mb}MB)，直接上传")
+                                with open(pdf_path, 'rb') as pf:
+                                    minio_service.client.put_object(
+                                        minio_service.bucket_name,
+                                        preview_object,
+                                        data=pf,
+                                        length=os.path.getsize(pdf_path),
+                                        content_type='application/pdf'
+                                    )
+                                document.converted_pdf_url = preview_object
+                                logger.info(f"[任务ID: {task_id}] 已上传PDF预览到MinIO: {preview_object}")
+                            
+                            db.commit()
+                            logger.info(f"[任务ID: {task_id}] PDF预览路径已更新到数据库: {document.converted_pdf_url}")
+                        except Exception as pdf_err:
+                            logger.warning(f"[任务ID: {task_id}] 上传PDF预览失败: {pdf_err}", exc_info=True)
+                            db.rollback()
+                finally:
+                    # 清理PDF转换产生的临时文件
+                    if pdf_temp_dir and os.path.isdir(pdf_temp_dir):
+                        try:
+                            shutil.rmtree(pdf_temp_dir)
+                            logger.debug(f"[任务ID: {task_id}] 已清理PDF转换临时目录: {pdf_temp_dir}")
+                        except Exception as cleanup_err:
+                            logger.warning(f"[任务ID: {task_id}] 清理PDF转换临时目录失败: {cleanup_err}")
+                
+                # 生成HTML预览（仅Excel需要，Word/PPT使用PDF即可）
+                html_path = None
+                html_temp_dir = None
+                if is_excel_for_preview:
+                    try:
+                        logger.info(f"[任务ID: {task_id}] 开始转换HTML预览（Excel需要）: {temp_file_path}")
+                        html_path = convert_office_to_html(temp_file_path)
+                        if html_path:
+                            html_temp_dir = os.path.dirname(html_path)
+                            logger.info(f"[任务ID: {task_id}] HTML转换成功: {html_path}, 大小={os.path.getsize(html_path) if os.path.exists(html_path) else 0} bytes")
+                        else:
+                            logger.warning(f"[任务ID: {task_id}] HTML转换失败: convert_office_to_html 返回 None")
+                        if html_path and os.path.exists(html_path):
+                            try:
+                                html_size = os.path.getsize(html_path)
+                                logger.info(f"[任务ID: {task_id}] 开始上传HTML预览到MinIO: {preview_object_html}, 大小={html_size} bytes")
+                                with open(html_path, 'rb') as hf:
+                                    minio_service.client.put_object(
+                                        minio_service.bucket_name,
+                                        preview_object_html,
+                                        data=hf,
+                                        length=html_size,
+                                        content_type='text/html'
+                                    )
+                                logger.info(f"[任务ID: {task_id}] HTML预览已上传到MinIO: {preview_object_html}")
+                                # 更新文档元数据
+                                updated_meta = document.meta or {}
+                                updated_meta = updated_meta.copy() if isinstance(updated_meta, dict) else {}
+                                updated_meta["converted_html_url"] = preview_object_html
+                                document.meta = updated_meta
+                                db.commit()
+                                logger.info(f"[任务ID: {task_id}] HTML预览路径已更新到数据库: {preview_object_html}")
+                            except Exception as html_err:
+                                logger.warning(f"[任务ID: {task_id}] 上传HTML预览失败: {html_err}", exc_info=True)
+                                db.rollback()
+                    finally:
+                        # 清理HTML转换产生的临时文件
+                        if html_temp_dir and os.path.isdir(html_temp_dir):
+                            try:
+                                shutil.rmtree(html_temp_dir)
+                                logger.debug(f"[任务ID: {task_id}] 已清理HTML转换临时目录: {html_temp_dir}")
+                            except Exception as cleanup_err:
+                                logger.warning(f"[任务ID: {task_id}] 清理HTML转换临时目录失败: {cleanup_err}")
+                else:
+                    logger.debug(f"[任务ID: {task_id}] 跳过HTML预览生成（仅Excel需要，当前文件类型: {file_suffix or file_type}）")
+                
+                logger.info(f"[任务ID: {task_id}] 预览生成完成")
+            except Exception as preview_err:
+                logger.warning(f"[任务ID: {task_id}] 生成预览时发生异常: {preview_err}", exc_info=True)
+                # 预览生成失败不影响主流程，继续执行
         
         # 3. 清理临时文件
         logger.debug(f"[任务ID: {task_id}] 步骤4.1/7: 清理临时文件")
         try:
             if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+                last_exc = None
+                # Excel文件需要更多重试次数，因为LibreOffice可能还在占用
+                max_attempts = 5 if is_excel else 3
+                for attempt in range(max_attempts):
+                    try:
+                        os.remove(temp_file_path)
+                        last_exc = None
+                        logger.debug(f"[任务ID: {task_id}] 临时文件删除成功: {temp_file_path}")
+                        break
+                    except (PermissionError, OSError) as pe:
+                        last_exc = pe
+                        # Excel文件等待时间更长
+                        wait_time = 0.5 * (attempt + 1) if is_excel else 0.1 * (attempt + 1)
+                        logger.debug(f"[任务ID: {task_id}] 临时文件删除失败（尝试 {attempt + 1}/{max_attempts}），等待 {wait_time:.1f}秒后重试: {pe}")
+                        time.sleep(wait_time)
+                if last_exc:
+                    logger.warning(f"[任务ID: {task_id}] 临时文件删除最终失败（已重试{max_attempts}次）: {last_exc}, 路径={temp_file_path}")
+            # 清理临时目录
             if os.path.isdir(temp_dir):
                 try:
                     os.rmdir(temp_dir)
+                    logger.debug(f"[任务ID: {task_id}] 临时目录删除成功: {temp_dir}")
                 except OSError:
-                    import shutil
                     try:
                         shutil.rmtree(temp_dir)
-                    except Exception:
-                        pass
+                        logger.debug(f"[任务ID: {task_id}] 临时目录强制删除成功: {temp_dir}")
+                    except Exception as rmtree_err:
+                        logger.warning(f"[任务ID: {task_id}] 临时目录删除失败: {rmtree_err}, 路径={temp_dir}")
         except Exception as e:
             logger.warning(f"[任务ID: {task_id}] 清理临时文件失败: {e}, 路径={temp_file_path}")
 
@@ -172,7 +417,6 @@ def process_document_task(self, document_id: int):
                             try:
                                 os.rmdir(extra_dir)
                             except OSError:
-                                import shutil
                                 try:
                                     shutil.rmtree(extra_dir)
                                 except Exception:
@@ -195,7 +439,6 @@ def process_document_task(self, document_id: int):
                         try:
                             os.rmdir(extra_dir)
                         except OSError:
-                            import shutil
                             try:
                                 shutil.rmtree(extra_dir)
                             except Exception:
@@ -219,15 +462,21 @@ def process_document_task(self, document_id: int):
         text_element_index_map = parse_result.get("text_element_index_map", [])
         filtered_elements_light = parse_result.get("filtered_elements_light", [])
 
-        if is_docx:
-            try:
-                from app.config.settings import settings as _settings
-                chunk_max = min(int(getattr(_settings, 'CHUNK_SIZE', 1000)), int(getattr(_settings, 'TEXT_EMBED_MAX_CHARS', 1024)))
-            except Exception:
-                chunk_max = 1024
+        # 分块大小配置（docx/pdf 统一使用）
+        try:
+            from app.config.settings import settings as _settings
+            chunk_max = min(
+                int(getattr(_settings, 'CHUNK_SIZE', 1000)),
+                int(getattr(_settings, 'TEXT_EMBED_MAX_CHARS', 1024))
+            )
+        except Exception:
+            chunk_max = 1024
 
-            if chunk_max <= 0:
-                chunk_max = 1024
+        if chunk_max <= 0:
+            chunk_max = 1024
+
+        docx_like_processing = is_docx or is_txt or is_md or is_excel or is_pptx or is_html
+        if docx_like_processing:
 
             ordered_elements = parse_result.get('ordered_elements', []) or []
             merged_items: List[Dict[str, Any]] = []
@@ -249,9 +498,36 @@ def process_document_task(self, document_id: int):
                 chunk_start_order: Optional[int] = None
                 chunk_end_idx: Optional[int] = None
                 chunk_end_order: Optional[int] = None
+                chunk_line_start: Optional[int] = None
+                chunk_line_end: Optional[int] = None
+                chunk_section_hint: Optional[str] = None
+                # HTML 特有字段
+                chunk_heading_level: Optional[int] = None
+                chunk_heading_path: Optional[List[str]] = None
+                chunk_semantic_tag: Optional[str] = None
+                chunk_list_type: Optional[str] = None
+                chunk_code_language: Optional[str] = None
+
+                def determine_html_chunk_type(entries: List[Dict[str, Any]]) -> Optional[str]:
+                    """确定 HTML 分块类型"""
+                    if not is_html:
+                        return None
+                    # 检查第一个元素确定分块类型
+                    if entries:
+                        first_entry = entries[0]
+                        if first_entry.get('code_language'):
+                            return 'code_block'
+                        if first_entry.get('list_type'):
+                            return 'list'
+                        if first_entry.get('semantic_tag'):
+                            return 'semantic_block'
+                        if first_entry.get('heading_level'):
+                            return 'heading_section'
+                    return 'paragraph'
 
                 def emit_chunk():
-                    nonlocal current_parts, current_len, chunk_start_idx, chunk_end_idx, chunk_start_order, chunk_end_order, chunk_counter
+                    nonlocal current_parts, current_len, chunk_start_idx, chunk_end_idx, chunk_start_order, chunk_end_order, chunk_counter, chunk_line_start, chunk_line_end, chunk_section_hint
+                    nonlocal chunk_heading_level, chunk_heading_path, chunk_semantic_tag, chunk_list_type, chunk_code_language
                     content = ''.join(current_parts).strip()
                     if not content:
                         current_parts = []
@@ -260,9 +536,23 @@ def process_document_task(self, document_id: int):
                         chunk_start_order = None
                         chunk_end_idx = None
                         chunk_end_order = None
+                        chunk_line_start = None
+                        chunk_line_end = None
+                        chunk_section_hint = None
+                        chunk_heading_level = None
+                        chunk_heading_path = None
+                        chunk_semantic_tag = None
+                        chunk_list_type = None
+                        chunk_code_language = None
                         return
                     base_order = chunk_start_order or 0
                     pos_value = base_order * 1000 + chunk_counter
+                    
+                    # 确定 HTML 分块类型
+                    html_chunk_type = None
+                    if is_html:
+                        html_chunk_type = determine_html_chunk_type(text_buffer)
+                    
                     chunk_meta = {
                         'element_index_start': chunk_start_idx,
                         'element_index_end': chunk_end_idx,
@@ -271,7 +561,25 @@ def process_document_task(self, document_id: int):
                         'page_number': None,
                         'coordinates': None,
                         'chunk_index': chunk_counter,
+                        'line_start': chunk_line_start,
+                        'line_end': chunk_line_end,
+                        'section_hint': chunk_section_hint,
                     }
+                    
+                    # 添加 HTML 特有字段
+                    if is_html:
+                        if html_chunk_type:
+                            chunk_meta['chunk_type'] = html_chunk_type
+                        if chunk_heading_level is not None:
+                            chunk_meta['heading_level'] = chunk_heading_level
+                        if chunk_heading_path:
+                            chunk_meta['heading_path'] = chunk_heading_path
+                        if chunk_semantic_tag:
+                            chunk_meta['semantic_tag'] = chunk_semantic_tag
+                        if chunk_list_type:
+                            chunk_meta['list_type'] = chunk_list_type
+                        if chunk_code_language:
+                            chunk_meta['code_language'] = chunk_code_language
                     chunk_item = {
                         'type': 'text',
                         'content': content,
@@ -289,6 +597,14 @@ def process_document_task(self, document_id: int):
                     chunk_start_order = None
                     chunk_end_idx = None
                     chunk_end_order = None
+                    chunk_line_start = None
+                    chunk_line_end = None
+                    chunk_section_hint = None
+                    chunk_heading_level = None
+                    chunk_heading_path = None
+                    chunk_semantic_tag = None
+                    chunk_list_type = None
+                    chunk_code_language = None
 
                 for idx, entry in enumerate(text_buffer):
                     text_value = entry.get('text') or ''
@@ -302,6 +618,21 @@ def process_document_task(self, document_id: int):
                         if current_len == 0:
                             chunk_start_idx = element_index_entry
                             chunk_start_order = doc_order
+                            chunk_line_start = entry.get('line_start', chunk_line_start)
+                            if chunk_section_hint is None:
+                                chunk_section_hint = entry.get('section_hint')
+                            # HTML 特有字段：从第一个元素获取
+                            if is_html:
+                                if chunk_heading_level is None:
+                                    chunk_heading_level = entry.get('heading_level')
+                                if chunk_heading_path is None:
+                                    chunk_heading_path = entry.get('heading_path')
+                                if chunk_semantic_tag is None:
+                                    chunk_semantic_tag = entry.get('semantic_tag')
+                                if chunk_list_type is None:
+                                    chunk_list_type = entry.get('list_type')
+                                if chunk_code_language is None:
+                                    chunk_code_language = entry.get('code_language')
                         remain = chunk_max - current_len
                         take = min(remain, length - pointer)
                         piece = text_value[pointer:pointer + take]
@@ -309,6 +640,28 @@ def process_document_task(self, document_id: int):
                         current_len += take
                         chunk_end_idx = element_index_entry
                         chunk_end_order = doc_order
+                        line_end_candidate = entry.get('line_end')
+                        if line_end_candidate is not None:
+                            chunk_line_end = line_end_candidate
+                        if chunk_section_hint is None:
+                            chunk_section_hint = entry.get('section_hint')
+                        # HTML 特有字段：更新到最后处理的元素
+                        if is_html:
+                            heading_level_candidate = entry.get('heading_level')
+                            if heading_level_candidate is not None:
+                                chunk_heading_level = heading_level_candidate
+                            heading_path_candidate = entry.get('heading_path')
+                            if heading_path_candidate:
+                                chunk_heading_path = heading_path_candidate
+                            semantic_tag_candidate = entry.get('semantic_tag')
+                            if semantic_tag_candidate:
+                                chunk_semantic_tag = semantic_tag_candidate
+                            list_type_candidate = entry.get('list_type')
+                            if list_type_candidate:
+                                chunk_list_type = list_type_candidate
+                            code_language_candidate = entry.get('code_language')
+                            if code_language_candidate:
+                                chunk_code_language = code_language_candidate
                         pointer += take
                         if current_len >= chunk_max:
                             emit_chunk()
@@ -320,15 +673,30 @@ def process_document_task(self, document_id: int):
 
             for element in ordered_elements:
                 elem_type = element.get('type')
-                if elem_type == 'text':
+                if elem_type == 'text' or elem_type == 'code':
+                    # 代码块也当作文本处理，保留 code_language 元数据
                     text_value = (element.get('text') or '').strip()
                     if not text_value:
                         continue
-                    text_buffer.append({
+                    buffer_entry = {
                         'text': text_value,
                         'element_index': element.get('element_index'),
                         'doc_order': element.get('doc_order'),
-                    })
+                        'line_start': element.get('line_start'),
+                        'line_end': element.get('line_end'),
+                        'section_hint': element.get('section_hint'),
+                        'code_language': element.get('code_language') if elem_type == 'code' else None,
+                    }
+                    # HTML 特有字段：传递到 text_buffer
+                    if is_html:
+                        buffer_entry['heading_level'] = element.get('heading_level')
+                        buffer_entry['heading_path'] = element.get('heading_path')
+                        buffer_entry['semantic_tag'] = element.get('semantic_tag')
+                        buffer_entry['list_type'] = element.get('list_type')
+                        # code_language 已经在上面处理，但如果是 code 类型，确保传递
+                        if elem_type == 'code':
+                            buffer_entry['code_language'] = element.get('code_language')
+                    text_buffer.append(buffer_entry)
                 elif elem_type == 'table':
                     flush_text_buffer()
                     continue
@@ -383,110 +751,316 @@ def process_document_task(self, document_id: int):
             merged_items = deduped_items
 
             chunk_time = time.time() - chunk_start
-            logger.info(f"[任务ID: {task_id}] DOCX 顺序分块完成: 耗时={chunk_time:.2f}秒, 文本块={len(text_chunks_entries)}, 表格={sum(1 for m in merged_items if m.get('type')=='table')}")
-        else:
-            elements_for_chunking = None
-            if filtered_elements_light:
-                class LightElement:
-                    def __init__(self, category, text, element_index):
-                        self.category = category
-                        self.text = text
-                        self.element_index = element_index
-                elements_for_chunking = [
-                    LightElement(elem.get('category'), elem.get('text', ''), elem.get('element_index', i))
-                    for i, elem in enumerate(filtered_elements_light)
-                ]
-
-            chunks_with_index = DocxService(db).chunk_text(
-                text_content,
-                text_element_index_map=text_element_index_map,
-                elements=elements_for_chunking
-            )
-            chunk_time = time.time() - chunk_start
-
-            if chunks_with_index and isinstance(chunks_with_index[0], str):
-                chunks = chunks_with_index
-                chunks_metadata = []
+            if is_docx:
+                docx_like_name = "DOCX"
+            elif is_excel:
+                docx_like_name = "EXCEL"
+            elif is_md:
+                docx_like_name = "MD"
+            elif is_pptx:
+                docx_like_name = "PPTX"
+            elif is_html:
+                docx_like_name = "HTML"
             else:
-                chunks = [chunk.get('content', '') for chunk in chunks_with_index]
-                chunks_metadata = chunks_with_index
+                docx_like_name = "TXT"
+            logger.info(
+                f"[任务ID: {task_id}] {docx_like_name} 顺序分块完成: 耗时={chunk_time:.2f}秒, 文本块={len(text_chunks_entries)}, 表格={sum(1 for m in merged_items if m.get('type')=='table')}, 图片={sum(1 for m in merged_items if m.get('type')=='image')}"
+            )
+        else:
+            # ✅ PDF处理：检查是否有ordered_elements（统一使用Word的处理逻辑）
+            ordered_elements = parse_result.get('ordered_elements', []) or []
+            if ordered_elements:
+                # ✅ PDF也使用Word的处理逻辑（通过ordered_elements）
+                file_type_name = "PDF" if is_pdf else "其他格式"
+                logger.info(f"[任务ID: {task_id}] {file_type_name}使用ordered_elements统一处理: 共{len(ordered_elements)}个元素")
+                merged_items: List[Dict[str, Any]] = []
+                text_chunks_entries: List[Dict[str, Any]] = []
+                tables_meta = parse_result.get('tables', []) or []
+                chunks = []
+                chunks_metadata = []
+                chunk_counter = 0
+                text_buffer: List[Dict[str, Any]] = []
+                image_chunks: List[Dict[str, Any]] = []
 
-            logger.info(f"[任务ID: {task_id}] 文档分块完成: 耗时={chunk_time:.2f}秒, 共生成 {len(chunks)} 个分块")
+                def flush_text_buffer():
+                    nonlocal text_buffer, chunk_counter
+                    if not text_buffer:
+                        return
+                    current_parts: List[str] = []
+                    current_len = 0
+                    chunk_start_idx: Optional[int] = None
+                    chunk_start_order: Optional[int] = None
+                    chunk_end_idx: Optional[int] = None
+                    chunk_end_order: Optional[int] = None
 
-            merged_items = []
-            tables_meta = parse_result.get('tables', [])
-            image_chunks: List[Dict[str, Any]] = []
-            # 收集文本块
-            for i, chunk_content in enumerate(chunks):
-                element_index_start = None
-                element_index_end = None
-                page_number = None
-                section_id = None
-                is_parent = False
-                if chunks_metadata and i < len(chunks_metadata):
-                    element_index_start = chunks_metadata[i].get('element_index_start')
-                    element_index_end = chunks_metadata[i].get('element_index_end')
-                    section_id = chunks_metadata[i].get('section_id')
-                    is_parent = bool(chunks_metadata[i].get('is_parent'))
-
-                page_numbers = []
-                coordinates_list = []
-                if text_element_index_map:
-                    if element_index_start is not None and element_index_end is not None:
-                        for map_item in text_element_index_map:
-                            elem_idx = map_item.get('element_index')
-                            if element_index_start <= elem_idx <= element_index_end:
-                                page_num = map_item.get('page_number')
-                                if page_num is not None and page_num not in page_numbers:
-                                    page_numbers.append(page_num)
-                                coords = map_item.get('coordinates')
-                                if coords and isinstance(coords, dict):
-                                    if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
-                                        coordinates_list.append(coords)
-                    elif element_index_start is not None:
-                        for map_item in text_element_index_map:
-                            if map_item.get('element_index') == element_index_start:
-                                page_num = map_item.get('page_number')
-                                if page_num is not None:
-                                    page_numbers.append(page_num)
-                                coords = map_item.get('coordinates')
-                                if coords and isinstance(coords, dict):
-                                    if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
-                                        coordinates_list.append(coords)
-                                break
-                    if page_numbers:
-                        page_number = page_numbers[0]
-                chunk_coordinates = None
-                if coordinates_list:
-                    if len(coordinates_list) == 1:
-                        chunk_coordinates = coordinates_list[0]
-                    else:
-                        min_x = min(c.get('x', 0) for c in coordinates_list)
-                        min_y = min(c.get('y', 0) for c in coordinates_list)
-                        max_x = max((c.get('x', 0) + c.get('width', 0)) for c in coordinates_list)
-                        max_y = max((c.get('y', 0) + c.get('height', 0)) for c in coordinates_list)
-                        chunk_coordinates = {
-                            'x': min_x,
-                            'y': min_y,
-                            'width': max_x - min_x,
-                            'height': max_y - min_y
+                    def emit_chunk():
+                        nonlocal current_parts, current_len, chunk_start_idx, chunk_end_idx, chunk_start_order, chunk_end_order, chunk_counter
+                        content = ''.join(current_parts).strip()
+                        if not content:
+                            current_parts = []
+                            current_len = 0
+                            chunk_start_idx = None
+                            chunk_start_order = None
+                            chunk_end_idx = None
+                            chunk_end_order = None
+                            return
+                        base_order = chunk_start_order or 0
+                        pos_value = base_order * 1000 + chunk_counter
+                        chunk_meta = {
+                            'element_index_start': chunk_start_idx,
+                            'element_index_end': chunk_end_idx,
+                            'doc_order_start': chunk_start_order,
+                            'doc_order_end': chunk_end_order,
+                            'page_number': None,
+                            'coordinates': None,
+                            'chunk_index': chunk_counter,
                         }
-                pos = element_index_start if element_index_start is not None else (10_000_000 + i)
-                chunk_meta = {
-                    'chunk_index': i,
-                    'element_index_start': element_index_start,
-                    'element_index_end': element_index_end,
-                    'page_number': page_number,
-                    'coordinates': chunk_coordinates,
-                    'section_id': section_id,
-                    'is_parent': is_parent,
-                }
-                merged_items.append({
-                    'type': 'text',
-                    'content': chunk_content,
-                    'pos': pos,
-                    'meta': chunk_meta
-                })
+                        chunk_item = {
+                            'type': 'text',
+                            'content': content,
+                            'pos': pos_value,
+                            'meta': chunk_meta,
+                        }
+                        text_chunks_entries.append(chunk_item)
+                        merged_items.append(chunk_item)
+                        chunks.append(content)
+                        chunks_metadata.append(chunk_meta)
+                        chunk_counter += 1
+                        current_parts = []
+                        current_len = 0
+                        chunk_start_idx = None
+                        chunk_start_order = None
+                        chunk_end_idx = None
+                        chunk_end_order = None
+
+                    for idx, entry in enumerate(text_buffer):
+                        text_value = entry.get('text') or ''
+                        if idx < len(text_buffer) - 1:
+                            text_value = text_value + '\n'
+                        doc_order = entry.get('doc_order')
+                        element_index_entry = entry.get('element_index')
+                        pointer = 0
+                        length = len(text_value)
+                        while pointer < length:
+                            if current_len == 0:
+                                chunk_start_idx = element_index_entry
+                                chunk_start_order = doc_order
+                            remain = chunk_max - current_len
+                            take = min(remain, length - pointer)
+                            piece = text_value[pointer:pointer + take]
+                            current_parts.append(piece)
+                            current_len += take
+                            chunk_end_idx = element_index_entry
+                            chunk_end_order = doc_order
+                            pointer += take
+                            if current_len >= chunk_max:
+                                emit_chunk()
+
+                    if current_parts:
+                        emit_chunk()
+
+                    text_buffer = []
+
+                for element in ordered_elements:
+                    elem_type = element.get('type')
+                    if elem_type == 'text' or elem_type == 'code':
+                        # 代码块也当作文本处理
+                        text_value = (element.get('text') or '').strip()
+                        if not text_value:
+                            continue
+                        text_buffer.append({
+                            'text': text_value,
+                            'element_index': element.get('element_index'),
+                            'doc_order': element.get('doc_order'),
+                        })
+                    elif elem_type == 'table':
+                        flush_text_buffer()
+                        continue
+                    elif elem_type == 'image':
+                        flush_text_buffer()
+                        doc_order = element.get('doc_order') or 0
+                        elem_idx = element.get('element_index')
+                        if elem_idx is None:
+                            logger.warning(
+                                f"[任务ID: {task_id}] ⚠️ PDF图片元素缺少 element_index: doc_order={doc_order}, "
+                                f"element_keys={list(element.keys())}"
+                            )
+                        image_chunk = {
+                            'type': 'image',
+                            'content': '',
+                            'pos': doc_order * 1000,
+                            'meta': {
+                                'element_index': elem_idx,
+                                'doc_order': doc_order,
+                                'page_number': element.get('page_number'),
+                                'coordinates': element.get('coordinates'),
+                                'image_id': None,
+                                'image_path': None,
+                            }
+                        }
+                        merged_items.append(image_chunk)
+                        image_chunks.append(image_chunk)
+                        if elem_idx is not None:
+                            logger.debug(
+                                f"[任务ID: {task_id}] ✅ PDF图片分块创建（统一处理）: element_index={elem_idx}, doc_order={doc_order}, pos={doc_order * 1000}"
+                            )
+                flush_text_buffer()
+                merged_items.sort(key=lambda item: item.get('pos', 0))
+                # 去重：确保每个 element_index 仅生成一个 image/table 块
+                deduped_items: List[Dict[str, Any]] = []
+                used_table_indices = set()
+                used_image_indices = set()
+                for item in merged_items:
+                    item_type = item.get('type')
+                    meta = item.get('meta') or {}
+                    elem_idx = meta.get('element_index')
+                    if item_type == 'table' and elem_idx is not None:
+                        key = (elem_idx, item.get('pos'))
+                        if key in used_table_indices:
+                            continue
+                        used_table_indices.add(key)
+                    elif item_type == 'image' and elem_idx is not None:
+                        if elem_idx in used_image_indices:
+                            continue
+                        used_image_indices.add(elem_idx)
+                    deduped_items.append(item)
+                merged_items = deduped_items
+
+                chunk_time = time.time() - chunk_start
+                file_type_name = "PDF" if is_pdf else "其他格式"
+                logger.info(f"[任务ID: {task_id}] {file_type_name}顺序分块完成（统一处理）: 耗时={chunk_time:.2f}秒, 文本块={len(text_chunks_entries)}, 表格={sum(1 for m in merged_items if m.get('type')=='table')}, 图片={sum(1 for m in merged_items if m.get('type')=='image')}")
+            else:
+                # ⚠️ 已废弃：原有PDF处理逻辑（如果没有ordered_elements，使用旧逻辑）
+                # 注意：现在PDF解析已统一生成ordered_elements，此分支理论上不会执行
+                # 保留作为向后兼容的备用逻辑
+                logger.warning(
+                    f"[任务ID: {task_id}] ⚠️ PDF未找到ordered_elements，使用旧的分块逻辑（已废弃）"
+                )
+                elements_for_chunking = None
+                if filtered_elements_light:
+                    class LightElement:
+                        def __init__(self, category, text, element_index):
+                            self.category = category
+                            self.text = text
+                            self.element_index = element_index
+                    elements_for_chunking = [
+                        LightElement(elem.get('category'), elem.get('text', ''), elem.get('element_index', i))
+                        for i, elem in enumerate(filtered_elements_light)
+                    ]
+
+                chunks_with_index = DocxService(db).chunk_text(
+                    text_content,
+                    text_element_index_map=text_element_index_map,
+                    elements=elements_for_chunking
+                )
+                chunk_time = time.time() - chunk_start
+
+                logger.info(
+                    f"[任务ID: {task_id}] PDF 分块初步完成（旧逻辑）: 原始块={len(chunks_with_index)}, "
+                    f"文本元素={len(filtered_elements_light)}, 表格={len(parse_result.get('tables', []))}, "
+                    f"图片={len(parse_result.get('images', []))}, 耗时={chunk_time:.2f}秒"
+                )
+
+                if chunks_with_index and isinstance(chunks_with_index[0], str):
+                    chunks = chunks_with_index
+                    chunks_metadata = []
+                else:
+                    chunks = [chunk.get('content', '') for chunk in chunks_with_index]
+                    chunks_metadata = chunks_with_index
+
+                logger.info(f"[任务ID: {task_id}] 文档分块完成（旧逻辑）: 耗时={chunk_time:.2f}秒, 共生成 {len(chunks)} 个分块")
+
+                if chunks_metadata:
+                    preview_meta = []
+                    for idx, meta in enumerate(chunks_metadata[:5]):
+                        preview_meta.append(
+                            {
+                                "chunk_index": idx,
+                                "is_parent": bool(meta.get('is_parent')),
+                                "element_index_start": meta.get('element_index_start'),
+                                "element_index_end": meta.get('element_index_end'),
+                                "page_number": meta.get('page_number'),
+                                "section_id": meta.get('section_id'),
+                            }
+                        )
+                    logger.info(f"[任务ID: {task_id}] PDF 分块元数据预览(前5个): {preview_meta}")
+
+                merged_items = []
+                tables_meta = parse_result.get('tables', [])
+                image_chunks: List[Dict[str, Any]] = []
+                # ⚠️ 已废弃：收集文本块（旧逻辑，不包含图片分块）
+                # 注意：此逻辑不会创建图片分块，图片处理会失败
+                for i, chunk_content in enumerate(chunks):
+                    element_index_start = None
+                    element_index_end = None
+                    page_number = None
+                    section_id = None
+                    is_parent = False
+                    if chunks_metadata and i < len(chunks_metadata):
+                        element_index_start = chunks_metadata[i].get('element_index_start')
+                        element_index_end = chunks_metadata[i].get('element_index_end')
+                        section_id = chunks_metadata[i].get('section_id')
+                        is_parent = bool(chunks_metadata[i].get('is_parent'))
+
+                    page_numbers = []
+                    coordinates_list = []
+                    if text_element_index_map:
+                        if element_index_start is not None and element_index_end is not None:
+                            for map_item in text_element_index_map:
+                                elem_idx = map_item.get('element_index')
+                                if element_index_start <= elem_idx <= element_index_end:
+                                    page_num = map_item.get('page_number')
+                                    if page_num is not None and page_num not in page_numbers:
+                                        page_numbers.append(page_num)
+                                    coords = map_item.get('coordinates')
+                                    if coords and isinstance(coords, dict):
+                                        if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
+                                            coordinates_list.append(coords)
+                        elif element_index_start is not None:
+                            for map_item in text_element_index_map:
+                                if map_item.get('element_index') == element_index_start:
+                                    page_num = map_item.get('page_number')
+                                    if page_num is not None:
+                                        page_numbers.append(page_num)
+                                    coords = map_item.get('coordinates')
+                                    if coords and isinstance(coords, dict):
+                                        if coords.get('x', 0) > 0 or coords.get('y', 0) > 0:
+                                            coordinates_list.append(coords)
+                                    break
+                        if page_numbers:
+                            page_number = page_numbers[0]
+                    chunk_coordinates = None
+                    if coordinates_list:
+                        if len(coordinates_list) == 1:
+                            chunk_coordinates = coordinates_list[0]
+                        else:
+                            min_x = min(c.get('x', 0) for c in coordinates_list)
+                            min_y = min(c.get('y', 0) for c in coordinates_list)
+                            max_x = max((c.get('x', 0) + c.get('width', 0)) for c in coordinates_list)
+                            max_y = max((c.get('y', 0) + c.get('height', 0)) for c in coordinates_list)
+                            chunk_coordinates = {
+                                'x': min_x,
+                                'y': min_y,
+                                'width': max_x - min_x,
+                                'height': max_y - min_y
+                            }
+                    pos = element_index_start if element_index_start is not None else (10_000_000 + i)
+                    chunk_meta = {
+                        'chunk_index': i,
+                        'element_index_start': element_index_start,
+                        'element_index_end': element_index_end,
+                        'page_number': page_number,
+                        'coordinates': chunk_coordinates,
+                        'section_id': section_id,
+                        'is_parent': is_parent,
+                    }
+                    merged_items.append({
+                        'type': 'text',
+                        'content': chunk_content,
+                        'pos': pos,
+                        'meta': chunk_meta
+                    })
+                # ⚠️ 注意：旧逻辑不会处理图片分块，图片无法关联上下文
 
         # 收集表格块
         existing_table_keys = set()
@@ -592,9 +1166,11 @@ def process_document_task(self, document_id: int):
                             "stats_json": stats_json,
                         }
                     )
-                # ✅ 控制表格可检索文本（TST）长度（2048字符）
-                if tbl_text and len(tbl_text) > 2048:
-                    tbl_text = tbl_text[:2048]
+                # ✅ 控制表格可检索文本（TST）长度（使用 TEXT_EMBED_MAX_CHARS 配置，默认1024字符）
+                max_chars = int(getattr(settings, 'TEXT_EMBED_MAX_CHARS', 1024))
+                if tbl_text and len(tbl_text) > max_chars:
+                    tbl_text = tbl_text[:max_chars]
+                    logger.debug(f"[任务ID: {task_id}] 表格文本超过限制 ({len(tbl_text)} > {max_chars})，已截断")
                 # 使用 table_uid 替代大 JSON 存入 chunk.meta
                 tbl_page_number = tbl.get('page_number')
                 append_table_chunk = True
@@ -1074,6 +1650,20 @@ def process_document_task(self, document_id: int):
                         f"[任务ID: {task_id}] 图片 {image_row.id} 向量生成完成，维度: {len(image_vector)}"
                     )
 
+                # ✅ 记录向量化结果到 MySQL，供前端状态展示
+                try:
+                    vector_dim = len(image_vector) if image_vector else None
+                    if vector_dim:
+                        image_row.vector_model = settings.CLIP_MODEL_NAME
+                        image_row.vector_dim = vector_dim
+                    image_row.last_processed_at = datetime.datetime.utcnow()
+                    if image_row.status not in ("completed", "failed"):
+                        image_row.status = "completed"
+                    db.commit()
+                except Exception as db_exc:
+                    logger.warning(f"[任务ID: {task_id}] 回写图片向量信息失败 image_id={image_row.id}: {db_exc}")
+                    db.rollback()
+
                 try:
                     image_metadata = img.get('metadata', {}) or {}
                     if element_index is not None:
@@ -1216,6 +1806,32 @@ def process_document_task(self, document_id: int):
         if len(db_chunks) == 0:
             logger.warning(f"[任务ID: {task_id}] 无分块可向量化，跳过向量化与索引阶段")
             document.status = DOC_STATUS_COMPLETED
+            
+            # 提取文档目录（同步执行，不影响主流程）
+            # 注意：TXT 文件不提取目录（纯文本文件通常没有结构化目录）
+            try:
+                from app.services.document_toc_service import DocumentTOCService
+                import asyncio
+                toc_service = DocumentTOCService(db)
+                if is_pdf and document.file_path:
+                    asyncio.run(toc_service.extract_toc_from_pdf(document_id, document.file_path))
+                elif is_docx and document.file_path:
+                    asyncio.run(toc_service.extract_toc_from_docx(document_id, document.file_path))
+                elif is_md:
+                    # MD 文件从 metadata 中的 heading_structure 提取目录
+                    doc_meta = document.meta or {}
+                    if isinstance(doc_meta, str):
+                        import json as _json
+                        try:
+                            doc_meta = _json.loads(doc_meta)
+                        except Exception:
+                            doc_meta = {}
+                    heading_structure = doc_meta.get('heading_structure', [])
+                    if heading_structure:
+                        asyncio.run(toc_service.extract_toc_from_markdown(document_id, heading_structure))
+                # TXT 文件跳过目录提取（纯文本文件通常没有结构化目录）
+            except Exception as e:
+                logger.warning(f"[任务ID: {task_id}] 提取文档目录失败（不影响主流程）: {e}")
             document.processing_progress = 100.0
             db.commit()
             total_time = time.time() - download_start
@@ -1476,6 +2092,71 @@ def process_document_task(self, document_id: int):
         # 更新文档状态为索引中（OpenSearch索引已在上面的循环中建立）
         logger.debug(f"[任务ID: {task_id}] 步骤7/7: 完成处理，更新文档状态")
         document.status = DOC_STATUS_INDEXING
+        
+        # 提取文档目录（同步执行，不影响主流程）
+        # 注意：TXT 文件不提取目录（纯文本文件通常没有结构化目录）
+        try:
+            from app.services.document_toc_service import DocumentTOCService
+            import asyncio
+            toc_service = DocumentTOCService(db)
+            if is_pdf and document.file_path:
+                toc_items = asyncio.run(toc_service.extract_toc_from_pdf(document_id, document.file_path))
+                if toc_items:
+                    logger.info(f"[任务ID: {task_id}] PDF目录提取成功，共 {len(toc_items)} 个目录项")
+            elif is_docx and document.file_path:
+                toc_items = asyncio.run(toc_service.extract_toc_from_docx(document_id, document.file_path))
+                if toc_items:
+                    logger.info(f"[任务ID: {task_id}] Word目录提取成功，共 {len(toc_items)} 个目录项")
+            elif is_md:
+                # MD 文件从 metadata 中的 heading_structure 提取目录
+                doc_meta = document.meta or {}
+                if isinstance(doc_meta, str):
+                    import json as _json
+                    try:
+                        doc_meta = _json.loads(doc_meta)
+                    except Exception:
+                        doc_meta = {}
+                heading_structure = doc_meta.get('heading_structure', [])
+                if heading_structure:
+                    toc_items = asyncio.run(toc_service.extract_toc_from_markdown(document_id, heading_structure))
+                    if toc_items:
+                        logger.info(f"[任务ID: {task_id}] Markdown目录提取成功，共 {len(toc_items)} 个目录项")
+                else:
+                    logger.debug(f"[任务ID: {task_id}] Markdown文件无标题结构，跳过目录提取")
+            elif is_html:
+                doc_meta = document.meta or {}
+                if isinstance(doc_meta, str):
+                    import json as _json
+                    try:
+                        doc_meta = _json.loads(doc_meta)
+                    except Exception:
+                        doc_meta = {}
+                heading_structure = doc_meta.get('heading_structure', [])
+                if heading_structure:
+                    toc_items = asyncio.run(toc_service.extract_toc_from_html(document_id, heading_structure))
+                    if toc_items:
+                        logger.info(f"[任务ID: {task_id}] HTML目录提取成功，共 {len(toc_items)} 个目录项")
+                else:
+                    logger.debug(f"[任务ID: {task_id}] HTML文件无标题结构，跳过目录提取")
+            elif is_pptx:
+                # PPTX 文件从 metadata 中的 slides 列表提取目录
+                doc_meta = document.meta or {}
+                if isinstance(doc_meta, str):
+                    import json as _json
+                    try:
+                        doc_meta = _json.loads(doc_meta)
+                    except Exception:
+                        doc_meta = {}
+                slides = doc_meta.get('slides', [])
+                if slides:
+                    toc_items = asyncio.run(toc_service.extract_toc_from_pptx(document_id, slides))
+                    if toc_items:
+                        logger.info(f"[任务ID: {task_id}] PPTX目录提取成功，共 {len(toc_items)} 个目录项")
+                else:
+                    logger.debug(f"[任务ID: {task_id}] PPTX文件无幻灯片信息，跳过目录提取")
+            # TXT 文件跳过目录提取（纯文本文件通常没有结构化目录）
+        except Exception as e:
+            logger.warning(f"[任务ID: {task_id}] 提取文档目录失败（不影响主流程）: {e}")
         document.processing_progress = 95.0
         db.commit()
         
@@ -1530,9 +2211,10 @@ def process_document_task(self, document_id: int):
         }
         
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {e}"
+        # 获取错误消息，只使用异常消息本身，不包含类型名称
+        error_msg = str(e) if str(e) else f"{type(e).__name__}"
         logger.error(f"[任务ID: {task_id}] ========== 文档 {document_id} 处理失败 ==========")
-        logger.error(f"[任务ID: {task_id}] 错误信息: {error_msg}", exc_info=True)
+        logger.error(f"[任务ID: {task_id}] 错误信息: {type(e).__name__}: {error_msg}", exc_info=True)
         
         # 更新文档状态为失败
         if document:
@@ -1544,11 +2226,25 @@ def process_document_task(self, document_id: int):
             except Exception as db_err:
                 logger.error(f"[任务ID: {task_id}] 更新文档状态失败: {db_err}", exc_info=True)
         
-        current_task.update_state(
-            state="FAILURE",
-            meta={"error": error_msg, "document_id": document_id}
-        )
-        raise e
+        # 更新任务状态为失败
+        try:
+            current_task.update_state(
+                state="FAILURE",
+                meta={"error": error_msg, "document_id": document_id}
+            )
+        except Exception as state_err:
+            logger.error(f"[任务ID: {task_id}] 更新任务状态失败: {state_err}", exc_info=True)
+        
+        # 不抛出异常，避免 Celery 序列化异常时的问题
+        # 即使配置了 ignore_result=True，Celery 仍然会尝试处理异常，可能导致序列化问题
+        # 通过返回失败结果和更新状态，让调用方知道任务失败
+        # 注意：由于 ignore_result=True，返回值不会被存储，但任务状态会更新为 FAILURE
+        return {
+            "status": "failed",
+            "message": "文档处理失败",
+            "document_id": document_id,
+            "error": error_msg
+        }
     finally:
         try:
             db.close()
@@ -1556,7 +2252,7 @@ def process_document_task(self, document_id: int):
         except Exception as e:
             logger.warning(f"[任务ID: {task_id}] 关闭数据库连接时出错: {e}")
 
-@celery_app.task(bind=True)
+@celery_app.task(bind=True, ignore_result=True)
 def reprocess_document_task(self, document_id: int):
     """重新向量化文档 - 根据文档修改功能设计实现"""
     db = SessionLocal()
@@ -1683,15 +2379,27 @@ def reprocess_document_task(self, document_id: int):
         }
         
     except Exception as e:
-        logger.error(f"重新向量化文档 {document_id} 失败: {str(e)}", exc_info=True)
+        # 获取错误消息，只使用异常消息本身，不包含类型名称
+        error_msg = str(e) if str(e) else f"{type(e).__name__}"
+        logger.error(f"重新向量化文档 {document_id} 失败: {type(e).__name__}: {error_msg}", exc_info=True)
         
         # 更新文档状态为失败
         if document:
-            document.status = DOC_STATUS_FAILED
-            document.error_message = str(e)
-            db.commit()
+            try:
+                document.status = DOC_STATUS_FAILED
+                document.error_message = error_msg
+                db.commit()
+            except Exception as db_err:
+                logger.error(f"更新文档状态失败: {db_err}", exc_info=True)
         
-        raise e
+        # 不抛出异常，避免 Celery 序列化异常时的问题
+        # 通过返回失败结果和更新状态，让调用方知道任务失败
+        return {
+            "status": "failed",
+            "message": "重新向量化失败",
+            "document_id": document_id,
+            "error": error_msg
+        }
     finally:
         db.close()
 

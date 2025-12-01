@@ -3,4 +3,7 @@ export * from './modules/knowledge-bases'
 export * from './modules/images'
 export * from './modules/search'
 export * from './modules/qa'
+export * from './modules/observability'
+export * from './modules/statistics'
+export * from './modules/exports'
 

@@ -24,6 +24,8 @@ class DocumentImage(BaseModel):
     vector_model = Column(String(50), comment="向量模型")
     vector_dim = Column(Integer, comment="向量维度")
     status = Column(String(50), default="pending", comment="处理状态")
+    retry_count = Column(Integer, default=0, comment="重试次数")
+    last_processed_at = Column(DateTime, comment="最近处理时间")
     error_message = Column(Text, comment="错误信息")
     
     # 关系

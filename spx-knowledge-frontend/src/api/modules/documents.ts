@@ -30,6 +30,18 @@ export const uploadDocument = (data: FormData) => {
   })
 }
 
+// 从URL导入文档
+export const uploadDocumentFromUrl = (data: FormData) => {
+  return request({
+    url: '/documents/upload-from-url',
+    method: 'post',
+    data,
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
+}
+
 // 文档状态查询
 export const getDocumentStatus = (id: number) => {
   return request({
@@ -51,6 +63,84 @@ export const deleteDocument = (id: number) => {
   return request({
     url: `/documents/${id}`,
     method: 'delete'
+  })
+}
+
+// 批量删除文档
+export const batchDeleteDocuments = (documentIds: number[]) => {
+  return request({
+    url: '/documents/batch/delete',
+    method: 'post',
+    data: { document_ids: documentIds }
+  })
+}
+
+// 批量移动文档
+export const batchMoveDocuments = (data: {
+  document_ids: number[]
+  target_knowledge_base_id: number
+  target_category_id?: number
+}) => {
+  return request({
+    url: '/documents/batch/move',
+    method: 'post',
+    data
+  })
+}
+
+// 批量添加标签
+export const batchAddTags = (data: {
+  document_ids: number[]
+  tags: string[]
+}) => {
+  return request({
+    url: '/documents/batch/tags/add',
+    method: 'post',
+    data
+  })
+}
+
+// 批量删除标签
+export const batchRemoveTags = (data: {
+  document_ids: number[]
+  tags: string[]
+}) => {
+  return request({
+    url: '/documents/batch/tags/remove',
+    method: 'post',
+    data
+  })
+}
+
+// 批量替换标签
+export const batchReplaceTags = (data: {
+  document_ids: number[]
+  tags: string[]
+}) => {
+  return request({
+    url: '/documents/batch/tags/replace',
+    method: 'post',
+    data
+  })
+}
+
+// 获取文档目录
+export const getDocumentTOC = (documentId: number) => {
+  return request({
+    url: `/documents/${documentId}/toc`,
+    method: 'get'
+  })
+}
+
+// 文档内搜索
+export const searchInDocument = (documentId: number, params: {
+  query: string
+  page?: number
+}) => {
+  return request({
+    url: `/documents/${documentId}/search`,
+    method: 'get',
+    params
   })
 }
 

@@ -12,6 +12,7 @@
       <div class="upload-tabs">
         <el-radio-group v-model="uploadMode" size="default" @change="handleModeChange">
           <el-radio-button label="file">本地上传</el-radio-button>
+          <el-radio-button label="batch">批量上传</el-radio-button>
           <el-radio-button label="url">URL导入</el-radio-button>
         </el-radio-group>
       </div>
@@ -72,8 +73,78 @@
         </el-form-item>
         </template>
 
+        <!-- 批量上传模式 -->
+        <template v-if="uploadMode === 'batch'">
+          <el-form-item label="选择文件">
+            <el-upload
+              ref="batchUploadRef"
+              :auto-upload="false"
+              :on-change="handleBatchFileChange"
+              :on-remove="handleBatchFileRemove"
+              :limit="100"
+              multiple
+              accept=".docx,.pdf,.pptx,.txt,.log,.md,.markdown,.mkd,.xlsx,.xls,.csv,.zip"
+              drag
+            >
+            <template #default>
+              <el-icon class="el-icon--upload"><Upload /></el-icon>
+              <div class="el-upload__text">
+                将文件拖到此处，或<em>点击上传</em>
+                <div style="margin-top: 10px; font-size: 12px; color: #999">
+                  支持多文件上传或ZIP压缩包（自动解包）
+                </div>
+              </div>
+            </template>
+          </el-upload>
+        </el-form-item>
+
+        <!-- 批量上传进度 -->
+        <el-form-item v-if="batchFiles.length > 0">
+          <div class="batch-progress">
+            <div class="progress-header">
+              <span>已选择 {{ batchFiles.length }} 个文件</span>
+              <el-button size="small" @click="clearBatchFiles">清空</el-button>
+            </div>
+            <el-progress 
+              v-if="batchProgress.total > 0"
+              :percentage="Math.round((batchProgress.processed / batchProgress.total) * 100)"
+              :status="batchProgress.status"
+            />
+            <div v-if="batchProgress.total > 0" class="progress-stats">
+              <span>总进度: {{ batchProgress.processed }}/{{ batchProgress.total }}</span>
+              <span>成功: {{ batchProgress.success }}</span>
+              <span>失败: {{ batchProgress.failed }}</span>
+            </div>
+            <el-table 
+              v-if="batchFiles.length > 0 && batchProgress.files.length > 0"
+              :data="batchProgress.files"
+              style="margin-top: 10px"
+              max-height="300"
+            >
+              <el-table-column prop="filename" label="文件名" />
+              <el-table-column prop="status" label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="getStatusTagType(row.status)">
+                    {{ getStatusText(row.status) }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="processing_progress" label="进度" width="120">
+                <template #default="{ row }">
+                  <el-progress 
+                    :percentage="Math.round(row.processing_progress || 0)"
+                    :status="row.status === 'failed' ? 'exception' : undefined"
+                  />
+                </template>
+              </el-table-column>
+              <el-table-column prop="error_message" label="错误信息" show-overflow-tooltip />
+            </el-table>
+          </div>
+        </el-form-item>
+        </template>
+
         <!-- URL导入模式 -->
-        <template v-else>
+        <template v-if="uploadMode === 'url'">
           <el-form-item label="文档URL" :required="true">
             <el-input
               v-model="form.url"
@@ -130,8 +201,14 @@
         </el-form-item>
 
         <el-form-item>
-          <el-button type="primary" size="large" @click="handleSubmit" :loading="uploading">
-            {{ uploadMode === 'file' ? '上传' : '导入' }}
+          <el-button 
+            type="primary" 
+            size="large" 
+            @click="handleSubmit" 
+            :loading="uploading"
+            :disabled="uploadMode === 'batch' && batchFiles.length === 0"
+          >
+            {{ uploadMode === 'file' ? '上传' : uploadMode === 'batch' ? '批量上传' : '导入' }}
           </el-button>
           <el-button size="large" @click="$router.back()">取消</el-button>
         </el-form-item>
@@ -161,11 +238,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Link } from '@element-plus/icons-vue'
 import { getKnowledgeBases } from '@/api/modules/knowledge-bases'
-import { uploadDocument, uploadDocumentFromUrl } from '@/api/modules/documents'
+import { uploadDocument, uploadDocumentFromUrl, batchUploadDocuments, getBatchStatus } from '@/api/modules/documents'
 import { formatFileSize } from '@/utils/format'
 import TagSelector from '@/components/business/TagSelector.vue'
 import FilePreview from '@/components/business/FilePreview.vue'
@@ -176,9 +253,23 @@ const loading = ref(false)
 const uploading = ref(false)
 const file = ref<File | null>(null)
 const uploadResult = ref<any>(null)
-const uploadMode = ref<'file' | 'url'>('file')
+const uploadMode = ref<'file' | 'batch' | 'url'>('file')
 const urlFileInfo = ref<{ filename?: string; size?: number } | null>(null)
 const maxFileSize = 100 * 1024 * 1024 // 100MB
+
+// 批量上传相关
+const batchFiles = ref<File[]>([])
+const batchUploadRef = ref()
+const batchProgress = ref({
+  total: 0,
+  processed: 0,
+  success: 0,
+  failed: 0,
+  status: 'success' as 'success' | 'exception' | 'warning',
+  files: [] as any[]
+})
+const batchId = ref<number | null>(null)
+const batchStatusTimer = ref<any>(null)
 
 const form = ref({
   knowledge_base_id: undefined as number | undefined,
@@ -218,10 +309,71 @@ const handleFileRemove = () => {
 const handleModeChange = () => {
   // 切换模式时清空数据
   file.value = null
+  batchFiles.value = []
   form.value.url = ''
   form.value.filename = ''
   urlFileInfo.value = null
   uploadResult.value = null
+  batchId.value = null
+  batchProgress.value = {
+    total: 0,
+    processed: 0,
+    success: 0,
+    failed: 0,
+    status: 'success',
+    files: []
+  }
+  if (batchStatusTimer.value) {
+    clearInterval(batchStatusTimer.value)
+    batchStatusTimer.value = null
+  }
+}
+
+const handleBatchFileChange = (uploadFile: any) => {
+  if (uploadFile.raw) {
+    batchFiles.value.push(uploadFile.raw)
+  }
+}
+
+const handleBatchFileRemove = (uploadFile: any) => {
+  if (uploadFile.raw) {
+    const index = batchFiles.value.findIndex(f => f.name === uploadFile.raw.name)
+    if (index > -1) {
+      batchFiles.value.splice(index, 1)
+    }
+  }
+}
+
+const clearBatchFiles = () => {
+  batchFiles.value = []
+  if (batchUploadRef.value) {
+    batchUploadRef.value.clearFiles()
+  }
+}
+
+const getStatusTagType = (status: string) => {
+  const statusMap: Record<string, string> = {
+    'completed': 'success',
+    'failed': 'danger',
+    'processing': 'warning',
+    'pending': 'info'
+  }
+  return statusMap[status] || 'info'
+}
+
+const getStatusText = (status: string) => {
+  const statusMap: Record<string, string> = {
+    'completed': '完成',
+    'failed': '失败',
+    'processing': '处理中',
+    'pending': '待处理',
+    'uploaded': '已上传',
+    'parsing': '解析中',
+    'chunking': '分块中',
+    'vectorizing': '向量化中',
+    'indexing': '索引中'
+  }
+  return statusMap[status] || status
 }
 
 const handleSubmit = async () => {
@@ -251,6 +403,45 @@ const handleSubmit = async () => {
       ElMessage.success('上传成功')
     } catch (error: any) {
       ElMessage.error(error?.response?.data?.message || error?.message || '上传失败')
+    } finally {
+      uploading.value = false
+    }
+  } else if (uploadMode.value === 'batch') {
+    // 批量上传
+    if (batchFiles.value.length === 0) {
+      ElMessage.warning('请选择文件')
+      return
+    }
+
+    uploading.value = true
+    try {
+      const formData = new FormData()
+      batchFiles.value.forEach(file => {
+        formData.append('files', file)
+      })
+      formData.append('knowledge_base_id', String(form.value.knowledge_base_id))
+      if (form.value.tags && form.value.tags.length > 0) {
+        formData.append('tags', JSON.stringify(form.value.tags))
+      }
+
+      const res = await batchUploadDocuments(formData)
+      const data = res.data || res
+      batchId.value = data.batch_id
+      batchProgress.value = {
+        total: data.total || batchFiles.value.length,
+        processed: 0,
+        success: data.success_count || 0,
+        failed: data.fail_count || 0,
+        status: 'success',
+        files: []
+      }
+      
+      // 开始轮询批次状态
+      startBatchStatusPolling()
+      
+      ElMessage.success(`批量上传已开始，共 ${batchFiles.value.length} 个文件`)
+    } catch (error: any) {
+      ElMessage.error(error?.response?.data?.message || error?.message || '批量上传失败')
     } finally {
       uploading.value = false
     }
@@ -324,6 +515,52 @@ const handlePreviewFile = () => {
     showPreview.value = true
   }
 }
+
+// 批量上传状态轮询
+const startBatchStatusPolling = () => {
+  if (!batchId.value) return
+  
+  batchStatusTimer.value = setInterval(async () => {
+    try {
+      const res = await getBatchStatus(batchId.value!)
+      const data = res.data || res
+      
+      batchProgress.value = {
+        total: data.total_files || 0,
+        processed: data.processed_files || 0,
+        success: data.success_files || 0,
+        failed: data.failed_files || 0,
+        status: data.status === 'completed' ? 'success' : 
+                data.status === 'failed' ? 'exception' : 
+                data.status === 'completed_with_errors' ? 'warning' : 'success',
+        files: data.files || []
+      }
+      
+      // 如果批次处理完成，停止轮询
+      if (['completed', 'failed', 'completed_with_errors'].includes(data.status)) {
+        if (batchStatusTimer.value) {
+          clearInterval(batchStatusTimer.value)
+          batchStatusTimer.value = null
+        }
+        if (data.status === 'completed') {
+          ElMessage.success('批量上传完成')
+        } else if (data.status === 'completed_with_errors') {
+          ElMessage.warning(`批量上传完成，但有 ${data.failed_files} 个文件失败`)
+        } else {
+          ElMessage.error('批量上传失败')
+        }
+      }
+    } catch (error) {
+      console.error('获取批次状态失败:', error)
+    }
+  }, 2000) // 每2秒轮询一次
+}
+
+onUnmounted(() => {
+  if (batchStatusTimer.value) {
+    clearInterval(batchStatusTimer.value)
+  }
+})
 
 loadKnowledgeBases()
 </script>

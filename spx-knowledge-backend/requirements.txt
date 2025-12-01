@@ -1,3 +1,4 @@
+# Web Framework
 fastapi>=0.100.0
 uvicorn[standard]>=0.20.0
 
@@ -28,6 +29,14 @@ camelot-py==0.10.1
 PyPDF2<3.0.0
 pypdf>=4.0.0
 ghostscript>=0.7
+unstructured>=0.10.0
+openpyxl>=3.1.0
+pandas>=2.0.0
+xlrd>=2.0.0
+python-docx>=1.1.0
+python-pptx>=1.0.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
 
 # Data Validation
 pydantic>=2.0.0
@@ -39,6 +48,8 @@ python-multipart>=0.0.6
 # Security
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
+cryptography>=41.0.0
 
 # Image Processing
 pillow>=10.0.0
@@ -65,11 +76,15 @@ numpy<2.0,>=1.21.0
 # torchaudio==2.3.1+cu121
 # torchvision==0.18.1+cu121
 
-# File Type Detection (使用 filetype，纯 Python，跨平台，无需依赖)
+# File Type Detection
+# filetype 是纯 Python 实现，跨平台，无需依赖
 filetype>=1.2.0
+# python-magic 需要系统库支持，可选
+python-magic>=0.4.27
 
 # Antivirus Scanning (optional; requires ClamAV service)
 clamd>=1.0.2
+python-clamd>=1.2.0
 
 # HTTP Client
 requests>=2.31.0
@@ -78,6 +93,10 @@ httpx>=0.24.0
 # Utilities
 python-dotenv>=1.0.0
 pytz>=2023.3
+charset-normalizer>=3.2.0
+
+# Markdown Processing
+mistune>=3.0.0
 
 # Transformers and related ML libraries
 # transformers 4.40.0+ 引入了 EncoderDecoderCache，但需要 4.44.0+ 才稳定
@@ -88,3 +107,50 @@ transformers>=4.44.0
 sentence-transformers>=2.7.0
 peft>=0.10.0
 FlagEmbedding>=1.2.0
+
+# Testing Framework
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+pytest-mock>=3.11.0
+pytest-xdist>=3.3.0
+
+# Test Data
+factory-boy>=3.3.0
+faker>=19.3.0
+
+# HTTP Testing
+requests-mock>=1.11.0
+
+# Database Testing
+pytest-mysql>=2.1.0
+pytest-redis>=3.0.0
+
+# Code Quality
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
+mypy>=1.0.0
+pre-commit>=3.3.0
+
+# Development Tools
+ipython>=8.14.0
+jupyter>=1.0.0
+debugpy>=1.6.0
+
+# Documentation
+mkdocs>=1.5.0
+mkdocs-material>=9.2.0
+mkdocs-mermaid2-plugin>=1.1.0
+mkdocs-swagger-ui-tag>=0.6.0
+mkdocs-redirects>=1.2.0
+
+# Production Server
+gunicorn>=21.2.0
+
+# Monitoring
+sentry-sdk[fastapi]>=1.32.0
+prometheus-client>=0.17.0
+
+# Performance
+psutil>=5.9.0

@@ -49,6 +49,24 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="AI标签" width="200">
+          <template #default="{ row }">
+            <div v-if="row.metadata?.auto_keywords && row.metadata.auto_keywords.length > 0">
+              <el-tag
+                v-for="(keyword, index) in row.metadata.auto_keywords.slice(0, 3)"
+                :key="index"
+                size="small"
+                style="margin-right: 4px; margin-bottom: 4px;"
+              >
+                {{ keyword }}
+              </el-tag>
+              <el-tag v-if="row.metadata.auto_keywords.length > 3" size="small" type="info">
+                +{{ row.metadata.auto_keywords.length - 3 }}
+              </el-tag>
+            </div>
+            <span v-else style="color: #909399; font-size: 12px;">暂无标签</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="200">
           <template #default="{ row }">
             <el-button size="small" @click="handleDetail(row)">详情</el-button>

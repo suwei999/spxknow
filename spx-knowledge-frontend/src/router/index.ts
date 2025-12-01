@@ -194,6 +194,15 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'tasks/failures',
+        name: 'TaskFailures',
+        component: () => import('@/views/Tasks/failures.vue'),
+        meta: {
+          title: '失败任务中心',
+          keepAlive: true
+        }
+      },
+      {
         path: 'statistics',
         name: 'Statistics',
         component: () => import('@/views/Statistics/index.vue'),

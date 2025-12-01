@@ -149,9 +149,10 @@ class ExcelService:
             "datetime_columns": self._detect_datetime_columns(data, headers),
         }
 
-        # 生成预览样本
+        # 生成预览样本（默认100行，根据设计文档要求）
+        preview_row_limit = 100
         preview_samples = []
-        for i, row_dict in enumerate(data[:3]):
+        for i, row_dict in enumerate(data[:preview_row_limit]):
             preview_samples.append(row_dict)
 
         # 生成 chunks

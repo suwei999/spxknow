@@ -279,7 +279,55 @@
             </div>
           </div>
         </el-tab-pane>
+        
+        <!-- 结构化预览（JSON/XML/CSV） -->
+        <el-tab-pane v-if="isStructuredType" label="结构化预览" name="structured">
+          <StructuredPreview :document-id="documentId" />
+        </el-tab-pane>
       </el-tabs>
+      
+      <!-- AI标签和摘要 -->
+      <el-card style="margin-top: 16px;">
+        <template #header>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span>AI 标签与摘要</span>
+            <el-button 
+              size="small" 
+              type="primary"
+              :loading="regenerating"
+              @click="handleRegenerateSummary"
+            >
+              {{ document?.metadata?.auto_keywords || document?.metadata?.auto_summary ? '重新生成' : '生成摘要' }}
+            </el-button>
+          </div>
+        </template>
+        <div v-if="document?.metadata?.auto_keywords && document.metadata.auto_keywords.length > 0" class="ai-keywords-section">
+          <div style="margin-bottom: 16px;">
+            <strong class="section-label">关键词：</strong>
+            <el-tag
+              v-for="keyword in document.metadata.auto_keywords"
+              :key="keyword"
+              class="keyword-tag"
+            >
+              {{ keyword }}
+            </el-tag>
+          </div>
+        </div>
+        <div v-else-if="!regenerating" class="ai-empty-text">
+          <span>暂无关键词</span>
+        </div>
+        <div v-if="document?.metadata?.auto_summary" class="ai-summary-section">
+          <strong class="section-label">摘要：</strong>
+          <p class="summary-text">{{ document.metadata.auto_summary }}</p>
+        </div>
+        <div v-else-if="!regenerating" class="ai-empty-text">
+          <span>暂无摘要</span>
+        </div>
+        <div v-if="regenerating" style="text-align: center; padding: 20px; color: #909399;">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span style="margin-left: 8px;">正在生成中...</span>
+        </div>
+      </el-card>
     </el-card>
   </div>
 </template>
@@ -288,6 +336,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
+import { Loading } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
@@ -300,9 +349,12 @@ import {
   getDocumentVersions,
   getDocumentPreview,
   getChunkContentFromOS,
-  getDocumentTOC
+  getDocumentTOC,
+  getStructuredPreview,
+  regenerateSummary
 } from '@/api/modules/documents'
 import { formatFileSize, formatDateTime } from '@/utils/format'
+import StructuredPreview from '@/components/business/StructuredPreview.vue'
 import type { Document } from '@/types'
 
 const route = useRoute()
@@ -362,6 +414,16 @@ const isMarkdown = computed(() => {
   if (/text\/markdown|markdown/i.test(previewType.value)) return true
   if (document.value?.file_type?.toLowerCase() === 'md' || document.value?.file_type?.toLowerCase() === 'markdown') return true
   return /\.(md|markdown|mkd)(\?|$)/i.test(previewUrl.value || document.value?.file_name || '')
+})
+
+const isStructuredType = computed(() => {
+  // 判断是否为结构化文件类型（JSON/XML/CSV）
+  const fileType = document.value?.file_type?.toLowerCase()
+  const metadata = document.value?.metadata || {}
+  if (metadata.structured_type) return true
+  if (fileType && ['json', 'xml', 'csv'].includes(fileType)) return true
+  const fileName = document.value?.file_name || ''
+  return /\.(json|xml|csv)(\?|$)/i.test(fileName)
 })
 // Office Web Viewer 已移除，因为无法访问MinIO签名URL，改为使用PDF预览
 const textContent = ref('')
@@ -664,6 +726,42 @@ const handleTocClick = (data: any) => {
 
 const handleEdit = () => {
   router.push(`/documents/${documentId}/edit`)
+}
+
+const regenerating = ref(false)
+
+const handleRegenerateSummary = async () => {
+  try {
+    const hasSummary = document.value?.metadata?.auto_keywords || document.value?.metadata?.auto_summary
+    const message = hasSummary ? '确定要重新生成标签和摘要吗？' : '确定要生成标签和摘要吗？'
+    
+    await ElMessageBox.confirm(message, '提示', {
+      type: 'warning'
+    })
+    
+    regenerating.value = true
+    try {
+      const res = await regenerateSummary(documentId)
+      ElMessage.success(hasSummary ? '重新生成成功' : '生成成功')
+      // 重新加载文档详情（只重新获取文档信息，不重新加载所有数据）
+      loading.value = true
+      try {
+        const res = await getDocumentDetail(documentId)
+        document.value = res.data
+      } catch (error) {
+        console.error('重新加载文档详情失败:', error)
+      } finally {
+        loading.value = false
+      }
+    } finally {
+      regenerating.value = false
+    }
+  } catch (error: any) {
+    regenerating.value = false
+    if (error !== 'cancel') {
+      ElMessage.error(error?.response?.data?.message || error?.message || '生成失败')
+    }
+  }
 }
 
 const handleDelete = async () => {
@@ -1228,6 +1326,72 @@ onMounted(() => {
     background: rgba(37, 99, 235, 0.12);
     color: #0f172a;
     font-weight: 600;
+  }
+
+  /* AI标签与摘要样式优化 */
+  :deep(.el-card) {
+    background: rgba(6, 12, 24, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.9);
+    
+    .el-card__header {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.95);
+      font-size: 16px;
+      font-weight: 600;
+    }
+    
+    .el-card__body {
+      color: rgba(255, 255, 255, 0.85);
+    }
+  }
+  
+  .ai-keywords-section {
+    margin-bottom: 16px;
+    
+    .section-label {
+      font-size: 15px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.95);
+      margin-right: 8px;
+      display: inline-block;
+    }
+    
+    .keyword-tag {
+      margin-left: 8px;
+      margin-bottom: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 4px;
+    }
+  }
+  
+  .ai-summary-section {
+    margin-top: 16px;
+    
+    .section-label {
+      font-size: 15px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.95);
+      display: block;
+      margin-bottom: 10px;
+    }
+    
+    .summary-text {
+      margin-top: 8px;
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 15px;
+      line-height: 1.8;
+      font-weight: 400;
+      letter-spacing: 0.3px;
+    }
+  }
+  
+  .ai-empty-text {
+    color: rgba(255, 255, 255, 0.65);
+    font-size: 14px;
+    margin-bottom: 12px;
   }
 
   .toc-container {

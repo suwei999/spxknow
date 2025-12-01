@@ -15,6 +15,7 @@ class KnowledgeBase(BaseModel):
     category_id = Column(Integer, ForeignKey("knowledge_base_categories.id"), comment="分类ID")
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, comment="用户ID（数据隔离）")
     is_active = Column(Boolean, default=True, comment="是否激活")
+    enable_auto_tagging = Column(Boolean, default=True, comment="是否启用自动标签/摘要（知识库级别配置）")
     
     # 关系
     documents = relationship("Document", back_populates="knowledge_base")

@@ -8,6 +8,9 @@ import json
 from pydantic import BaseModel
 from app.schemas.document import DocumentCreate, DocumentUpdate, DocumentResponse, DocumentUploadRequest
 from app.services.document_service import DocumentService
+from app.services.batch_service import BatchService
+from app.services.structured_preview_service import StructuredPreviewService
+from app.services.auto_tagging_service import AutoTaggingService
 from app.dependencies.database import get_db
 from sqlalchemy.orm import Session
 from app.core.logging import logger
@@ -16,6 +19,7 @@ from app.services.chunk_service import ChunkService
 from app.services.image_service import ImageService
 from app.services.minio_storage_service import MinioStorageService
 from app.models.document import Document
+from app.models.chunk import DocumentChunk
 import gzip, json, io, datetime
 import os, tempfile
 # 预览生成已移至异步任务，此处不再需要导入转换函数
@@ -78,6 +82,15 @@ async def get_documents(
         items = []
         for d in documents:
             meta = getattr(d, 'meta', None)
+            # 处理metadata字段（可能是字符串或字典）
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except:
+                    meta = {}
+            elif meta is None:
+                meta = {}
+            
             title = None
             if isinstance(meta, dict):
                 title = meta.get('title') or meta.get('name')
@@ -97,6 +110,7 @@ async def get_documents(
                 "status": d.status,
                 "knowledge_base_id": d.knowledge_base_id,
                 "knowledge_base_name": kb_map.get(d.knowledge_base_id),
+                "metadata": meta,  # 包含 auto_keywords 和 auto_summary
                 # 安全扫描字段
                 "security_scan_status": getattr(d, 'security_scan_status', 'pending'),
                 "security_scan_method": getattr(d, 'security_scan_method', None),
@@ -339,17 +353,30 @@ async def get_document(
             kb_name = db.query(KnowledgeBase.name).filter(KnowledgeBase.id == doc.knowledge_base_id).scalar()
         except Exception:
             kb_name = None
-        meta = getattr(doc, 'meta', None)
+        # 处理metadata字段（SQLAlchemy JSON列会自动反序列化为dict，但需要处理None和字符串情况）
+        metadata = getattr(doc, 'meta', None)
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except:
+                metadata = {}
+        elif metadata is None:
+            metadata = {}
+        # 确保metadata是dict类型
+        if not isinstance(metadata, dict):
+            metadata = {}
+        
+        # 从metadata中获取title
         title = None
-        if isinstance(meta, dict):
-            title = meta.get('title') or meta.get('name')
+        if isinstance(metadata, dict):
+            title = metadata.get('title') or metadata.get('name')
         if not title:
             try:
                 import os
                 title = os.path.splitext(doc.original_filename or '')[0] or doc.original_filename
             except Exception:
                 title = doc.original_filename
-
+        
         payload = {
             "id": doc.id,
             "title": title,
@@ -361,6 +388,7 @@ async def get_document(
             "knowledge_base_name": kb_name,
             "created_at": doc.created_at,
             "updated_at": doc.updated_at,
+            "metadata": metadata,  # 包含 auto_keywords 和 auto_summary
             # 安全扫描字段
             "security_scan_status": getattr(doc, 'security_scan_status', 'pending'),
             "security_scan_method": getattr(doc, 'security_scan_method', None),
@@ -368,7 +396,17 @@ async def get_document(
             "security_scan_timestamp": getattr(doc, 'security_scan_timestamp', None),
         }
         
-        logger.info(f"API响应: 返回文档详情 {doc.original_filename}")
+        # 调试日志：检查metadata内容
+        if isinstance(metadata, dict):
+            has_keywords = 'auto_keywords' in metadata
+            has_summary = 'auto_summary' in metadata
+            keywords_count = len(metadata.get('auto_keywords', [])) if has_keywords else 0
+            summary_len = len(metadata.get('auto_summary', '')) if has_summary else 0
+            logger.info(f"API响应: 返回文档详情 {doc.original_filename}, metadata类型: {type(metadata)}, 包含auto_keywords: {has_keywords}(数量:{keywords_count}), 包含auto_summary: {has_summary}(长度:{summary_len})")
+            if has_keywords or has_summary:
+                logger.debug(f"文档 {doc.id} metadata完整内容: {metadata}")
+        else:
+            logger.info(f"API响应: 返回文档详情 {doc.original_filename}, metadata类型: {type(metadata)}, 不是字典类型")
         return {"code": 0, "message": "ok", "data": payload}
         
     except HTTPException:
@@ -1104,22 +1142,113 @@ async def batch_upload_documents(
                 logger.warning(f"元数据格式错误: {metadata}，使用空对象")
                 parsed_metadata = {}
         
+        # 创建批次记录
+        batch_service = BatchService(db)
+        batch = batch_service.create_batch(
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            total_files=len(files)
+        )
+        
         service = DocumentService(db)
         results = []
         success_count = 0
         fail_count = 0
         
+        # 处理文件列表（包括ZIP解包后的文件）
+        files_to_process = []
+        
         for file in files:
+            # 检测ZIP文件并解包
+            if file.filename and file.filename.lower().endswith('.zip'):
+                try:
+                    logger.info(f"检测到ZIP文件: {file.filename}，开始解包")
+                    import zipfile
+                    import io
+                    from starlette.datastructures import UploadFile
+                    
+                    # 读取ZIP文件内容
+                    zip_content = await file.read()
+                    zip_file = zipfile.ZipFile(io.BytesIO(zip_content))
+                    
+                    # 解包ZIP文件
+                    extracted_count = 0
+                    for zip_info in zip_file.namelist():
+                        # 跳过目录和隐藏文件
+                        if zip_info.endswith('/') or zip_info.startswith('__MACOSX/') or zip_info.startswith('.DS_Store'):
+                            continue
+                        
+                        # 检查文件扩展名（只处理支持的文档类型）
+                        supported_extensions = ['.docx', '.pdf', '.pptx', '.txt', '.log', '.md', '.markdown', '.mkd', '.xlsx', '.xls', '.csv', '.json', '.xml', '.html', '.htm']
+                        if not any(zip_info.lower().endswith(ext) for ext in supported_extensions):
+                            logger.warning(f"ZIP内文件 {zip_info} 不支持，跳过")
+                            continue
+                        
+                        # 读取文件内容
+                        try:
+                            file_content = zip_file.read(zip_info)
+                            # 创建UploadFile对象
+                            extracted_file = UploadFile(
+                                filename=zip_info.split('/')[-1],  # 只使用文件名，忽略路径
+                                file=io.BytesIO(file_content),
+                                size=len(file_content)
+                            )
+                            files_to_process.append(extracted_file)
+                            extracted_count += 1
+                        except Exception as e:
+                            logger.error(f"解包ZIP内文件 {zip_info} 失败: {e}")
+                            continue
+                    
+                    logger.info(f"ZIP文件 {file.filename} 解包完成，共提取 {extracted_count} 个文件")
+                    
+                    # 更新批次总数（减去ZIP文件本身，加上解包后的文件数）
+                    batch.total_files = batch.total_files - 1 + extracted_count
+                    db.commit()
+                    
+                except Exception as e:
+                    logger.error(f"ZIP文件 {file.filename} 解包失败: {e}", exc_info=True)
+                    # ZIP解包失败，标记批次失败
+                    batch_service.update_batch_progress(batch.id, failed=True)
+                    batch_service.update_batch_error_summary(batch.id, {
+                        "zip_unpack_error": str(e),
+                        "zip_filename": file.filename
+                    })
+                    results.append({
+                        "filename": file.filename,
+                        "status": "failed",
+                        "error": f"ZIP解包失败: {str(e)}"
+                    })
+                    fail_count += 1
+            else:
+                # 非ZIP文件，直接添加到处理列表
+                files_to_process.append(file)
+        
+        # 处理所有文件（包括ZIP解包后的文件）
+        for file in files_to_process:
             try:
                 logger.info(f"处理文件: {file.filename}")
+                # 在metadata中添加batch_id
+                file_metadata = parsed_metadata.copy()
+                file_metadata['batch_id'] = batch.id
+                
                 result = await service.upload_document(
                     file=file,
                     knowledge_base_id=knowledge_base_id,
                     category_id=category_id,
                     tags=parsed_tags,
-                    metadata=parsed_metadata,
+                    metadata=file_metadata,
                     user_id=user_id
                 )
+                
+                # 更新文档的batch_id
+                document = db.query(Document).filter(Document.id == result['document_id']).first()
+                if document:
+                    document.batch_id = batch.id
+                    db.commit()
+                
+                # 更新批次进度
+                batch_service.update_batch_progress(batch.id, success=True)
+                
                 results.append({
                     "filename": file.filename,
                     "document_id": result['document_id'],
@@ -1129,6 +1258,9 @@ async def batch_upload_documents(
                 success_count += 1
             except Exception as e:
                 logger.error(f"文件 {file.filename} 上传失败: {e}")
+                # 更新批次进度
+                batch_service.update_batch_progress(batch.id, failed=True)
+                
                 results.append({
                     "filename": file.filename,
                     "status": "failed",
@@ -1141,6 +1273,7 @@ async def batch_upload_documents(
             "code": 0,
             "message": "ok",
             "data": {
+                "batch_id": batch.id,
                 "success_count": success_count,
                 "fail_count": fail_count,
                 "total": len(files),
@@ -1707,6 +1840,120 @@ async def search_in_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"文档内搜索失败: {str(e)}"
+        )
+
+@router.get("/batch/{batch_id}/status")
+async def get_batch_status(
+    batch_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取批次状态 - 根据设计文档实现"""
+    try:
+        batch_service = BatchService(db)
+        status_data = batch_service.get_batch_status(batch_id)
+        
+        if not status_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"批次 {batch_id} 不存在"
+            )
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": status_data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取批次状态失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取批次状态失败: {str(e)}"
+        )
+
+@router.get("/{doc_id}/structured-preview")
+async def get_structured_preview(
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取结构化预览 - 根据设计文档实现"""
+    try:
+        preview_service = StructuredPreviewService(db)
+        preview_data = preview_service.get_preview(doc_id)
+        
+        if not preview_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="文档不存在或不支持结构化预览"
+            )
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": preview_data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取结构化预览失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取结构化预览失败: {str(e)}"
+        )
+
+@router.post("/{doc_id}/regenerate-summary")
+async def regenerate_summary(
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """重新生成标签和摘要 - 根据设计文档实现"""
+    try:
+        # 检查文档是否存在
+        document = db.query(Document).filter(
+            Document.id == doc_id,
+            Document.is_deleted == False
+        ).first()
+        
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="文档不存在"
+            )
+        
+        # 检查是否有chunk数据
+        chunks = db.query(DocumentChunk).filter(
+            DocumentChunk.document_id == doc_id,
+            DocumentChunk.is_deleted == False
+        ).count()
+        
+        if chunks == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="文档没有分块数据，无法生成摘要。请先完成文档处理。"
+            )
+        
+        tagging_service = AutoTaggingService(db)
+        result = await tagging_service.regenerate_tags_and_summary(doc_id)
+        
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="生成标签和摘要失败：无法获取文档内容或LLM生成失败。请检查文档是否已处理完成，以及Ollama服务是否正常。"
+            )
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"重新生成标签和摘要失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"重新生成标签和摘要失败: {str(e)}"
         )
 
 @router.post("/{doc_id}/reprocess")

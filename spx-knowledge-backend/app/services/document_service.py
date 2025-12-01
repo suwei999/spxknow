@@ -164,6 +164,16 @@ class DocumentService(BaseService[Document]):
                 metadata = {}
             if isinstance(metadata, dict) and not metadata.get("title"):
                 metadata["title"] = os.path.splitext(file.filename)[0]
+            
+            # 从metadata中提取batch_id（批量上传时传入）
+            batch_id = metadata.pop("batch_id", None) if isinstance(metadata, dict) else None
+            
+            # 检测结构化文件类型（JSON/XML/CSV）
+            from app.services.structured_preview_service import StructuredPreviewService
+            structured_service = StructuredPreviewService(self.db)
+            structured_type = structured_service.detect_structured_type(file.filename)
+            if structured_type:
+                metadata["structured_type"] = structured_type
 
             # 提取安全扫描结果
             security_scan = validation_result.get("security_scan", {})
@@ -183,6 +193,7 @@ class DocumentService(BaseService[Document]):
                 "file_hash": file_hash,
                 "file_path": storage_result["object_name"],
                 "knowledge_base_id": knowledge_base_id,
+                "batch_id": batch_id,  # 批量上传时设置
                 "category_id": category_id,
                 "tags": tags,
                 "metadata": metadata,
@@ -202,7 +213,12 @@ class DocumentService(BaseService[Document]):
             # 5. 触发异步处理任务
             logger.info("步骤5: 触发异步处理任务")
             from app.tasks.document_tasks import process_document_task
+            from app.tasks.security_scan_tasks import security_scan_document_task
             from app.tasks.celery_app import celery_app
+            
+            # 判断是否为批量上传（有batch_id）
+            is_batch_upload = batch_id is not None
+            
             try:
                 # 检查 Celery broker 连接
                 try:
@@ -211,11 +227,23 @@ class DocumentService(BaseService[Document]):
                 except Exception as broker_err:
                     logger.warning(f"Celery broker 连接检查失败: {broker_err}")
                 
-                # 发送任务（设置高优先级，确保文档处理任务优先执行）
-                task = process_document_task.apply_async(
-                    args=(document.id,),
-                    priority=settings.CELERY_TASK_PRIORITY_DOCUMENT
-                )
+                # 批量上传时使用security_scan队列串行扫描，单文件上传直接处理
+                if is_batch_upload and settings.ENABLE_BATCH_SECURITY_SCAN_QUEUE:
+                    # 批量上传：先提交到security_scan队列进行异步扫描
+                    logger.info(f"批量上传模式，提交到security_scan队列进行异步扫描")
+                    task = security_scan_document_task.apply_async(
+                        args=(document.id,),
+                        queue="security_scan",
+                        priority=settings.CELERY_TASK_PRIORITY_DOCUMENT
+                    )
+                else:
+                    # 单文件上传：直接触发文档处理任务（安全扫描已在validate_file中同步完成）
+                    logger.info(f"单文件上传模式，直接触发文档处理任务")
+                    task = process_document_task.apply_async(
+                        args=(document.id,),
+                        queue="document",
+                        priority=settings.CELERY_TASK_PRIORITY_DOCUMENT
+                    )
                 logger.info(
                     f"✅ 文档处理任务已发送: 任务ID={task.id}, 文档ID={document.id}, "
                     f"任务状态={task.state}, 队列=document"

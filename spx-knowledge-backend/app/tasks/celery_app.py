@@ -20,6 +20,7 @@ celery_app = Celery(
         "app.tasks.cleanup_tasks",
         "app.tasks.notification_tasks",
         "app.tasks.observability_tasks",
+        "app.tasks.security_scan_tasks",
     ]
 )
 
@@ -74,6 +75,7 @@ celery_app.conf.update(
         "app.tasks.cleanup_tasks.*": {"queue": "cleanup"},
         "app.tasks.notification_tasks.*": {"queue": "notification"},
         "app.tasks.observability_tasks.*": {"queue": "observability"},
+        "app.tasks.security_scan_tasks.*": {"queue": "security_scan"},
     },
     # 任务默认优先级：数字越大优先级越高（0-255）
     # 注意：优先级需要在任务发送时通过 priority 参数设置，这里只是默认值
@@ -109,6 +111,26 @@ if settings.OBSERVABILITY_ENABLE_SCHEDULE:
             },
         }
     )
+
+# 根据配置决定是否启用自动重试任务
+if getattr(settings, 'ENABLE_AUTO_RETRY', False):
+    auto_retry_interval = getattr(settings, 'AUTO_RETRY_INTERVAL_SECONDS', 300)
+    celery_app.conf.beat_schedule.update(
+        {
+            "auto-retry-failed-tasks": {
+                "task": "app.tasks.auto_retry_tasks.auto_retry_failed_tasks_task",
+                "schedule": auto_retry_interval,  # 使用重试间隔作为定时任务间隔
+                "options": {
+                    "expires": auto_retry_interval,
+                },
+            },
+        }
+    )
+    try:
+        if _is_celery_environment():
+            logger.info(f"✅ Celery Beat 已启用自动重试任务: 间隔={auto_retry_interval}秒 ({auto_retry_interval/60:.1f}分钟)")
+    except Exception:
+        pass
     # 仅在 Celery Worker/Beat 环境中打印日志
     try:
         if _is_celery_environment():

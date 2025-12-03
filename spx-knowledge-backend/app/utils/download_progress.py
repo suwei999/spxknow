@@ -1,4 +1,4 @@
-"""
+﻿"""
 下载进度回调工具
 用于显示模型下载进度和错误处理
 """
@@ -139,4 +139,3 @@ def log_download_error(model_name: str, error: Exception, download_url: Optional
     if readme_path:
         logger.error(f"📖 详细说明请查看: {readme_path}")
     logger.error("=" * 60)
-

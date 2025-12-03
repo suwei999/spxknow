@@ -1,4 +1,4 @@
-"""
+﻿"""
 Failure Retry Service
 失败重试服务 - 根据设计文档实现
 """
@@ -159,4 +159,3 @@ class FailureRetryService:
             "total": len(task_ids),
             "results": results
         }
-

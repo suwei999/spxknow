@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 import { WS_BASE_URL } from '@/config/api'
 
 // 获取知识库列表（用于问答）
@@ -188,4 +188,3 @@ export const externalSearch = (data: {
     data
   })
 }
-

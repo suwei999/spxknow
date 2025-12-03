@@ -1,4 +1,4 @@
-"""
+﻿"""
 Diagnosis LLM service.
 负责 LLM 相关的推理和分析
 """
@@ -968,4 +968,3 @@ class DiagnosisLlmService:
         if points:
             return "; ".join(points)
         return f"{len(rule_findings)}个提示"
-

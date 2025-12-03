@@ -1,4 +1,4 @@
-"""
+﻿"""
 File Validation Service
 根据文档处理流程设计实现文件验证和安全扫描功能
 """

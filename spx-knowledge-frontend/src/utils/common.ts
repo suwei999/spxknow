@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 生成唯一ID
  */
 export const generateId = (): string => {
@@ -108,4 +108,3 @@ export const formatDate = (date: string | Date, format: string = 'YYYY-MM-DD HH:
     .replace('mm', minutes)
     .replace('ss', seconds)
 }
-

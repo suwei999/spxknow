@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 
 // ⚠️ 注意：以下接口已弃用，请使用QA模块的图片搜索接口
 // 新接口路径：POST /qa/sessions/{session_id}/image-search
@@ -117,4 +117,3 @@ export const uploadImage = (data: FormData) => {
     headers: { 'Content-Type': 'multipart/form-data' }
   })
 }
-

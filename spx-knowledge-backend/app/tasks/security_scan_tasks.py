@@ -1,4 +1,4 @@
-"""
+﻿"""
 Security Scan Tasks
 安全扫描任务 - 根据设计文档实现专用扫描队列
 """
@@ -139,4 +139,3 @@ def security_scan_document_task(self, document_id: int):
         raise e
     finally:
         db.close()
-

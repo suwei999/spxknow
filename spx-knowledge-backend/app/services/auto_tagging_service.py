@@ -1,4 +1,4 @@
-"""
+﻿"""
 Auto Tagging Service
 自动标签/摘要服务 - 根据设计文档实现
 """
@@ -221,4 +221,3 @@ class AutoTaggingService:
     async def regenerate_tags_and_summary(self, document_id: int) -> Optional[Dict[str, Any]]:
         """重新生成标签和摘要"""
         return await self.generate_tags_and_summary(document_id)
-

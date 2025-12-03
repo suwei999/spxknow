@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+﻿import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { search } from '@/api/modules/search'
 import { debounce } from '@/utils/common'
@@ -93,4 +93,3 @@ export const useSearch = () => {
     reset
   }
 }
-

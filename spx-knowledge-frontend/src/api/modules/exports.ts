@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 import { API_BASE_URL } from '@/config/api'
 
 // 导出知识库
@@ -103,4 +103,3 @@ export const downloadExportFile = async (taskId: number) => {
   
   return response.data
 }
-

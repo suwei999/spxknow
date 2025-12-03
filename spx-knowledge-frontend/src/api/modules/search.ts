@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 
 // 搜索接口
 export const search = (params: {
@@ -172,4 +172,3 @@ export const searchByTextForImages = (params: {
     data: params
   })
 }
-

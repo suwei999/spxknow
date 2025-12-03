@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="tag-selector">
       <!-- 已选择的标签 -->
       <div v-if="selectedTags.length > 0" class="selected-tags">
@@ -163,4 +163,3 @@ onMounted(() => {
   }
 }
 </style>
-

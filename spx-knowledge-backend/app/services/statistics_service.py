@@ -1,4 +1,4 @@
-"""
+﻿"""
 Statistics Service
 统计服务
 """
@@ -382,4 +382,3 @@ class StatisticsService:
         except Exception as e:
             logger.error(f"获取知识库热力图失败: {e}", exc_info=True)
             raise
-

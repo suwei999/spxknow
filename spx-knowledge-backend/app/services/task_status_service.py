@@ -1,4 +1,4 @@
-"""
+﻿"""
 Task Status Service
 任务状态服务 - 用于查询Celery任务状态
 """
@@ -93,4 +93,3 @@ class TaskStatusService:
             "status": "TIMEOUT",
             "message": f"任务超时（{timeout}秒）"
         }
-

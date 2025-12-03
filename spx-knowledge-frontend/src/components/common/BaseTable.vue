@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-table
     :data="data"
     :loading="loading"
@@ -70,4 +70,3 @@ const handlePageChange = (page: number, size: number) => {
 <style lang="scss" scoped>
 // Base Table styles
 </style>
-

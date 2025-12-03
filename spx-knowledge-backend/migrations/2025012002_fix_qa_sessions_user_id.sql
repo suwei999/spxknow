@@ -1,4 +1,4 @@
--- Migration: 修复 qa_sessions 表的 user_id 字段类型
+﻿-- Migration: 修复 qa_sessions 表的 user_id 字段类型
 -- 文件：migrations/2025012002_fix_qa_sessions_user_id.sql
 -- 创建日期：2024-01-20
 
@@ -47,4 +47,3 @@ SET @preparedStatement = (SELECT IF(
 PREPARE alterIfNotExists FROM @preparedStatement;
 EXECUTE alterIfNotExists;
 DEALLOCATE PREPARE alterIfNotExists;
-

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-button
     :type="type"
     :size="size"
@@ -29,4 +29,3 @@ defineEmits(['click'])
 <style lang="scss" scoped>
 // Base Button styles
 </style>
-

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Simple rule engine for diagnosis workflow.
 """
 
@@ -290,4 +290,3 @@ class DiagnosisRuleService:
             except (TypeError, ValueError):
                 return None
         return None
-

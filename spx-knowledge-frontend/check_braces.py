@@ -1,4 +1,4 @@
-import pathlib
+﻿import pathlib
 text=pathlib.Path('src/views/Observability/index.ts').read_text(encoding='utf-8')
 stack=[]
 pairs={'{':'}','(' :')','[':']'}

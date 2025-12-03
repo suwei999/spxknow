@@ -1,4 +1,4 @@
-// 通用类型
+﻿// 通用类型
 export interface ApiResponse<T = any> {
   code: number
   message: string
@@ -266,4 +266,3 @@ export interface DiagnosisMemoryList {
   list: DiagnosisMemory[]
   total: number
 }
-

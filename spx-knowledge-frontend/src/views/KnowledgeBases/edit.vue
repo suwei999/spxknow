@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-card>
     <template #header>
       <span>编辑知识库</span>
@@ -288,4 +288,3 @@ onMounted(() => {
   }
 }
 </style>
-

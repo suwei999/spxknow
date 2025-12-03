@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 import type { UserInfo } from './auth'
 
 // 更新用户信息请求
@@ -73,4 +73,3 @@ export const confirmEmail = (data: EmailConfirmRequest) => {
     data
   })
 }
-

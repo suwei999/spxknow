@@ -1,4 +1,4 @@
-version: '3.8'
+﻿version: '3.8'
 
 services:
   # ============================================
@@ -143,4 +143,3 @@ volumes:
     driver: local
   opensearch_dashboards_data:
     driver: local
-

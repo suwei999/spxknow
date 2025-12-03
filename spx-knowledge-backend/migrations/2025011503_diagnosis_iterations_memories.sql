@@ -1,4 +1,4 @@
--- Migration: diagnosis reasoning iterations and memories
+﻿-- Migration: diagnosis reasoning iterations and memories
 USE `spx_knowledge`;
 
 -- diagnosis iterations table
@@ -42,5 +42,3 @@ CREATE TABLE IF NOT EXISTS `diagnosis_memories` (
     CONSTRAINT `fk_memory_iteration` FOREIGN KEY (`iteration_id`)
         REFERENCES `diagnosis_iterations` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='诊断上下文记忆';
-
-

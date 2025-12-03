@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 
 // 获取个人统计数据
 export const getPersonalStatistics = (period: string = 'all') => {
@@ -42,4 +42,3 @@ export const getSearchHotwords = (params?: {
     params
   })
 }
-

@@ -1,4 +1,4 @@
--- Migration: 文档目录表
+﻿-- Migration: 文档目录表
 -- 文件：migrations/2025012302_document_toc_table.sql
 -- 创建日期：2025-01-23
 
@@ -22,4 +22,3 @@ CREATE TABLE IF NOT EXISTS `document_toc` (
     INDEX `idx_is_deleted` (`is_deleted`),
     FOREIGN KEY (`document_id`) REFERENCES `documents`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档目录表';
-

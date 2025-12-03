@@ -1,4 +1,4 @@
-"""
+﻿"""
 Auto Retry Service
 自动重试服务 - 根据设计文档实现自动重试策略
 """
@@ -125,4 +125,3 @@ class AutoRetryService:
             "skipped": skipped_count,
             "total": len(tasks)
         }
-

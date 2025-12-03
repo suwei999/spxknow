@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 文件工具函数
  */
 
@@ -59,4 +59,3 @@ export const validateFileType = (file: File, allowedTypes: string[]): boolean =>
 export const getFileMimeType = (file: File): string => {
   return file.type || 'application/octet-stream'
 }
-

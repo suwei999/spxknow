@@ -12,7 +12,7 @@ class DocumentImage(BaseModel):
     
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, comment="文档ID")
     image_path = Column(String(500), nullable=False, comment="图片路径")
-    thumbnail_path = Column(String(500), comment="缩略图路�?)
+    thumbnail_path = Column(String(500), comment="缩略图路径")
     image_type = Column(String(50), comment="图片类型")
     file_size = Column(Integer, comment="图片大小")
     width = Column(Integer, comment="图片宽度")
@@ -23,9 +23,9 @@ class DocumentImage(BaseModel):
     meta = Column('metadata', Text, comment="元数据JSON")
     vector_model = Column(String(50), comment="向量模型")
     vector_dim = Column(Integer, comment="向量维度")
-    status = Column(String(50), default="pending", comment="处理状�?)
+    status = Column(String(50), default="pending", comment="处理状态")
     retry_count = Column(Integer, default=0, comment="重试次数")
-    last_processed_at = Column(DateTime, comment="最近处理时�?)
+    last_processed_at = Column(DateTime, comment="最近处理时间")
     error_message = Column(Text, comment="错误信息")
     
     # 关系

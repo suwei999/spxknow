@@ -1,4 +1,4 @@
-"""
+﻿"""
 Diagnosis data collector service.
 负责收集诊断所需的数据：指标、日志、知识库搜索、外部搜索
 """
@@ -1178,4 +1178,3 @@ class DiagnosisDataCollector:
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("外部搜索失败: %s", exc)
             return None
-

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="structured-preview">
     <div v-loading="loading">
       <!-- JSON预览 -->
@@ -113,4 +113,3 @@ onMounted(() => {
   line-height: 1.5;
 }
 </style>
-

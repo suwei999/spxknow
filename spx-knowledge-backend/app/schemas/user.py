@@ -1,4 +1,4 @@
-"""
+﻿"""
 User Schemas
 用户认证系统Schema定义
 """
@@ -164,4 +164,3 @@ class PasswordResetConfirmRequest(BaseModel):
         if not re.search(r'[0-9]', v):
             raise ValueError('密码必须包含至少一个数字')
         return v
-

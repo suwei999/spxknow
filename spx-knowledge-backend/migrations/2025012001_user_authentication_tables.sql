@@ -1,4 +1,4 @@
--- Migration: 用户认证系统表
+﻿-- Migration: 用户认证系统表
 -- 文件：migrations/2025012001_user_authentication_tables.sql
 -- 创建日期：2024-01-20
 
@@ -209,4 +209,3 @@ SET @preparedStatement = (SELECT IF(
 PREPARE alterIfNotExists FROM @preparedStatement;
 EXECUTE alterIfNotExists;
 DEALLOCATE PREPARE alterIfNotExists;
-

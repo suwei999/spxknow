@@ -1,4 +1,4 @@
-"""
+﻿"""
 文档块编辑 API（骨架版）
 PATCH /api/documents/{id}/chunks/{chunk_id}
  - 写入 chunk_versions

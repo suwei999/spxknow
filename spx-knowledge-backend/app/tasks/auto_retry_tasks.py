@@ -1,4 +1,4 @@
-"""
+﻿"""
 Auto Retry Tasks
 自动重试任务 - 根据设计文档实现自动重试策略
 """
@@ -29,4 +29,3 @@ def auto_retry_failed_tasks_task(self):
         raise e
     finally:
         db.close()
-

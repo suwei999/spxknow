@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="home">
     <!-- 动态背景 -->
     <div class="animated-background">
@@ -757,4 +757,3 @@ const loadStats = async () => {
   }
 }
 </style>
-

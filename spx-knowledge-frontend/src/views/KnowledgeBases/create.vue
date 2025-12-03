@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="create-knowledge-base-page">
     <el-card>
       <template #header>
@@ -364,4 +364,3 @@ onMounted(() => {
   }
 }
 </style>
-

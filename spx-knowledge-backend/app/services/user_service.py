@@ -1,4 +1,4 @@
-"""
+﻿"""
 User Service
 用户服务
 """
@@ -233,4 +233,3 @@ class UserService(BaseService[User]):
         
         self.db.commit()
         return True
-

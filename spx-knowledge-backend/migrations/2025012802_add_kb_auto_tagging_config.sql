@@ -1,4 +1,4 @@
--- 为知识库添加自动标签配置字段
+﻿-- 为知识库添加自动标签配置字段
 -- 创建时间: 2025-01-28
 
 USE `spx_knowledge`;
@@ -11,4 +11,3 @@ ADD COLUMN `enable_auto_tagging` BOOLEAN DEFAULT TRUE COMMENT '是否启用自�
 UPDATE `knowledge_bases` 
 SET `enable_auto_tagging` = TRUE 
 WHERE `enable_auto_tagging` IS NULL;
-

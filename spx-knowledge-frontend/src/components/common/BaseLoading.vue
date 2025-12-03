@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div v-if="loading" class="base-loading">
     <el-icon class="is-loading">
       <loading />
@@ -35,4 +35,3 @@ defineProps<{
   }
 }
 </style>
-

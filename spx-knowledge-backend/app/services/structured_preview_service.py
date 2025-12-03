@@ -1,4 +1,4 @@
-"""
+﻿"""
 Structured Preview Service
 结构化预览服务 - 根据设计文档实现
 """
@@ -152,4 +152,3 @@ class StructuredPreviewService:
                 pass
         
         return None
-

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="document-edit-page">
     <ChunkEditor
       :document-id="documentId"
@@ -25,4 +25,3 @@ const handleClose = () => {
   height: 100vh;
 }
 </style>
-

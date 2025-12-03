@@ -1,4 +1,4 @@
-"""
+﻿"""
 Batch Upload Service
 批量上传服务 - 根据设计文档实现
 """
@@ -126,4 +126,3 @@ class BatchService(BaseService[DocumentUploadBatch]):
         if batch:
             batch.error_summary = json.dumps(error_summary, ensure_ascii=False)
             self.db.commit()
-

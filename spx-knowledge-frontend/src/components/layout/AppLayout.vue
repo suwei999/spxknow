@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="app-layout">
     <AppSidebar :collapsed="sidebarCollapsed" />
     <div class="app-content">
@@ -225,4 +225,3 @@ const toggleSidebar = () => {
   }
 }
 </style>
-

@@ -1,4 +1,4 @@
-# API 配置说明
+﻿# API 配置说明
 
 ## 概述
 
@@ -53,4 +53,3 @@ VITE_WS_BASE_URL=ws://localhost:8000
 2. 生产环境构建时，环境变量会在构建时注入，需要重新构建
 3. `VITE_API_BASE_URL` 必须包含 `/api` 后缀
 4. `VITE_WS_BASE_URL` 必须包含协议前缀（`ws://` 或 `wss://`）
-

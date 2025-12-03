@@ -1,4 +1,4 @@
-"""
+﻿"""
 检查迁移结果
 """
 
@@ -98,4 +98,3 @@ def check_migration():
 
 if __name__ == "__main__":
     check_migration()
-

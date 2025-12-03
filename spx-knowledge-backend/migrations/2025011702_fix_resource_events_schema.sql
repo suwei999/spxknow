@@ -1,4 +1,4 @@
--- Migration: Fix resource_events table schema
+﻿-- Migration: Fix resource_events table schema
 -- Add missing updated_at and is_deleted columns to match BaseModel
 
 USE `spx_knowledge`;
@@ -10,4 +10,3 @@ ALTER TABLE `resource_events`
 
 -- Update existing records to set is_deleted = false
 UPDATE `resource_events` SET `is_deleted` = FALSE WHERE `is_deleted` IS NULL;
-

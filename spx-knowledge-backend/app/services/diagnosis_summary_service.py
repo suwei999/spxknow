@@ -1,4 +1,4 @@
-"""
+﻿"""
 Diagnosis summary service.
 负责生成诊断摘要和解决方案
 """

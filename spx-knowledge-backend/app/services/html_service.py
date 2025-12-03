@@ -1,4 +1,4 @@
-"""
+﻿"""
 HTML Document Service
 根据设计文档实现 HTML 文档解析服务
 """
@@ -546,5 +546,3 @@ class HtmlService:
         if "<!doctype xhtml" in lowered:
             return "XHTML"
         return None
-
-

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Excel 文档解析服务
 支持 .xlsx, .xls, .xlsb, .csv 格式
 输出结构与 DOCX/PDF 解析保持一致
@@ -845,4 +845,3 @@ class ExcelService:
             with open(file_path, 'rb') as f:
                 return f.read()
         return output.getvalue()
-

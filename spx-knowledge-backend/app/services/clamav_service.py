@@ -1,4 +1,4 @@
-"""
+﻿"""
 ClamAV Service
 反病毒扫描服务 - 根据设计文档实现
 """
@@ -343,4 +343,3 @@ class ClamAVService:
                 'available': False,
                 'message': str(e)
             }
-

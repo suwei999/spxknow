@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 import { API_BASE_URL } from '@/config/api'
 
 // 用户信息类型
@@ -107,4 +107,3 @@ export const getCurrentUser = () => {
 export const getRefreshURL = () => {
   return `${API_BASE_URL}/auth/refresh`
 }
-

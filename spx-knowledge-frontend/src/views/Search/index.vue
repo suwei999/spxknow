@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="search-page">
     <el-card class="neo-card">
       <template #header>
@@ -1950,4 +1950,3 @@ watch(() => imageSearchType.value, (val, oldVal) => {
   }
 }
 </style>
-

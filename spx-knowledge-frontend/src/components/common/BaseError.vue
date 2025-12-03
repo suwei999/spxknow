@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="base-error">
     <el-result
       :icon="icon"
@@ -54,4 +54,3 @@ const subTitle = computed(() => {
   min-height: 400px;
 }
 </style>
-

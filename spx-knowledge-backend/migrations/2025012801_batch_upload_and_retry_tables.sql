@@ -1,4 +1,4 @@
--- 批量上传和失败重试相关表结构
+﻿-- 批量上传和失败重试相关表结构
 -- 创建时间: 2025-01-28
 
 USE `spx_knowledge`;
@@ -67,4 +67,3 @@ SELECT
 FROM document_images di
 INNER JOIN documents d ON di.document_id = d.id
 WHERE di.status = 'failed' AND di.is_deleted = FALSE;
-

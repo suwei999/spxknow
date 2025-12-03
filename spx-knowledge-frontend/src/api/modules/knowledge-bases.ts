@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 import type { KnowledgeBase, PaginationResult, PaginationParams } from '@/types'
 
 // 获取知识库列表
@@ -201,4 +201,3 @@ export const batchSuggest = (documentIds: number[]) => {
     data: { document_ids: documentIds }
   })
 }
-

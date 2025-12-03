@@ -1,4 +1,4 @@
-"""
+﻿"""
 Diagnosis K8s resource collector service.
 负责收集 K8s 相关资源信息：扩展诊断范围、深度诊断、历史对比分析
 """
@@ -795,4 +795,3 @@ class DiagnosisK8sCollector:
             logger.warning("Historical analysis failed: %s", exc)
         
         return analysis if analysis else None
-

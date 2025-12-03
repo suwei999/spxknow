@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 import type { Document, PaginationParams, PaginationResult } from '@/types'
 
 // 文档列表
@@ -413,4 +413,3 @@ export const updateDocument = (id: number, data: any) => {
 export const updateDocumentContent = (documentId: number, chunkId: number, data: any) => {
   return updateChunk(documentId, chunkId, data)
 }
-

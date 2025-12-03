@@ -1,4 +1,4 @@
-"""
+﻿"""
 Celery worker launcher for Windows/Linux.
 
 Usage (PowerShell):
@@ -193,5 +193,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

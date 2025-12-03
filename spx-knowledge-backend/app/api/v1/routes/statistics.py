@@ -1,4 +1,4 @@
-"""
+﻿"""
 Statistics API Routes
 统计API路由
 """
@@ -151,4 +151,3 @@ async def get_search_hotwords(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"获取搜索热词失败: {str(e)}"
         )
-

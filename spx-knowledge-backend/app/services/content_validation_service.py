@@ -1,4 +1,4 @@
-"""
+﻿"""
 Content Validation Service
 根据文档修改功能设计实现内容验证服务
 """

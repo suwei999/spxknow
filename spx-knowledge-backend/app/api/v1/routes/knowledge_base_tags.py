@@ -1,4 +1,4 @@
-"""
+﻿"""
 Knowledge Base Tags API Routes
 根据文档处理流程设计实现知识库标签管理API
 """

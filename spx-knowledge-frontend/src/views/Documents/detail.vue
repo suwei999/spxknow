@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="document-detail-page" v-loading="loading">
     <el-card v-if="document">
       <template #header>
@@ -1590,4 +1590,3 @@ onMounted(() => {
   }
 }
 </style>
-

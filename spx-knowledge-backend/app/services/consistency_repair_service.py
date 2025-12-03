@@ -1,4 +1,4 @@
-"""
+﻿"""
 Consistency Repair Service
 根据文档修改功能设计实现数据一致性修复服务
 """
@@ -193,4 +193,3 @@ class ConsistencyRepairService:
             logger.error(f"同步版本信息错误: {e}")
             self.db.rollback()
             return False
-

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Search History Service
 搜索历史服务
 """
@@ -188,4 +188,3 @@ class SearchHistoryService:
         except Exception as e:
             logger.error(f"获取搜索热词失败: {e}", exc_info=True)
             raise
-

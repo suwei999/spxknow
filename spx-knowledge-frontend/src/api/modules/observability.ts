@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 import type {
   ApiResponse,
   PaginationParams,
@@ -224,4 +224,3 @@ export const deleteDiagnosisRecord = (recordId: number) => {
     method: 'delete'
   })
 }
-

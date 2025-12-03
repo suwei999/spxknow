@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="document-upload">
     <el-upload
       ref="uploadRef"
@@ -104,4 +104,3 @@ const submit = () => {
   }
 }
 </style>
-

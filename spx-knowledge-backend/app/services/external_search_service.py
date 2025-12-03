@@ -1,4 +1,4 @@
-"""
+﻿"""
 External Search Service
 基于 SearxNG 的外部搜索兜底能力
 """
@@ -160,4 +160,3 @@ class ExternalSearchService:
             return urlparse(url).netloc
         except Exception:
             return None
-

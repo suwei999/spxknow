@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 text_path = Path(__file__).resolve().parents[1] / "src/views/Observability/index.ts"
 text = text_path.read_text(encoding="utf-8")
@@ -39,4 +39,3 @@ else:
             col = pos - text.rfind("\n", 0, pos)
             snippet = text[pos-20:pos+20].replace("\n", "\\n")
             print("unmatched near line", line, "col", col, "context:", snippet)
-

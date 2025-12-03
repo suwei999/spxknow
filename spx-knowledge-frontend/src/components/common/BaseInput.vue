@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-input
     v-model="modelValue"
     :type="type"
@@ -33,4 +33,3 @@ defineEmits(['update:modelValue', 'change', 'focus', 'blur'])
 <style lang="scss" scoped>
 // Base Input styles
 </style>
-

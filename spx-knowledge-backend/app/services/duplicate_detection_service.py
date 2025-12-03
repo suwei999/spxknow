@@ -1,4 +1,4 @@
-"""
+﻿"""
 Duplicate Detection Service
 根据文档处理流程设计实现重复检测功能
 """

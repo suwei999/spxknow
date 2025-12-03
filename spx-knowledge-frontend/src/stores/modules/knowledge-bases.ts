@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { getKnowledgeBases } from '@/api/modules/knowledge-bases'
 import type { KnowledgeBase, PaginationResult } from '@/types'
@@ -66,4 +66,3 @@ export const useKnowledgeBasesStore = defineStore('knowledgeBases', () => {
     clear
   }
 })
-

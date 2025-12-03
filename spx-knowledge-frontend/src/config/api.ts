@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API配置
  * 统一管理后端API地址，方便切换环境
  * 
@@ -26,4 +26,3 @@ export const getBackendHost = (): string => {
     return 'http://192.168.131.158:8081'
   }
 }
-

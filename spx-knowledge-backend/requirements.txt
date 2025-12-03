@@ -1,4 +1,4 @@
-# CPU则使用以下版本
+﻿# CPU则使用以下版本
 #torch==2.3.1
 #torchaudio==2.3.1
 #torchvision==0.18.1
@@ -42,7 +42,7 @@ cryptography==46.0.3
 cycler==0.12.1
 dataclasses-json==0.6.7
 datasets==4.4.0
-Deprecated==1.3.0
+Deprecated>=1.3.1  # 修复 yanked 版本问题，使用更新的版本
 dill==0.4.0
 dnspython==2.8.0
 easyocr==1.7.2

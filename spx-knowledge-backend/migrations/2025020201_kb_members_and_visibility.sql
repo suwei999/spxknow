@@ -1,4 +1,4 @@
--- 创建知识库成员表 & 为知识库增加 visibility 字段
+﻿-- 创建知识库成员表 & 为知识库增加 visibility 字段
 
 CREATE TABLE IF NOT EXISTS `knowledge_base_members` (
     `id` INT PRIMARY KEY AUTO_INCREMENT,
@@ -56,4 +56,3 @@ WHERE `is_deleted` = 0
       WHERE m.`knowledge_base_id` = `knowledge_bases`.`id`
         AND m.`user_id` = `knowledge_bases`.`user_id`
   );
-

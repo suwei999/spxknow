@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="upload-page">
     <el-card class="upload-card">
       <template #header>
@@ -854,4 +854,3 @@ loadKnowledgeBases()
   }
 }
 </style>
-

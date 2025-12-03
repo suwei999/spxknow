@@ -1,4 +1,4 @@
-"""
+﻿"""
 Diff Analysis Service
 根据文档修改功能设计实现差异计算和版本比较功能
 """
@@ -298,4 +298,3 @@ class DiffAnalysisService:
                 code=ErrorCode.VALIDATION_ERROR,
                 message=f"计算详细内容差异失败: {str(e)}"
             )
-

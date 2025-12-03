@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login, logout, getCurrentUser, refreshToken, type UserInfo, type LoginRequest } from '@/api/modules/auth'
 import { ElMessage } from 'element-plus'
@@ -143,4 +143,3 @@ export const useUserStore = defineStore('user', () => {
     updateUser
   }
 })
-

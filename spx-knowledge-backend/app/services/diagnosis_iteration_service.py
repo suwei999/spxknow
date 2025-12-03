@@ -1,4 +1,4 @@
-"""Services for diagnosis iterations and memories."""
+﻿"""Services for diagnosis iterations and memories."""
 
 from __future__ import annotations
 
@@ -169,4 +169,3 @@ class DiagnosisMemoryService(BaseService[DiagnosisMemory]):
         if memory_type:
             query = query.filter(self.model.memory_type == memory_type)
         return query.all()
-

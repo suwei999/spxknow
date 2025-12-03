@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-dialog
     v-model="visible"
     :title="image?.description || '图片预览'"
@@ -80,4 +80,3 @@ const handleSearchSimilar = () => {
   }
 }
 </style>
-

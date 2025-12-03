@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tasks API Routes
 失败任务重试中心 - 根据设计文档实现
 """
@@ -103,4 +103,3 @@ async def batch_retry_tasks(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"批量重试任务失败: {str(e)}"
         )
-

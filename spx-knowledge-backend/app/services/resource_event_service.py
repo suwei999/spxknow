@@ -1,4 +1,4 @@
-"""
+﻿"""
 Services for resource events and sync states.
 """
 
@@ -215,4 +215,3 @@ class ResourceSyncStateService(BaseService[ResourceSyncState]):
             self.db.refresh(state)
             return state
         return await self.create(payload)
-

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="image-search-page">
     <el-card>
       <template #header>
@@ -196,4 +196,3 @@ const viewImage = (image: any) => {
   }
 }
 </style>
-

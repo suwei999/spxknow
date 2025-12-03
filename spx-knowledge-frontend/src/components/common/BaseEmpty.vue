@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-empty :description="description" :image-size="imageSize">
     <template #image>
       <slot name="image" />
@@ -35,4 +35,3 @@ defineEmits(['action'])
   padding: 40px 0;
 }
 </style>
-

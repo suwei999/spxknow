@@ -1,4 +1,4 @@
-"""
+﻿"""
 Permission and role utilities for knowledge bases.
 
 根据知识库共享设计文档，实现基础的知识库成员/角色查询与权限校验。
@@ -105,5 +105,3 @@ class KnowledgeBasePermissionService:
                 status_code=status.HTTP_403_FORBIDDEN, detail="权限不足"
             )
         return role
-
-

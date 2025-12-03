@@ -1,4 +1,4 @@
--- Migration: add observability support tables
+﻿-- Migration: add observability support tables
 -- Apply this migration after deploying code that references the new models.
 
 USE `spx_knowledge`;
@@ -83,4 +83,3 @@ CREATE TABLE IF NOT EXISTS `diagnosis_records` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='运维诊断记录';
 
 -- End of migration.
-

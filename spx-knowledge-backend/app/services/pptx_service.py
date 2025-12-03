@@ -1,4 +1,4 @@
-"""
+﻿"""
 PowerPoint (PPTX) 文档解析服务
 基于 python-pptx，输出结构与 DOCX/PDF 解析保持一致
 """
@@ -562,4 +562,3 @@ class PptxService:
         except Exception:
             pass
         return "Unknown"
-

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Rerank Service
 使用bge-reranker模型对搜索结果进行重新排序
 """
@@ -46,7 +46,7 @@ class RerankService:
             self._initialized = True
     
     def _get_device(self, configured_device: str) -> str:
-        """获取实际使用的设备，自动检测GPU可用性
+        """获取实际使用的设备，自动检测GPU可用性和兼容性
         
         Args:
             configured_device: 配置的设备（cpu/cuda）
@@ -58,16 +58,68 @@ class RerankService:
         if configured_device.lower() == "cpu":
             return "cpu"
         
-        # 如果配置为cuda，检查GPU是否可用
+        # 如果配置为cuda，检查GPU是否可用且兼容
         if configured_device.lower() == "cuda":
             try:
                 import torch
-                if torch.cuda.is_available():
-                    logger.info(f"检测到GPU可用，使用CUDA设备")
-                    return "cuda"
-                else:
+                if not torch.cuda.is_available():
                     logger.warning(f"配置为CUDA但GPU不可用，自动降级到CPU")
                     return "cpu"
+                
+                # 尝试创建一个简单的tensor来测试CUDA兼容性
+                try:
+                    test_tensor = torch.tensor([1.0]).cuda()
+                    _ = test_tensor + 1.0  # 简单计算测试
+                    del test_tensor
+                    torch.cuda.empty_cache()
+                    logger.info(f"✅ CUDA兼容性测试通过，使用CUDA设备")
+                    return "cuda"
+                except Exception as cuda_test_error:
+                    error_msg = str(cuda_test_error).lower()
+                    if "no kernel image" in error_msg:
+                        logger.error(f"⚠️ CUDA兼容性测试失败: {cuda_test_error}")
+                        logger.error("=" * 60)
+                        logger.error("🔧 CUDA 架构不匹配问题诊断:")
+                        logger.error("=" * 60)
+                        try:
+                            import torch
+                            if torch.cuda.is_available():
+                                for i in range(torch.cuda.device_count()):
+                                    cap = torch.cuda.get_device_capability(i)
+                                    gpu_name = torch.cuda.get_device_name(i)
+                                    logger.error(f"GPU {i}: {gpu_name}")
+                                    logger.error(f"  计算能力: {cap[0]}.{cap[1]} (sm_{cap[0]}{cap[1]})")
+                                logger.error(f"PyTorch CUDA版本: {torch.version.cuda}")
+                                logger.error("\n解决方案:")
+                                logger.error("1. 运行诊断脚本: python scripts/check_cuda_compatibility.py")
+                                logger.error("2. 安装匹配的PyTorch版本（支持您的GPU架构）")
+                                
+                                # 检查是否是 RTX 5090
+                                cap = torch.cuda.get_device_capability(i)
+                                if cap[0] >= 10:
+                                    logger.error("3. ⚠️ 检测到 Blackwell 架构 (RTX 5090)，需要最新版本:")
+                                    logger.error("   pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu124")
+                                    logger.error("   或")
+                                    logger.error("   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124")
+                                else:
+                                    logger.error("3. 访问 https://pytorch.org/get-started/locally/ 选择正确的版本")
+                                    logger.error("4. 例如 CUDA 12.4: pip install torch --index-url https://download.pytorch.org/whl/cu124")
+                                    logger.error("   或 CUDA 12.1: pip install torch --index-url https://download.pytorch.org/whl/cu121")
+                        except:
+                            pass
+                        logger.error("=" * 60)
+                        logger.warning("🔄 自动降级到CPU模式（性能较慢但稳定）")
+                        logger.warning("💡 如需使用GPU，请修复CUDA兼容性问题后重启服务")
+                        return "cpu"
+                    elif "cuda" in error_msg:
+                        logger.error(f"⚠️ CUDA错误: {cuda_test_error}")
+                        logger.warning("🔄 自动降级到CPU")
+                        return "cpu"
+                    else:
+                        # 其他错误，也降级到CPU
+                        logger.warning(f"CUDA测试出错: {cuda_test_error}，降级到CPU")
+                        return "cpu"
+                        
             except ImportError:
                 logger.warning(f"PyTorch未安装，无法使用CUDA，使用CPU")
                 return "cpu"
@@ -292,23 +344,57 @@ class RerankService:
                     scores = [0.0] * len(pairs)
                     
             except Exception as e:
-                logger.warning(f"Rerank批量计算失败，尝试逐个计算: {e}")
-                # 降级：逐个计算
-                scores = []
-                for pair in pairs:
-                    query_text, passage_text = pair
+                # 检查是否是CUDA兼容性错误
+                error_msg = str(e).lower()
+                is_cuda_error = "cuda" in error_msg or "no kernel image" in error_msg
+                
+                if is_cuda_error and self.device == "cuda":
+                    logger.error(f"⚠️ 检测到CUDA兼容性错误: {e}")
+                    logger.warning("🔄 自动降级到CPU模式，重新初始化模型...")
+                    # 强制切换到CPU并重新初始化
+                    self.device = "cpu"
                     try:
-                        score = self.model.compute_score([pair], normalize=True)
-                        if isinstance(score, np.ndarray):
-                            score = float(score[0])
-                        elif isinstance(score, (list, tuple)):
-                            score = float(score[0])
+                        # 重新初始化模型到CPU
+                        from FlagEmbedding import FlagReranker
+                        self.model = FlagReranker(self.model_name, use_fp16=False)
+                        logger.info("✅ 模型已重新加载到CPU模式")
+                        # 重新尝试批量计算
+                        scores = self.model.compute_score(pairs, normalize=True)
+                        if isinstance(scores, np.ndarray):
+                            scores = scores.tolist()
+                        elif isinstance(scores, (list, tuple)):
+                            scores = [float(s) for s in scores]
+                        elif isinstance(scores, (int, float)):
+                            scores = [float(scores)] * len(pairs)
                         else:
-                            score = float(score)
-                        scores.append(score)
-                    except Exception as e2:
-                        logger.warning(f"单个pair计算失败: {e2}")
-                        scores.append(0.0)
+                            scores = [0.0] * len(pairs)
+                    except Exception as e3:
+                        logger.error(f"CPU模式重新初始化失败: {e3}")
+                        scores = [0.0] * len(pairs)
+                else:
+                    logger.warning(f"Rerank批量计算失败，尝试逐个计算: {e}")
+                    # 降级：逐个计算
+                    scores = []
+                    for pair in pairs:
+                        query_text, passage_text = pair
+                        try:
+                            score = self.model.compute_score([pair], normalize=True)
+                            if isinstance(score, np.ndarray):
+                                score = float(score[0])
+                            elif isinstance(score, (list, tuple)):
+                                score = float(score[0])
+                            else:
+                                score = float(score)
+                            scores.append(score)
+                        except Exception as e2:
+                            # 检查单个pair计算时的CUDA错误
+                            error_msg2 = str(e2).lower()
+                            if ("cuda" in error_msg2 or "no kernel image" in error_msg2) and self.device == "cuda":
+                                logger.error(f"⚠️ 单个pair计算时检测到CUDA错误: {e2}")
+                                logger.warning("🔄 跳过此pair，使用默认分数")
+                            else:
+                                logger.warning(f"单个pair计算失败: {e2}")
+                            scores.append(0.0)
             
             # 更新候选结果的分数
             valid_candidates = []
@@ -360,4 +446,3 @@ class RerankService:
     def is_available(self) -> bool:
         """检查rerank模型是否可用"""
         return self.enabled and self.model is not None
-

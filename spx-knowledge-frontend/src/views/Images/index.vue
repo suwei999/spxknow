@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="images-page">
     <el-card>
       <template #header>
@@ -833,4 +833,3 @@ const handleRetry = async (image: any) => {
   }
 }
 </style>
-

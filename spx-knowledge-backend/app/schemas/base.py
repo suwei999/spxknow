@@ -1,4 +1,4 @@
-"""
+﻿"""
 Base Schema for Pydantic
 """
 

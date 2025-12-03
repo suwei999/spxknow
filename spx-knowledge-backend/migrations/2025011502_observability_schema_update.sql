@@ -1,4 +1,4 @@
--- Migration: observability schema enhancement
+﻿-- Migration: observability schema enhancement
 USE `spx_knowledge`;
 
 -- cluster_configs add credential reference column
@@ -53,4 +53,3 @@ CREATE TABLE IF NOT EXISTS `resource_events` (
     PRIMARY KEY (`id`),
     INDEX `idx_resource_event` (`cluster_id`, `resource_type`, `namespace`, `resource_uid`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='资源变更事件';
-

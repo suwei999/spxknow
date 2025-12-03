@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="chunk-editor-page">
     <div class="chunk-editor">
     <!-- 左侧：块列表 -->
@@ -1523,4 +1523,3 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, #22c55e, #16a34a);
 }
 </style>
-

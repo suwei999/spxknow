@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="error-page">
     <el-result
       icon="error"
@@ -26,4 +26,3 @@
   height: 100%;
 }
 </style>
-

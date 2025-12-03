@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 
 export interface User {
   id: number
@@ -18,4 +18,3 @@ export const getUserList = () => {
     method: 'get'
   })
 }
-

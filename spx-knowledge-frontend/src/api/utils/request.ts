@@ -1,4 +1,4 @@
-import axios from 'axios'
+﻿import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/modules/app'
 import { API_BASE_URL } from '@/config/api'
@@ -121,4 +121,3 @@ service.interceptors.response.use(
 )
 
 export default service
-

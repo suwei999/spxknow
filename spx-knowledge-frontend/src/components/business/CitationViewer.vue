@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-dialog v-model="visible" title="引用来源详情" width="800px">
     <div class="citation-viewer" v-if="citation">
       <el-descriptions :column="2" border>
@@ -142,4 +142,3 @@ const copyCitation = async () => {
   text-align: center;
 }
 </style>
-

@@ -1,4 +1,4 @@
-"""Document Processing Tasks (DOCX / PDF / TXT, no Unstructured)"""
+﻿"""Document Processing Tasks (DOCX / PDF / TXT, no Unstructured)"""
 
 import os
 import tempfile

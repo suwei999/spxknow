@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="image-viewer-page" v-loading="loading">
     <el-card v-if="image">
       <template #header>
@@ -180,4 +180,3 @@ onMounted(() => {
   }
 }
 </style>
-

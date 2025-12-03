@@ -1,4 +1,4 @@
-"""
+﻿"""
 Image Vectorization Service
 根据文档处理流程设计实现CLIP/ResNet/ViT图片向量化功能
 """

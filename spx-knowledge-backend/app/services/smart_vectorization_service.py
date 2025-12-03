@@ -1,4 +1,4 @@
-"""
+﻿"""
 Smart Vectorization Service
 根据文档修改功能设计实现智能向量化策略
 """

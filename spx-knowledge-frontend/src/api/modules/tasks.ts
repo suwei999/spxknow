@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 
 // 获取失败任务列表
 export const getFailureTasks = (params: {
@@ -34,4 +34,3 @@ export const batchRetryTasks = (data: {
     data
   })
 }
-

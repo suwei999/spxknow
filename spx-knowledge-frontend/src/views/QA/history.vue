@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="qa-history-page">
     <el-card>
       <template #header>
@@ -149,4 +149,3 @@ onMounted(() => {
   }
 }
 </style>
-

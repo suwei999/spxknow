@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="qa-chat-page">
     <div class="chat-layout">
       <!-- 侧边栏 -->
@@ -220,4 +220,3 @@ onMounted(() => {
   }
 }
 </style>
-

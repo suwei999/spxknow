@@ -1,4 +1,4 @@
-"""
+﻿"""
 User Management API Routes
 用户管理路由
 """
@@ -201,4 +201,3 @@ def get_user_list(
     except Exception as e:
         logger.error(f"获取用户列表错误: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="获取用户列表失败")
-

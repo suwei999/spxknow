@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+﻿import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 
 // 路由配置
@@ -300,4 +300,3 @@ router.beforeEach(async (to, from, next) => {
 })
 
 export default router
-

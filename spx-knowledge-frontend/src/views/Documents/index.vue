@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="documents-page">
     <el-card>
       <template #header>
@@ -728,4 +728,3 @@ onUnmounted(() => {
   }
 }
 </style>
-

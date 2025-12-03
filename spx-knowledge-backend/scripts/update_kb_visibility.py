@@ -1,4 +1,4 @@
-"""
+﻿"""
 更新知识库 visibility 字段的迁移脚本
 根据成员数量自动更新知识库的 visibility 字段
 """
@@ -156,4 +156,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

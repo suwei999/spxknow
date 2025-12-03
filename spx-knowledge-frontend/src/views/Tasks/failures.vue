@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="failures-page">
     <el-card>
       <template #header>
@@ -308,4 +308,3 @@ onMounted(() => {
   justify-content: flex-end;
 }
 </style>
-

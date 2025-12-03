@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 path = Path(__file__).resolve().parent / "src/views/Observability/index.ts"
 text = path.read_text(encoding="utf-8")
@@ -22,4 +22,3 @@ else:
             print(f"missing closing near line {line}, col {col}: {excerpt}")
     else:
         print("all balanced")
-

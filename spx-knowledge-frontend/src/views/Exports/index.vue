@@ -174,23 +174,30 @@
 
         <!-- 导出问答历史 -->
         <el-tab-pane label="导出问答历史" name="qa">
-          <el-alert
-            type="info"
-            :closable="false"
-            style="margin-bottom: 20px; max-width: 600px"
-          >
-            <template #title>
-              <span>导出说明</span>
-            </template>
-            <template #default>
-              <div style="line-height: 1.8">
-                <p>• <strong>不选择会话</strong>：导出所有会话的问答历史</p>
-                <p>• <strong>选择会话</strong>：仅导出指定会话的问答历史</p>
-                <p>• <strong>日期范围</strong>：可筛选指定时间段的问答记录（可选）</p>
-                <p>• <strong>导出格式</strong>：JSON（完整数据）或 CSV（表格数据）</p>
+          <div class="export-instructions">
+            <div class="instructions-header">
+              <el-icon class="header-icon"><InfoFilled /></el-icon>
+              <span class="header-title">导出说明</span>
+            </div>
+            <div class="instructions-content">
+              <div class="instruction-item">
+                <el-icon class="item-icon"><CircleCheck /></el-icon>
+                <span><strong>不选择会话</strong>：导出所有会话的问答历史</span>
               </div>
-            </template>
-          </el-alert>
+              <div class="instruction-item">
+                <el-icon class="item-icon"><CircleCheck /></el-icon>
+                <span><strong>选择会话</strong>：仅导出指定会话的问答历史</span>
+              </div>
+              <div class="instruction-item">
+                <el-icon class="item-icon"><CircleCheck /></el-icon>
+                <span><strong>日期范围</strong>：可筛选指定时间段的问答记录（可选）</span>
+              </div>
+              <div class="instruction-item">
+                <el-icon class="item-icon"><CircleCheck /></el-icon>
+                <span><strong>导出格式</strong>：JSON（完整数据）或 CSV（表格数据）</span>
+              </div>
+            </div>
+          </div>
           
           <el-form :model="qaExportForm" label-width="120px" style="max-width: 600px">
             <el-form-item label="导出格式" required>
@@ -262,6 +269,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { InfoFilled, CircleCheck } from '@element-plus/icons-vue'
 import {
   getExportTasks,
   getExportTask,
@@ -750,6 +758,23 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .exports-page {
+  :deep(.el-card) {
+    background: rgba(6, 12, 24, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.9);
+    
+    .el-card__header {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.95);
+      font-size: 18px;
+      font-weight: 600;
+    }
+    
+    .el-card__body {
+      color: rgba(255, 255, 255, 0.85);
+    }
+  }
+  
   .task-list {
     margin-top: 20px;
   }
@@ -933,6 +958,115 @@ onMounted(() => {
         background: #66b1ff;
         border-color: #66b1ff;
       }
+    }
+  }
+  
+  /* 科技感导出说明框 */
+  .export-instructions {
+    margin-bottom: 24px;
+    max-width: 600px;
+    background: linear-gradient(135deg, rgba(6, 12, 24, 0.95) 0%, rgba(15, 23, 42, 0.9) 100%);
+    border: 1px solid rgba(64, 158, 255, 0.3);
+    border-radius: 12px;
+    padding: 20px 24px;
+    box-shadow: 
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      0 0 0 1px rgba(64, 158, 255, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    position: relative;
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+    
+    /* 科技感光效 */
+    &::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, 
+        transparent 0%, 
+        rgba(64, 158, 255, 0.5) 50%, 
+        transparent 100%);
+      animation: shimmer 3s infinite;
+    }
+    
+    &::after {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle, rgba(64, 158, 255, 0.05) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    
+    .instructions-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(64, 158, 255, 0.2);
+      
+      .header-icon {
+        font-size: 20px;
+        color: #409eff;
+        margin-right: 10px;
+        filter: drop-shadow(0 0 4px rgba(64, 158, 255, 0.5));
+      }
+      
+      .header-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.95);
+        letter-spacing: 0.5px;
+      }
+    }
+    
+    .instructions-content {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      
+      .instruction-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 8px 0;
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 14px;
+        line-height: 1.6;
+        transition: all 0.3s ease;
+        
+        &:hover {
+          color: rgba(255, 255, 255, 0.95);
+          transform: translateX(4px);
+        }
+        
+        .item-icon {
+          font-size: 16px;
+          color: #409eff;
+          margin-top: 2px;
+          flex-shrink: 0;
+          filter: drop-shadow(0 0 3px rgba(64, 158, 255, 0.4));
+        }
+        
+        strong {
+          color: rgba(255, 255, 255, 0.95);
+          font-weight: 600;
+        }
+      }
+    }
+  }
+  
+  @keyframes shimmer {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
     }
   }
 }

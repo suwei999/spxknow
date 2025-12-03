@@ -286,9 +286,22 @@ const recommendedTags = ref<string[]>(['技术文档', '用户手册', 'API文�
 const loadKnowledgeBases = async () => {
   loading.value = true
   try {
-    const res = await getKnowledgeBases({ page: 1, size: 100 })
+    // 只加载有文档上传权限的知识库（后端过滤）
+    const res = await getKnowledgeBases({ 
+      page: 1, 
+      size: 100,
+      require_permission: 'doc:upload'
+    })
     const data = res?.data ?? {}
-    knowledgeBases.value = data.list ?? data.items ?? []
+    let kbList = data.list ?? data.items ?? []
+    
+    // 前端二次过滤：确保只显示有上传权限的知识库（role 不是 viewer）
+    // 双重保险，即使后端过滤失效，前端也能过滤掉 viewer 角色
+    knowledgeBases.value = kbList.filter((kb: KnowledgeBase) => {
+      const role = kb.role
+      // 只有 owner、admin、editor 有上传权限，viewer 没有
+      return role && role !== 'viewer'
+    })
   } catch (error) {
     ElMessage.error('加载知识库列表失败')
   } finally {

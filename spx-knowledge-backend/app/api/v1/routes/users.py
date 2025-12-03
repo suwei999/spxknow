@@ -22,6 +22,7 @@ from app.core.response import success_response
 from app.core.exceptions import CustomException
 from app.schemas.user import UserInfo
 from app.config.settings import settings
+from app.models.user import User
 
 router = APIRouter()
 
@@ -163,4 +164,41 @@ def confirm_email(
     except Exception as e:
         logger.error(f"验证邮箱错误: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="验证邮箱失败")
+
+
+@router.get("/list")
+def get_user_list(
+    db: Session = Depends(get_db),
+    skip: int = 0,
+    limit: int = 1000
+):
+    """获取用户列表（用于下拉选择）"""
+    try:
+        users = (
+            db.query(User)
+            .filter(User.is_deleted == False)
+            .order_by(User.username)
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        
+        items = [
+            {
+                "id": user.id,
+                "username": user.username,
+                "nickname": user.nickname or user.username,
+                "email": user.email,
+            }
+            for user in users
+        ]
+        
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": items
+        }
+    except Exception as e:
+        logger.error(f"获取用户列表错误: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="获取用户列表失败")
 

@@ -37,7 +37,12 @@ class ClamAVService:
         """
         from app.config.settings import settings
         
-        self.socket_path = socket_path or settings.CLAMAV_SOCKET_PATH or self._get_socket_path()
+        # 如果明确配置使用TCP，强制使用TCP方式，忽略socket_path
+        if settings.CLAMAV_USE_TCP:
+            self.socket_path = None
+        else:
+            self.socket_path = socket_path or settings.CLAMAV_SOCKET_PATH or self._get_socket_path()
+        
         self.tcp_host = tcp_host or settings.CLAMAV_TCP_HOST
         self.tcp_port = tcp_port or settings.CLAMAV_TCP_PORT
         self.client = None
@@ -68,19 +73,19 @@ class ClamAVService:
                 self.client = None
                 return
             
-            # 优先级：
-            # 1. 明确指定的Socket路径
-            # 2. TCP远程地址（如果socket_path为None）
-            # 3. 自动检测本地Socket
+            # 连接优先级：
+            # 1. 如果 CLAMAV_USE_TCP=true，强制使用TCP
+            # 2. 如果 socket_path 不为空，使用Unix Socket或Named Pipe
+            # 3. 否则使用TCP Socket（可以是远程）
             
-            if self.socket_path:
-                # 使用Unix Socket或Named Pipe
-                self.client = clamd.ClamdUnixSocket(self.socket_path)
-                logger.info(f"尝试连接ClamAV Socket: {self.socket_path}")
-            else:
+            if settings.CLAMAV_USE_TCP or not self.socket_path:
                 # 使用TCP Socket（可以是远程）
                 self.client = clamd.ClamdNetworkSocket(self.tcp_host, self.tcp_port)
                 logger.info(f"尝试连接ClamAV TCP: {self.tcp_host}:{self.tcp_port}")
+            else:
+                # 使用Unix Socket或Named Pipe
+                self.client = clamd.ClamdUnixSocket(self.socket_path)
+                logger.info(f"尝试连接ClamAV Socket: {self.socket_path}")
             
             # 测试连接
             response = self.client.ping()

@@ -289,8 +289,8 @@ class Settings(BaseSettings):
     
     # 安全
     SECRET_KEY: str = "your-secret-key-here"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120  # 2小时，减少频繁刷新
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30  # 30天，延长会话有效期
     
     # 登录安全
     MAX_LOGIN_ATTEMPTS: int = 5

@@ -5,12 +5,13 @@ Statistics Service
 
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, desc
+from sqlalchemy import func, and_, desc, or_, distinct
 from datetime import datetime, timedelta, date
 from app.models.user_statistics import UserStatistics, DocumentTypeStatistics
 from app.models.document import Document
 from app.models.image import DocumentImage
 from app.models.knowledge_base import KnowledgeBase
+from app.models.knowledge_base_member import KnowledgeBaseMember
 from app.models.search_history import SearchHistory
 from app.models.qa_session import QASession
 from app.core.logging import logger
@@ -25,23 +26,67 @@ class StatisticsService:
     async def get_personal_statistics(self, user_id: int, period: str = "all") -> Dict[str, Any]:
         """获取个人数据统计"""
         try:
-            # 知识库统计
-            kb_count = self.db.query(KnowledgeBase).filter(
-                KnowledgeBase.user_id == user_id,
-                KnowledgeBase.is_deleted == False
-            ).count()
+            # 知识库统计：用户创建的 + 用户作为成员的知识库
+            # 使用与知识库列表服务相同的逻辑
+            member_join_cond = and_(
+                KnowledgeBaseMember.knowledge_base_id == KnowledgeBase.id,
+                KnowledgeBaseMember.user_id == user_id
+            )
             
-            kb_active = self.db.query(KnowledgeBase).filter(
-                KnowledgeBase.user_id == user_id,
+            # 统计用户创建的知识库 + 作为成员的知识库（去重）
+            kb_count_query = self.db.query(func.count(func.distinct(KnowledgeBase.id))).outerjoin(
+                KnowledgeBaseMember,
+                member_join_cond
+            ).filter(
+                or_(
+                    KnowledgeBase.user_id == user_id,
+                    KnowledgeBaseMember.user_id == user_id
+                ),
+                KnowledgeBase.is_deleted == False
+            )
+            
+            kb_count = kb_count_query.scalar() or 0
+            
+            # 活跃知识库统计
+            kb_active_query = self.db.query(func.count(func.distinct(KnowledgeBase.id))).outerjoin(
+                KnowledgeBaseMember,
+                member_join_cond
+            ).filter(
+                or_(
+                    KnowledgeBase.user_id == user_id,
+                    KnowledgeBaseMember.user_id == user_id
+                ),
                 KnowledgeBase.is_deleted == False,
                 KnowledgeBase.is_active == True
-            ).count()
+            )
             
-            # 文档统计
+            kb_active = kb_active_query.scalar() or 0
+            
+            # 获取用户有权限访问的知识库ID列表（用于文档统计）
+            kb_ids_query = self.db.query(distinct(KnowledgeBase.id)).outerjoin(
+                KnowledgeBaseMember,
+                member_join_cond
+            ).filter(
+                or_(
+                    KnowledgeBase.user_id == user_id,
+                    KnowledgeBaseMember.user_id == user_id
+                ),
+                KnowledgeBase.is_deleted == False
+            )
+            
+            kb_ids = [kb_id[0] for kb_id in kb_ids_query.all()]
+            
+            # 文档统计：统计用户有权限访问的知识库中的所有文档
             docs_query = self.db.query(Document).filter(
-                Document.user_id == user_id,
                 Document.is_deleted == False
             )
+            
+            # 如果用户有访问权限的知识库列表不为空，则只统计这些知识库的文档
+            if kb_ids:
+                docs_query = docs_query.filter(Document.knowledge_base_id.in_(kb_ids))
+            else:
+                # 如果没有知识库，则只统计用户自己上传的文档
+                docs_query = docs_query.filter(Document.user_id == user_id)
             
             # 根据时间段过滤
             if period == "week":
@@ -75,15 +120,21 @@ class StatisticsService:
                 if doc.file_size:
                     total_size += doc.file_size
             
-            # 图片统计（基于用户文档）
+            # 图片统计（基于用户有权限访问的知识库中的文档）
             image_query = self.db.query(DocumentImage).join(
                 Document,
                 DocumentImage.document_id == Document.id
             ).filter(
-                Document.user_id == user_id,
                 Document.is_deleted == False,
                 DocumentImage.is_deleted == False
             )
+            
+            # 如果用户有访问权限的知识库列表不为空，则只统计这些知识库的图片
+            if kb_ids:
+                image_query = image_query.filter(Document.knowledge_base_id.in_(kb_ids))
+            else:
+                # 如果没有知识库，则只统计用户自己上传的文档的图片
+                image_query = image_query.filter(Document.user_id == user_id)
             
             if period == "week":
                 week_ago = datetime.utcnow() - timedelta(days=7)
@@ -124,10 +175,19 @@ class StatisticsService:
             ).scalar()
             qa_count = int(qa_count_result) if qa_count_result is not None else 0
             
-            upload_count = self.db.query(Document).filter(
-                Document.user_id == user_id,
+            # 上传统计：统计用户有权限访问的知识库中的所有文档数量
+            upload_query = self.db.query(Document).filter(
                 Document.is_deleted == False
-            ).count()
+            )
+            
+            # 如果用户有访问权限的知识库列表不为空，则只统计这些知识库的文档
+            if kb_ids:
+                upload_query = upload_query.filter(Document.knowledge_base_id.in_(kb_ids))
+            else:
+                # 如果没有知识库，则只统计用户自己上传的文档
+                upload_query = upload_query.filter(Document.user_id == user_id)
+            
+            upload_count = upload_query.count()
             
             # 最后活跃时间
             last_search = self.db.query(SearchHistory).filter(

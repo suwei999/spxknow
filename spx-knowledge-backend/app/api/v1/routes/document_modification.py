@@ -6,7 +6,7 @@ PATCH /api/documents/{id}/chunks/{chunk_id}
  - 重新生成向量并更新 OpenSearch
 """
 
-from fastapi import APIRouter, Depends, Path, HTTPException, status
+from fastapi import APIRouter, Depends, Path, HTTPException, status, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.dependencies.database import get_db
@@ -16,6 +16,7 @@ from app.models.chunk_version import ChunkVersion
 from app.models.document import Document
 from app.services.vector_service import VectorService
 from app.services.opensearch_service import OpenSearchService
+from app.services.permission_service import KnowledgeBasePermissionService
 from datetime import datetime
 import json
 
@@ -653,24 +654,45 @@ def get_document_elements(
             detail=f"获取文档元素失败: {str(e)}"
         )
 
+def get_current_user_id(request: Request) -> int:
+    """从请求中获取当前用户ID（由中间件设置）"""
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的用户信息")
+    try:
+        return int(user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的用户ID")
+
 @router.put("/{document_id}/chunks/{chunk_id}")
 async def update_chunk_content(
+    request: Request,
     document_id: int,
     chunk_id: int,
     content_data: Dict[str, Any],
     db: Session = Depends(get_db)
 ):
-    """更新块内容 - 根据文档修改功能设计实现"""
+    """更新块内容 - 根据文档修改功能设计实现，需要 doc:edit 权限"""
     try:
         logger.info(f"API请求: 更新块内容 document_id={document_id}, chunk_id={chunk_id}")
         # 避免函数体内局部 import 造成变量遮蔽
         import json as _json
+        
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
         
         # 验证文档是否存在
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             logger.warning(f"文档不存在: {document_id}")
             raise create_document_not_found_error(document_id)
+        
+        # 权限检查：需要对文档所属知识库具有 doc:edit 权限
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(document.knowledge_base_id, user_id, "doc:edit")
         
         # 获取块
         chunk = db.query(DocumentChunk).filter(
@@ -1194,20 +1216,28 @@ def get_chunk_version(
 
 @router.post("/{document_id}/chunks/{chunk_id}/versions/{version_number}/restore", response_model=ChunkRevertResponse)
 def restore_chunk_version(
+    request: Request,
     document_id: int,
     chunk_id: int,
     version_number: int,
     revert_request: ChunkRevertRequest,
     db: Session = Depends(get_db)
 ):
-    """回退版本 - 根据设计文档实现"""
+    """回退版本 - 根据设计文档实现，需要 doc:edit 权限"""
     try:
         logger.info(f"API请求: 回退版本 document_id={document_id}, chunk_id={chunk_id}, version={version_number}")
+        
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
         
         # 验证文档和块是否存在
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise create_document_not_found_error(document_id)
+        
+        # 权限检查：需要对文档所属知识库具有 doc:edit 权限
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(document.knowledge_base_id, user_id, "doc:edit")
         
         chunk = db.query(DocumentChunk).filter(
             DocumentChunk.id == chunk_id,
@@ -1240,18 +1270,26 @@ def restore_chunk_version(
 
 @router.post("/{document_id}/chunks/{chunk_id}/revert-to-previous", response_model=ChunkRevertResponse)
 def revert_chunk_to_previous_version(
+    request: Request,
     document_id: int,
     chunk_id: int,
     db: Session = Depends(get_db)
 ):
-    """回退到上一个版本 - 根据设计文档实现"""
+    """回退到上一个版本 - 根据设计文档实现，需要 doc:edit 权限"""
     try:
         logger.info(f"API请求: 回退到上一个版本 document_id={document_id}, chunk_id={chunk_id}")
+        
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
         
         # 验证文档和块是否存在
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise create_document_not_found_error(document_id)
+        
+        # 权限检查：需要对文档所属知识库具有 doc:edit 权限
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(document.knowledge_base_id, user_id, "doc:edit")
         
         chunk = db.query(DocumentChunk).filter(
             DocumentChunk.id == chunk_id,
@@ -1623,18 +1661,26 @@ def get_revert_preview(
 
 @router.post("/{document_id}/chunks/batch-revert-previous")
 def batch_revert_to_previous_version(
+    request: Request,
     document_id: int,
     chunk_ids: List[int],
     db: Session = Depends(get_db)
 ):
-    """批量回退到上一个版本 - 根据设计文档实现"""
+    """批量回退到上一个版本 - 根据设计文档实现，需要 doc:edit 权限"""
     try:
         logger.info(f"API请求: 批量回退到上一个版本 document_id={document_id}, 块数量={len(chunk_ids)}")
+        
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
         
         # 验证文档是否存在
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise create_document_not_found_error(document_id)
+        
+        # 权限检查：需要对文档所属知识库具有 doc:edit 权限
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(document.knowledge_base_id, user_id, "doc:edit")
         
         # 限制并发回退数量
         if len(chunk_ids) > settings.MAX_BATCH_OPERATION_SIZE:

@@ -3,7 +3,17 @@
     <el-card v-if="document">
       <template #header>
         <div class="card-header">
-          <span>文档详情</span>
+          <div class="header-left">
+            <el-button 
+              circle 
+              @click="handleBack"
+              class="back-button"
+              title="返回"
+            >
+              <el-icon><ArrowLeft /></el-icon>
+            </el-button>
+            <span>文档详情</span>
+          </div>
           <div>
             <el-button @click="handleEdit">编辑</el-button>
             <el-button type="danger" @click="handleDelete">删除</el-button>
@@ -267,7 +277,8 @@
         </el-tab-pane>
 
         <el-tab-pane label="图片列表" name="images">
-          <div class="image-gallery">
+          <el-empty v-if="images.length === 0" description="图片列表为空" />
+          <div v-else class="image-gallery">
             <div
               v-for="image in images"
               :key="image.id"
@@ -336,7 +347,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
-import { Loading } from '@element-plus/icons-vue'
+import { Loading, ArrowLeft } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
@@ -724,6 +735,10 @@ const handleTocClick = (data: any) => {
   }
 }
 
+const handleBack = () => {
+  router.back()
+}
+
 const handleEdit = () => {
   router.push(`/documents/${documentId}/edit`)
 }
@@ -759,7 +774,12 @@ const handleRegenerateSummary = async () => {
   } catch (error: any) {
     regenerating.value = false
     if (error !== 'cancel') {
-      ElMessage.error(error?.response?.data?.message || error?.message || '生成失败')
+      // 处理403权限错误
+      if (error?.response?.status === 403) {
+        ElMessage.error(error?.response?.data?.detail || '权限不足，无法生成摘要')
+      } else {
+        ElMessage.error(error?.response?.data?.detail || error?.response?.data?.message || error?.message || '生成失败')
+      }
     }
   }
 }
@@ -1343,6 +1363,49 @@ onMounted(() => {
     
     .el-card__body {
       color: rgba(255, 255, 255, 0.85);
+    }
+  }
+  
+  /* 卡片头部样式 */
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: rgba(255, 255, 255, 0.95);
+    
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      
+      .back-button {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.2);
+        color: rgba(255, 255, 255, 0.9);
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.3s ease;
+        
+        &:hover {
+          background: rgba(64, 158, 255, 0.2);
+          border-color: #409eff;
+          color: #409eff;
+          transform: translateX(-2px);
+        }
+        
+        .el-icon {
+          font-size: 18px;
+        }
+      }
+      
+      span {
+        font-size: 18px;
+        font-weight: 600;
+      }
     }
   }
   

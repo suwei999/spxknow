@@ -4,7 +4,22 @@
       <template #header>
         <div class="card-header">
           <span>文档管理</span>
-          <el-button type="primary" @click="handleUpload">上传文档</el-button>
+          <div class="card-header-right">
+            <el-select
+              v-model="currentKnowledgeBaseId"
+              placeholder="选择知识库（共享可见）"
+              clearable
+              style="width: 260px; margin-right: 12px;"
+            >
+              <el-option
+                v-for="kb in knowledgeBases"
+                :key="kb.id"
+                :label="`${kb.name}（${getRoleText(kb.role)}）`"
+                :value="kb.id"
+              />
+            </el-select>
+            <el-button type="primary" @click="handleUpload">上传文档</el-button>
+          </div>
         </div>
       </template>
 
@@ -64,7 +79,7 @@
                 +{{ row.metadata.auto_keywords.length - 3 }}
               </el-tag>
             </div>
-            <span v-else style="color: #909399; font-size: 12px;">暂无标签</span>
+            <span v-else class="no-tags-text">暂无标签</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="200">
@@ -143,7 +158,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { getDocuments, deleteDocument, batchDeleteDocuments, batchMoveDocuments, batchAddTags, batchRemoveTags, batchReplaceTags } from '@/api/modules/documents'
@@ -152,6 +167,7 @@ import type { KnowledgeBase } from '@/types'
 import { formatFileSize } from '@/utils/format'
 import { WebSocketClient } from '@/utils/websocketClient'
 import type { Document } from '@/types'
+import { WS_BASE_URL } from '@/config/api'
 
 const router = useRouter()
 
@@ -164,6 +180,7 @@ const selectedDocuments = ref<Document[]>([])
 const showMoveDialog = ref(false)
 const showTagsDialog = ref(false)
 const knowledgeBases = ref<KnowledgeBase[]>([])
+const currentKnowledgeBaseId = ref<number | null>(null)
 
 // 批量操作表单
 const moveForm = ref({
@@ -179,7 +196,11 @@ const tagsForm = ref({
 const loadData = async () => {
   loading.value = true
   try {
-      const res = await getDocuments({ page: page.value, size: size.value })
+    const params: any = { page: page.value, size: size.value }
+    if (currentKnowledgeBaseId.value) {
+      params.knowledge_base_id = currentKnowledgeBaseId.value
+    }
+    const res = await getDocuments(params)
       // 后端返回格式: { code: 0, message: "ok", data: { list: [], total: 0 } }
       // 响应拦截器已经返回了 response.data，所以 res 就是响应数据本身
       if (res && typeof res === 'object') {
@@ -360,15 +381,31 @@ const handleBatchTags = async () => {
   }
 }
 
-// 加载知识库列表
+// 加载知识库列表：加载用户有查看权限的知识库（共享可见）
 const loadKnowledgeBases = async () => {
   try {
-    const res = await getKnowledgeBases({ page: 1, size: 1000 })
+    // 加载用户有 doc:view 权限的知识库
+    const res = await getKnowledgeBases({ 
+      page: 1, 
+      size: 1000,
+      require_permission: 'doc:view' // 只加载有查看权限的知识库
+    })
     const data = res?.data || res
     knowledgeBases.value = data?.list || data?.items || []
   } catch (error) {
-    // 忽略错误
+    ElMessage.error('加载知识库列表失败')
   }
+}
+
+// 角色文本映射
+const getRoleText = (role?: string) => {
+  const map: Record<string, string> = {
+    owner: '拥有者',
+    admin: '管理员',
+    editor: '编辑者',
+    viewer: '查看者',
+  }
+  return map[role || 'viewer'] || role || '查看者'
 }
 
 // 重置标签表单
@@ -429,9 +466,8 @@ const wsClient = ref<WebSocketClient | null>(null)
 
 // 初始化WebSocket监听
 const initWebSocket = () => {
-  // 使用环境变量或默认值构建WebSocket URL
-  const wsBaseURL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000'
-  const wsUrl = `${wsBaseURL}/ws/documents/status`
+  // 使用统一配置的WebSocket URL
+  const wsUrl = `${WS_BASE_URL}/ws/documents/status`
   wsClient.value = new WebSocketClient(wsUrl)
   
   // 订阅文档状态更新
@@ -451,6 +487,12 @@ const initWebSocket = () => {
   wsClient.value.connect()
 }
 
+// 监听知识库选择变化，重新加载文档列表
+watch(currentKnowledgeBaseId, () => {
+  page.value = 1 // 重置到第一页
+  loadData()
+})
+
 onMounted(() => {
   loadData()
   loadKnowledgeBases()
@@ -466,10 +508,32 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 .documents-page {
+  :deep(.el-card) {
+    background: rgba(6, 12, 24, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.9);
+    
+    .el-card__header {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.95);
+    }
+    
+    .el-card__body {
+      color: rgba(255, 255, 255, 0.85);
+    }
+  }
+  
   .card-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    color: rgba(255, 255, 255, 0.95);
+
+    .card-header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
   }
 
   .status-cell {
@@ -479,9 +543,57 @@ onUnmounted(() => {
     gap: 8px;
   }
 
-  /* 降低表格 hover 亮度，提升可读性 */
+  /* 优化表格 hover 效果，适配深色主题 */
   :deep(.el-table) {
-    --el-table-row-hover-bg-color: rgba(180, 180, 180, 0.16);
+    --el-table-row-hover-bg-color: rgba(64, 158, 255, 0.12) !important;
+    background-color: transparent;
+    color: rgba(255, 255, 255, 0.85);
+    
+    .el-table__header-wrapper {
+      background-color: rgba(6, 12, 24, 0.6);
+      
+      th {
+        background-color: rgba(6, 12, 24, 0.6) !important;
+        color: rgba(255, 255, 255, 0.9) !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+    }
+    
+    .el-table__body-wrapper {
+      background-color: transparent;
+      
+      tr {
+        background-color: transparent;
+        color: rgba(255, 255, 255, 0.85);
+        
+        &:hover {
+          background-color: rgba(64, 158, 255, 0.12) !important;
+          
+          td {
+            background-color: rgba(64, 158, 255, 0.12) !important;
+            color: rgba(255, 255, 255, 0.95) !important;
+          }
+        }
+        
+        td {
+          background-color: transparent;
+          color: rgba(255, 255, 255, 0.85);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+      }
+      
+      tr.el-table__row--striped {
+        background-color: rgba(255, 255, 255, 0.03);
+        
+        &:hover {
+          background-color: rgba(64, 158, 255, 0.12) !important;
+          
+          td {
+            background-color: rgba(64, 158, 255, 0.12) !important;
+          }
+        }
+      }
+    }
   }
 
   .batch-toolbar {
@@ -506,6 +618,113 @@ onUnmounted(() => {
     color: #ffffff;
     border-color: #60a5fa;
     background-color: rgba(96, 165, 250, 0.2);
+  }
+  
+  /* 优化分页组件样式 */
+  :deep(.el-pagination) {
+    color: rgba(255, 255, 255, 0.85);
+    margin-top: 16px;
+    
+    .el-pagination__total,
+    .el-pagination__jump {
+      color: rgba(255, 255, 255, 0.85);
+    }
+    
+    .btn-prev,
+    .btn-next {
+      color: rgba(255, 255, 255, 0.85);
+      
+      &:hover {
+        color: #409eff;
+      }
+      
+      &.disabled {
+        color: rgba(255, 255, 255, 0.3);
+      }
+    }
+    
+    .el-pager li {
+      color: rgba(255, 255, 255, 0.85);
+      background-color: transparent;
+      
+      &:hover {
+        color: #409eff;
+      }
+      
+      &.is-active {
+        color: #409eff;
+        background-color: rgba(64, 158, 255, 0.2);
+      }
+    }
+    
+    .el-pagination__editor {
+      .el-input {
+        .el-input__inner {
+          background-color: rgba(255, 255, 255, 0.08) !important;
+          border-color: rgba(255, 255, 255, 0.2) !important;
+          color: rgba(255, 255, 255, 0.95) !important;
+          font-size: 14px;
+          width: 50px;
+          height: 32px;
+          text-align: center;
+          
+          &::placeholder {
+            color: rgba(255, 255, 255, 0.5) !important;
+          }
+          
+          &:focus {
+            border-color: #409eff !important;
+            background-color: rgba(255, 255, 255, 0.12) !important;
+          }
+        }
+        
+        .el-input__wrapper {
+          background-color: rgba(255, 255, 255, 0.08) !important;
+          border-color: rgba(255, 255, 255, 0.2) !important;
+          box-shadow: none !important;
+          
+          &.is-focus {
+            border-color: #409eff !important;
+            box-shadow: 0 0 0 1px #409eff inset !important;
+          }
+        }
+      }
+    }
+  }
+  
+  /* 优化按钮样式 */
+  :deep(.el-button) {
+    &.el-button--small {
+      font-size: 13px;
+    }
+    
+    &:not(.el-button--primary):not(.el-button--danger) {
+      color: rgba(255, 255, 255, 0.85);
+      border-color: rgba(255, 255, 255, 0.3);
+      background-color: rgba(255, 255, 255, 0.05);
+      
+      &:hover {
+        color: #409eff;
+        border-color: #409eff;
+        background-color: rgba(64, 158, 255, 0.1);
+      }
+    }
+  }
+  
+  /* 空状态文本 */
+  .no-tags-text {
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 12px;
+  }
+  
+  /* 优化标签样式 */
+  :deep(.el-tag) {
+    font-weight: 500;
+    
+    &.el-tag--small {
+      font-size: 12px;
+      padding: 4px 8px;
+    }
   }
 }
 </style>

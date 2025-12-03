@@ -1,4 +1,5 @@
 import request from '../utils/request'
+import { API_BASE_URL } from '@/config/api'
 
 // 导出知识库
 export const exportKnowledgeBase = (kbId: number, data: {
@@ -91,7 +92,7 @@ export const downloadExportFile = async (taskId: number) => {
   const token = localStorage.getItem('access_token')
   
   const response = await axios.get(
-    `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'}/exports/${taskId}/download`,
+    `${API_BASE_URL}/exports/${taskId}/download`,
     {
       responseType: 'blob',
       headers: {

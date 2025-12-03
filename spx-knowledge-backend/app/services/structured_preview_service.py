@@ -17,7 +17,7 @@ class StructuredPreviewService:
     
     def __init__(self, db: Session):
         self.db = db
-        self.excel_service = ExcelService()
+        self.excel_service = ExcelService(db)
     
     def get_preview(self, document_id: int) -> Optional[Dict[str, Any]]:
         """获取结构化预览"""

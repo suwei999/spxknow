@@ -24,6 +24,7 @@ import gzip, json, io, datetime
 import os, tempfile
 # 预览生成已移至异步任务，此处不再需要导入转换函数
 from app.services.opensearch_service import OpenSearchService
+from app.services.permission_service import KnowledgeBasePermissionService
 
 router = APIRouter()
 
@@ -53,24 +54,58 @@ async def get_documents(
         # 获取当前用户ID
         user_id = get_current_user_id(request)
         logger.info(f"API请求: 获取文档列表，page: {page}, size: {size}, 知识库ID: {knowledge_base_id}, 用户ID: {user_id}")
-        
+
+        # 强烈建议前端在共享场景下总是带上 knowledge_base_id，
+        # 否则很难进行准确的权限控制。这里如果未提供，则只返回当前用户自己的文档。
         service = DocumentService(db)
         skip = max(page - 1, 0) * max(size, 1)
-        documents = await service.get_documents(
-            skip=skip,
-            limit=size,
-            knowledge_base_id=knowledge_base_id,
-            user_id=user_id
-        )
-        # 构建返回项并统计总数
+
         from app.models.document import Document
         from app.models.knowledge_base import KnowledgeBase
-        base_q = db.query(Document).filter(Document.is_deleted == False)
-        # 添加用户过滤（支持数据隔离）
-        base_q = base_q.filter(Document.user_id == user_id)
+
         if knowledge_base_id:
-            base_q = base_q.filter(Document.knowledge_base_id == knowledge_base_id)
+            # 检查用户对该知识库是否有查看权限
+            perm = KnowledgeBasePermissionService(db)
+            perm.ensure_permission(knowledge_base_id, user_id, "doc:view")
+
+            # 共享模式：按知识库过滤，不再按 Document.user_id 强过滤
+            base_q = db.query(Document).filter(
+                Document.is_deleted == False,  # noqa: E712
+                Document.knowledge_base_id == knowledge_base_id,
+            )
+        else:
+            # 未指定知识库时，返回用户有权限的所有知识库下的文档
+            # 包括：用户拥有的知识库 + 用户作为成员的知识库
+            from app.models.knowledge_base_member import KnowledgeBaseMember
+            from sqlalchemy import union_all
+            
+            # 用户拥有的知识库ID
+            owned_kb_ids_query = db.query(KnowledgeBase.id.label("kb_id")).filter(
+                KnowledgeBase.is_deleted == False,
+                KnowledgeBase.user_id == user_id
+            )
+            
+            # 用户作为成员的知识库ID
+            member_kb_ids_query = db.query(KnowledgeBaseMember.knowledge_base_id.label("kb_id")).filter(
+                KnowledgeBaseMember.user_id == user_id
+            )
+            
+            # 合并：用户拥有的 + 用户作为成员的（使用相同的列名 kb_id）
+            all_kb_ids = owned_kb_ids_query.union_all(member_kb_ids_query).subquery()
+            
+            # 获取这些知识库下的所有文档
+            base_q = db.query(Document).filter(
+                Document.is_deleted == False,  # noqa: E712
+                Document.knowledge_base_id.in_(db.query(all_kb_ids.c.kb_id))
+            )
+
         total = base_q.count()
+        documents = (
+            base_q.order_by(Document.created_at.desc())
+            .offset(skip)
+            .limit(size)
+            .all()
+        )
 
         # 预取知识库名称映射
         kb_ids = {d.knowledge_base_id for d in documents}
@@ -193,6 +228,10 @@ async def upload_document_from_url(
         
         logger.info(f"解析参数: category_id={category_id}, tags={parsed_tags}, metadata={parsed_metadata}")
         
+        # 权限：当前用户必须对该知识库拥有 doc:upload 权限
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(knowledge_base_id, user_id, "doc:upload")
+
         # 调用服务从URL导入文档
         service = DocumentService(db)
         result = await service.upload_document_from_url(
@@ -288,6 +327,10 @@ async def upload_document(
         
         logger.info(f"解析参数: category_id={category_id}, tags={parsed_tags}, metadata={parsed_metadata}")
         
+        # 权限：当前用户必须对该知识库拥有 doc:upload 权限
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(knowledge_base_id, user_id, "doc:upload")
+
         # 调用服务上传文档
         service = DocumentService(db)
         result = await service.upload_document(
@@ -330,13 +373,15 @@ async def upload_document(
 
 @router.get("/{doc_id}")
 async def get_document(
+    request: Request,
     doc_id: int,
     db: Session = Depends(get_db)
 ):
     """获取文档详情 - 根据文档处理流程设计实现"""
     try:
         logger.info(f"API请求: 获取文档详情 {doc_id}")
-        
+
+        # 先获取文档，便于后续进行权限检查
         service = DocumentService(db)
         doc = await service.get_document(doc_id)
         
@@ -346,6 +391,11 @@ async def get_document(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="文档不存在"
             )
+
+        # 权限：用户必须在文档所属知识库下具备 doc:view 权限
+        user_id = get_current_user_id(request)
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
         # 构造统一响应
         from app.models.knowledge_base import KnowledgeBase
         kb_name = None
@@ -430,6 +480,9 @@ async def get_document_sheets(
         document = db.query(Document).filter(Document.id == doc_id).first()
         if not document:
             raise HTTPException(status_code=404, detail="文档不存在")
+
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(document.knowledge_base_id, user_id, "doc:view")
         
         # 检查文件类型
         file_type = (document.file_type or '').lower()
@@ -479,6 +532,7 @@ async def get_document_sheets(
 
 @router.get("/{doc_id}/chunks")
 async def get_document_chunks(
+    request: Request,
     doc_id: int,
     page: int = 1,
     size: int = settings.QA_DEFAULT_PAGE_SIZE,
@@ -488,6 +542,14 @@ async def get_document_chunks(
 ):
     """获取指定文档的分块列表（兼容前端 /documents/{id}/chunks）"""
     try:
+        user_id = get_current_user_id(request)
+        # 权限：需要对文档所属知识库具有 doc:view 权限
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="文档不存在")
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
+
         skip = max(page - 1, 0) * max(size, 1)
         service = ChunkService(db)
         # 如果指定了 chunk_type，需要在查询后过滤
@@ -611,12 +673,14 @@ async def get_document_chunks(
 
 @router.get("/{doc_id}/chunks/{chunk_id}")
 async def get_document_chunk_detail(
+    request: Request,
     doc_id: int,
     chunk_id: int,
     db: Session = Depends(get_db)
 ):
     """获取单个分块详情（含内容）。当数据库未存文本时，从 MinIO 读取对应文本。"""
     try:
+        user_id = get_current_user_id(request)
         from app.models.chunk import DocumentChunk
         chunk = db.query(DocumentChunk).filter(
             DocumentChunk.id == chunk_id,
@@ -624,6 +688,13 @@ async def get_document_chunk_detail(
         ).first()
         if not chunk:
             raise HTTPException(status_code=404, detail="分块不存在")
+
+        # 权限：需要对文档所属知识库具有 doc:view 权限
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="文档不存在")
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
 
         # 读取内容：优先 DB；否则从 MinIO 归档映射定位
         content = chunk.content or ""
@@ -691,11 +762,19 @@ async def get_document_chunk_detail(
 
 @router.get("/{doc_id}/images")
 async def get_document_images(
+    request: Request,
     doc_id: int,
     db: Session = Depends(get_db)
 ):
     """获取指定文档的图片列表（兼容前端 /documents/{id}/images）"""
     try:
+        user_id = get_current_user_id(request)
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="文档不存在")
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
+
         service = ImageService(db)
         imgs = db.query(service.model).filter(service.model.document_id == doc_id, service.model.is_deleted == False).all()
         items = []
@@ -727,16 +806,21 @@ async def get_document_images(
 
 @router.get("/{doc_id}/preview")
 async def get_document_preview(
+    request: Request,
     doc_id: int,
     db: Session = Depends(get_db)
 ):
     """返回原始文档的直链；若为 Office 文档则返回已预生成的 PDF/HTML 预览（如果存在）。"""
     try:
+        user_id = get_current_user_id(request)
         doc = db.query(Document).filter(Document.id == doc_id).first()
         if not doc:
             raise HTTPException(status_code=404, detail="文档不存在")
         if not doc.file_path:
             raise HTTPException(status_code=404, detail="缺少原始文件路径")
+
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
 
         minio = MinioStorageService()
         # 原始直链
@@ -869,6 +953,7 @@ async def get_document_preview(
 
 @router.get("/{doc_id}/chunks/{chunk_id}/content-opensearch")
 async def get_chunk_content_from_opensearch(
+    request: Request,
     doc_id: int,
     chunk_id: int,
     source: str = Query("db", description="优先数据源: db 或 os"),
@@ -876,6 +961,7 @@ async def get_chunk_content_from_opensearch(
 ):
     """优先从数据库读取块内容，必要时回退至 OpenSearch。"""
     try:
+        user_id = get_current_user_id(request)
         from app.models.chunk import DocumentChunk
 
         def load_meta(raw_meta):
@@ -956,6 +1042,13 @@ async def get_chunk_content_from_opensearch(
                 DocumentChunk.document_id == doc_id
             ).first()
             if chunk:
+                # 权限：需要对文档所属知识库具有 doc:view 权限
+                doc = db.query(Document).filter(Document.id == doc_id).first()
+                if not doc:
+                    raise HTTPException(status_code=404, detail="文档不存在")
+                perm = KnowledgeBasePermissionService(db)
+                perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
+
                 meta_dict = load_meta(chunk.meta)
                 chunk_type = (chunk.chunk_type or "text").lower()
                 content = chunk.content or ""
@@ -1028,6 +1121,7 @@ async def get_chunk_content_from_opensearch(
 
 @router.put("/{doc_id}", response_model=DocumentResponse)
 async def update_document(
+    request: Request,
     doc_id: int,
     document: DocumentUpdate,
     db: Session = Depends(get_db)
@@ -1035,7 +1129,35 @@ async def update_document(
     """更新文档 - 根据文档处理流程设计实现"""
     try:
         logger.info(f"API请求: 更新文档 {doc_id}")
-        
+
+        # 权限：需要对文档所属知识库具有 doc:edit 权限
+        existing = db.query(Document).filter(
+            Document.id == doc_id,
+            Document.is_deleted == False  # noqa: E712
+        ).first()
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="文档不存在"
+            )
+        user_id = get_current_user_id(request)
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(existing.knowledge_base_id, user_id, "doc:edit")
+
+        # 乐观并发控制：如果前端传了 expected_updated_at，则要求与当前 updated_at 完全一致
+        if document.expected_updated_at is not None and existing.updated_at is not None:
+            if existing.updated_at != document.expected_updated_at:
+                logger.warning(
+                    "文档更新冲突: doc_id=%s, expected=%s, actual=%s",
+                    doc_id,
+                    document.expected_updated_at,
+                    existing.updated_at,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="文档已被其他用户更新，请刷新后重试",
+                )
+
         service = DocumentService(db)
         doc = await service.update_document(doc_id, document)
         
@@ -1060,13 +1182,26 @@ async def update_document(
 
 @router.delete("/{doc_id}")
 async def delete_document(
+    request: Request,
     doc_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """删除文档 - 根据文档处理流程设计实现"""
     try:
         logger.info(f"API请求: 删除文档 {doc_id}")
-        
+
+        # 加载文档以便做权限判断
+        doc = db.query(Document).filter(Document.id == doc_id, Document.is_deleted == False).first()
+        if not doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="文档不存在"
+            )
+
+        user_id = get_current_user_id(request)
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:delete")
+
         service = DocumentService(db)
         success = await service.delete_document(doc_id)
         
@@ -1123,6 +1258,10 @@ async def batch_upload_documents(
         
         # 获取当前用户ID
         user_id = get_current_user_id(request)
+
+        # 权限：批量上传也视为 doc:upload
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(knowledge_base_id, user_id, "doc:upload")
         
         # 解析tags
         parsed_tags = []
@@ -1330,7 +1469,7 @@ async def batch_delete_documents(
     - failed_ids: 失败的文档ID列表
     """
     try:
-        # 获取当前用户ID（数据隔离）
+        # 获取当前用户ID
         user_id = get_current_user_id(request)
         document_ids = delete_request.document_ids
         logger.info(f"API请求: 批量删除文档，文档数量: {len(document_ids)}, 用户ID: {user_id}")
@@ -1346,22 +1485,39 @@ async def batch_delete_documents(
         failed_count = 0
         failed_ids = []
         
+        # 预加载文档，按 knowledge_base_id 归组以减少权限查询次数
+        docs = db.query(Document).filter(
+            Document.id.in_(document_ids),
+            Document.is_deleted == False
+        ).all()
+        doc_map = {d.id: d for d in docs}
+
+        perm = KnowledgeBasePermissionService(db)
+        kb_perm_cache: dict[int, bool] = {}
+
         for doc_id in document_ids:
             try:
-                # 验证文档归属权（数据隔离）
-                doc = db.query(Document).filter(
-                    Document.id == doc_id,
-                    Document.user_id == user_id,
-                    Document.is_deleted == False
-                ).first()
-                
+                doc = doc_map.get(doc_id)
                 if not doc:
-                    logger.warning(f"文档不存在或无权限: {doc_id}, 用户ID: {user_id}")
+                    logger.warning(f"文档不存在或已删除: {doc_id}")
                     failed_ids.append(doc_id)
                     failed_count += 1
                     continue
-                
-                # 删除文档
+
+                kb_id = doc.knowledge_base_id
+                # 针对同一知识库的多个文档，复用权限结果
+                if kb_id not in kb_perm_cache:
+                    try:
+                        perm.ensure_permission(kb_id, user_id, "doc:delete")
+                        kb_perm_cache[kb_id] = True
+                    except HTTPException:
+                        kb_perm_cache[kb_id] = False
+                if not kb_perm_cache.get(kb_id):
+                    logger.warning(f"无权删除文档: {doc_id}, 用户ID: {user_id}")
+                    failed_ids.append(doc_id)
+                    failed_count += 1
+                    continue
+
                 success = await service.delete_document(doc_id, hard=True)
                 if success:
                     deleted_count += 1
@@ -1416,7 +1572,7 @@ async def batch_move_documents(
     - failed_ids: 失败的文档ID列表
     """
     try:
-        # 获取当前用户ID（数据隔离）
+        # 获取当前用户ID
         user_id = get_current_user_id(request)
         document_ids = move_request.document_ids
         target_kb_id = move_request.target_knowledge_base_id
@@ -1430,40 +1586,52 @@ async def batch_move_documents(
                 detail="文档ID列表不能为空"
             )
         
-        # 验证目标知识库是否存在且属于当前用户
+        # 验证目标知识库是否存在且当前用户在其中具有 doc:edit 权限
         from app.models.knowledge_base import KnowledgeBase
         target_kb = db.query(KnowledgeBase).filter(
             KnowledgeBase.id == target_kb_id,
-            KnowledgeBase.user_id == user_id,
             KnowledgeBase.is_deleted == False
         ).first()
         
         if not target_kb:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="目标知识库不存在或无权限"
+                detail="目标知识库不存在"
             )
+
+        perm = KnowledgeBasePermissionService(db)
+        # 移入目标知识库需要具备 doc:edit 权限
+        perm.ensure_permission(target_kb_id, user_id, "doc:edit")
         
         service = DocumentService(db)
         moved_count = 0
         failed_count = 0
         failed_ids = []
         
+        perm = KnowledgeBasePermissionService(db)
+
         for doc_id in document_ids:
             try:
-                # 验证文档归属权（数据隔离）
                 doc = db.query(Document).filter(
                     Document.id == doc_id,
-                    Document.user_id == user_id,
                     Document.is_deleted == False
                 ).first()
-                
+
                 if not doc:
-                    logger.warning(f"文档不存在或无权限: {doc_id}, 用户ID: {user_id}")
+                    logger.warning(f"文档不存在: {doc_id}")
                     failed_ids.append(doc_id)
                     failed_count += 1
                     continue
-                
+
+                # 验证在源知识库上具有 doc:edit 权限
+                try:
+                    perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:edit")
+                except HTTPException:
+                    logger.warning(f"无权移动文档: {doc_id}, 用户ID: {user_id}")
+                    failed_ids.append(doc_id)
+                    failed_count += 1
+                    continue
+
                 # 如果目标知识库与当前相同，只更新分类
                 if doc.knowledge_base_id == target_kb_id:
                     if target_category_id is not None:
@@ -1538,23 +1706,28 @@ async def batch_add_tags(
         if not tags_to_add:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="标签列表不能为空")
         
+        perm = KnowledgeBasePermissionService(db)
         updated_count = 0
         for doc_id in document_ids:
             try:
                 doc = db.query(Document).filter(
                     Document.id == doc_id,
-                    Document.user_id == user_id,
                     Document.is_deleted == False
                 ).first()
-                
+
                 if not doc:
                     continue
-                
+
+                try:
+                    perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:edit")
+                except HTTPException:
+                    continue
+
                 # 获取现有标签
                 current_tags = doc.tags if doc.tags else []
                 if not isinstance(current_tags, list):
                     current_tags = []
-                
+
                 # 合并标签（去重）
                 new_tags = list(set(current_tags + tags_to_add))
                 doc.tags = new_tags
@@ -1603,23 +1776,28 @@ async def batch_remove_tags(
         if not tags_to_remove:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="标签列表不能为空")
         
+        perm = KnowledgeBasePermissionService(db)
         updated_count = 0
         for doc_id in document_ids:
             try:
                 doc = db.query(Document).filter(
                     Document.id == doc_id,
-                    Document.user_id == user_id,
                     Document.is_deleted == False
                 ).first()
-                
+
                 if not doc:
                     continue
-                
+
+                try:
+                    perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:edit")
+                except HTTPException:
+                    continue
+
                 # 获取现有标签
                 current_tags = doc.tags if doc.tags else []
                 if not isinstance(current_tags, list):
                     current_tags = []
-                
+
                 # 移除标签
                 new_tags = [t for t in current_tags if t not in tags_to_remove]
                 doc.tags = new_tags
@@ -1666,18 +1844,23 @@ async def batch_replace_tags(
         if not document_ids:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文档ID列表不能为空")
         
+        perm = KnowledgeBasePermissionService(db)
         updated_count = 0
         for doc_id in document_ids:
             try:
                 doc = db.query(Document).filter(
                     Document.id == doc_id,
-                    Document.user_id == user_id,
                     Document.is_deleted == False
                 ).first()
-                
+
                 if not doc:
                     continue
-                
+
+                try:
+                    perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:edit")
+                except HTTPException:
+                    continue
+
                 # 直接替换标签
                 doc.tags = new_tags
                 db.commit()
@@ -1711,19 +1894,20 @@ async def get_document_toc(
     """
     try:
         user_id = get_current_user_id(request)
-        
-        # 验证文档归属权
+
         doc = db.query(Document).filter(
             Document.id == doc_id,
-            Document.user_id == user_id,
             Document.is_deleted == False
         ).first()
-        
+
         if not doc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="文档不存在或无权限"
+                detail="文档不存在"
             )
+
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
         
         from app.services.document_toc_service import DocumentTOCService
         toc_service = DocumentTOCService(db)
@@ -1760,19 +1944,20 @@ async def search_in_document(
     """
     try:
         user_id = get_current_user_id(request)
-        
-        # 验证文档归属权
+
         doc = db.query(Document).filter(
             Document.id == doc_id,
-            Document.user_id == user_id,
             Document.is_deleted == False
         ).first()
-        
+
         if not doc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="文档不存在或无权限"
+                detail="文档不存在"
             )
+
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
         
         # 从OpenSearch搜索文档内容
         from app.services.opensearch_service import OpenSearchService
@@ -1904,44 +2089,57 @@ async def get_structured_preview(
 
 @router.post("/{doc_id}/regenerate-summary")
 async def regenerate_summary(
+    request: Request,
     doc_id: int,
     db: Session = Depends(get_db)
 ):
-    """重新生成标签和摘要 - 根据设计文档实现"""
+    """
+    重新生成标签和摘要 - 根据设计文档实现
+
+    权限要求：
+    - 需要对文档所属知识库具有 doc:edit 权限（viewer 只能查看，不能触发生成）
+    """
     try:
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
+
         # 检查文档是否存在
         document = db.query(Document).filter(
             Document.id == doc_id,
-            Document.is_deleted == False
+            Document.is_deleted == False  # noqa: E712
         ).first()
-        
+
         if not document:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="文档不存在"
             )
-        
+
+        # 权限检查：需要 doc:edit 权限
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(document.knowledge_base_id, user_id, "doc:edit")
+
         # 检查是否有chunk数据
         chunks = db.query(DocumentChunk).filter(
             DocumentChunk.document_id == doc_id,
-            DocumentChunk.is_deleted == False
+            DocumentChunk.is_deleted == False  # noqa: E712
         ).count()
-        
+
         if chunks == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="文档没有分块数据，无法生成摘要。请先完成文档处理。"
             )
-        
+
         tagging_service = AutoTaggingService(db)
         result = await tagging_service.regenerate_tags_and_summary(doc_id)
-        
+
         if not result:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="生成标签和摘要失败：无法获取文档内容或LLM生成失败。请检查文档是否已处理完成，以及Ollama服务是否正常。"
             )
-        
+
         return {
             "code": 0,
             "message": "ok",

@@ -237,14 +237,19 @@ class QAService:
         self,
         page: int = 1,
         size: int = 20,
-        knowledge_base_id: Optional[int] = None
+        knowledge_base_id: Optional[int] = None,
+        user_id: Optional[int] = None
     ) -> QASessionListResponse:
-        """获取会话列表 - 根据设计文档实现，使用MySQL"""
+        """获取会话列表 - 根据设计文档实现，使用MySQL，只返回当前用户的会话"""
         try:
-            logger.info(f"获取会话列表，页码: {page}, 大小: {size}")
+            logger.info(f"获取会话列表，页码: {page}, 大小: {size}, 用户ID: {user_id}")
             
             # 查询会话
             query = self.db.query(QASession)
+            
+            # 必须按用户ID过滤，确保数据隔离
+            if user_id is not None:
+                query = query.filter(QASession.user_id == user_id)
             
             if knowledge_base_id:
                 query = query.filter(QASession.knowledge_base_id == knowledge_base_id)
@@ -276,16 +281,22 @@ class QAService:
                 message=f"获取会话列表失败: {str(e)}"
             )
     
-    async def get_qa_session_detail(self, session_id: str) -> Optional[QASessionResponse]:
-        """获取会话详情 - 从MySQL获取元数据，从OpenSearch加载完整内容"""
+    async def get_qa_session_detail(self, session_id: str, user_id: Optional[int] = None) -> Optional[QASessionResponse]:
+        """获取会话详情 - 从MySQL获取元数据，从OpenSearch加载完整内容，只返回当前用户的会话"""
         try:
-            logger.info(f"获取会话详情，会话ID: {session_id}")
+            logger.info(f"获取会话详情，会话ID: {session_id}, 用户ID: {user_id}")
             
             # 查询会话
-            db_session = self.db.query(QASession).filter(
+            query = self.db.query(QASession).filter(
                 QASession.session_id == session_id,
                 QASession.status == "active"
-            ).first()
+            )
+            
+            # 必须按用户ID过滤，确保数据隔离
+            if user_id is not None:
+                query = query.filter(QASession.user_id == user_id)
+            
+            db_session = query.first()
             
             if not db_session:
                 return None

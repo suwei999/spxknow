@@ -51,27 +51,57 @@ def get_current_user_id(request: Request) -> int:
 # 1. 知识库选择功能
 
 @router.get("/knowledge-bases", response_model=KnowledgeBaseListResponse)
-def get_knowledge_bases(
+async def get_knowledge_bases(
+    request: Request,
     category_id: Optional[int] = None,
     status: str = "active",
     page: int = 1,
     size: int = settings.QA_DEFAULT_PAGE_SIZE,
     db: Session = Depends(get_db)
 ):
-    """获取知识库列表 - 根据设计文档实现"""
+    """获取知识库列表 - 只返回当前用户有权限的知识库"""
     try:
-        logger.info(f"API请求: 获取知识库列表，分类ID: {category_id}, 状态: {status}")
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
+        logger.info(f"API请求: 获取知识库列表，分类ID: {category_id}, 状态: {status}, 用户ID: {user_id}")
         
-        service = QAService(db)
-        result = service.get_knowledge_bases(
-            category_id=category_id,
-            status=status,
+        # 使用 KnowledgeBaseService 来获取用户有权限的知识库列表
+        from app.services.knowledge_base_service import KnowledgeBaseService
+        kb_service = KnowledgeBaseService(db)
+        items, total = await kb_service.get_knowledge_bases_paginated(
             page=page,
-            size=size
+            size=size,
+            user_id=user_id
         )
         
-        logger.info(f"API响应: 返回 {len(result.knowledge_bases)} 个知识库")
-        return result
+        # 转换为 QA 模块期望的格式
+        knowledge_bases = []
+        for kb in items:
+            knowledge_bases.append({
+                "id": kb.get("id"),
+                "name": kb.get("name"),
+                "description": kb.get("description", ""),
+                "category_id": kb.get("category_id"),
+                "category_name": kb.get("category_name", ""),
+                "document_count": kb.get("document_count", 0),
+                "storage_size": kb.get("storage_size", 0),
+                "tags": kb.get("tags", []),
+                "status": "active" if kb.get("is_active", True) else "inactive",
+                "created_at": kb.get("created_at")
+            })
+        
+        logger.info(f"API响应: 返回 {len(knowledge_bases)} 个知识库")
+        
+        from app.schemas.qa import KnowledgeBaseListResponse
+        return KnowledgeBaseListResponse(
+            knowledge_bases=knowledge_bases,
+            pagination={
+                "page": page,
+                "size": size,
+                "total": total,
+                "total_pages": (total + size - 1) // size if size > 0 else 0
+            }
+        )
         
     except Exception as e:
         logger.error(f"获取知识库列表API错误: {e}", exc_info=True)
@@ -82,12 +112,20 @@ def get_knowledge_bases(
 
 @router.get("/knowledge-bases/{kb_id}", response_model=QASessionResponse)
 def get_knowledge_base_detail(
+    request: Request,
     kb_id: int,
     db: Session = Depends(get_db)
 ):
-    """获取知识库详情 - 根据设计文档实现"""
+    """获取知识库详情 - 根据设计文档实现，需要 kb:view 权限"""
     try:
-        logger.info(f"API请求: 获取知识库详情 {kb_id}")
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
+        logger.info(f"API请求: 获取知识库详情 {kb_id}, 用户ID: {user_id}")
+        
+        # 权限检查：确保用户有查看权限
+        from app.services.permission_service import KnowledgeBasePermissionService
+        perm = KnowledgeBasePermissionService(db)
+        perm.ensure_permission(kb_id, user_id, "kb:view")
         
         service = QAService(db)
         result = service.get_knowledge_base_detail(kb_id)
@@ -95,7 +133,7 @@ def get_knowledge_base_detail(
         if not result:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="知识库不存在"
+                detail="知识库不存在或无权访问"
             )
         
         logger.info(f"API响应: 成功获取知识库详情 {result.name}")
@@ -204,20 +242,24 @@ def create_qa_session(
 
 @router.get("/sessions", response_model=QASessionListResponse)
 def get_qa_sessions(
+    request: Request,
     page: int = 1,
     size: int = settings.QA_DEFAULT_PAGE_SIZE,
     knowledge_base_id: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
-    """获取会话列表 - 根据设计文档实现"""
+    """获取会话列表 - 根据设计文档实现，只返回当前用户的会话"""
     try:
-        logger.info(f"API请求: 获取会话列表，页码: {page}, 大小: {size}")
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
+        logger.info(f"API请求: 获取会话列表，页码: {page}, 大小: {size}, 用户ID: {user_id}")
         
         service = QAService(db)
         result = service.get_qa_sessions(
             page=page,
             size=size,
-            knowledge_base_id=knowledge_base_id
+            knowledge_base_id=knowledge_base_id,
+            user_id=user_id  # 添加用户ID过滤
         )
         
         logger.info(f"API响应: 返回 {len(result.sessions)} 个会话")
@@ -232,20 +274,23 @@ def get_qa_sessions(
 
 @router.get("/sessions/{session_id}", response_model=QASessionResponse)
 async def get_qa_session_detail(
+    request: Request,
     session_id: str,
     db: Session = Depends(get_db)
 ):
-    """获取会话详情 - 根据设计文档实现，从OpenSearch加载完整内容"""
+    """获取会话详情 - 根据设计文档实现，从OpenSearch加载完整内容，只返回当前用户的会话"""
     try:
-        logger.info(f"API请求: 获取会话详情 {session_id}")
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
+        logger.info(f"API请求: 获取会话详情 {session_id}, 用户ID: {user_id}")
         
         service = QAService(db)
-        result = await service.get_qa_session_detail(session_id)
+        result = await service.get_qa_session_detail(session_id, user_id=user_id)
         
         if not result:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="会话不存在"
+                detail="会话不存在或无权访问"
             )
         
         # 兼容 dict / 模型
@@ -863,15 +908,34 @@ def get_qa_detail(
 
 @router.get("/history", response_model=List[QAHistoryResponse])
 async def get_qa_history(
+    request: Request,
     skip: int = 0,
     limit: int = settings.QA_MAX_PAGE_SIZE,
     session_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """获取问答历史"""
+    """获取问答历史 - 只返回当前用户的历史记录"""
+    # 获取当前用户ID
+    user_id = get_current_user_id(request)
     service = QAService(db)
-    return await service.get_qa_history(
-        skip=skip, 
-        limit=limit, 
-        session_id=session_id
+    # 通过 session_id 间接过滤：先检查 session 是否属于当前用户
+    if session_id:
+        from app.models.qa_session import QASession
+        session = db.query(QASession).filter(
+            QASession.session_id == session_id,
+            QASession.user_id == user_id
+        ).first()
+        if not session:
+            return []  # 如果会话不属于当前用户，返回空列表
+    
+    # 直接调用 history_service，传入用户ID字符串
+    from app.services.qa_history_service import QAHistoryService
+    history_service = QAHistoryService(db)
+    page = (skip // limit) + 1 if limit > 0 else 1
+    result = await history_service.get_qa_history(
+        user_id=str(user_id),  # history_service 期望字符串类型
+        page=page,
+        size=limit
     )
+    # 转换返回格式
+    return result.get("items", [])

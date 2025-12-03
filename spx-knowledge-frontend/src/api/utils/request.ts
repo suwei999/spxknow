@@ -1,9 +1,10 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/modules/app'
+import { API_BASE_URL } from '@/config/api'
 
 const service = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api',
+  baseURL: API_BASE_URL,
   timeout: 120000 // 2 分钟，避免 rerank 等长耗时请求超时
 })
 
@@ -63,7 +64,9 @@ service.interceptors.response.use(
     appStore.setLoading(false)
     
     // 处理401错误：尝试刷新Token
-    if (error.response?.status === 401) {
+    // 跳过刷新请求本身（/auth/refresh），避免循环刷新
+    const isRefreshRequest = error.config?.url?.includes('/auth/refresh')
+    if (error.response?.status === 401 && !isRefreshRequest) {
       const refreshTokenValue = localStorage.getItem('refresh_token')
       if (refreshTokenValue && !error.config._retry) {
         error.config._retry = true
@@ -84,6 +87,7 @@ service.interceptors.response.use(
           }
         } catch (refreshError) {
           // 刷新失败，清除认证信息并跳转登录
+          // 静默处理，避免产生过多错误提示
           const { useUserStore } = await import('@/stores/modules/user')
           const userStore = useUserStore()
           userStore.clearAuth()

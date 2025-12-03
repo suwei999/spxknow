@@ -1,0 +1,5 @@
+Collecting python-clamd
+  Downloading python_clamd-0.0.2.dev0-py3-none-any.whl.metadata (1.6 kB)
+Downloading python_clamd-0.0.2.dev0-py3-none-any.whl (4.8 kB)
+Installing collected packages: python-clamd
+Successfully installed python-clamd-0.0.2.dev0

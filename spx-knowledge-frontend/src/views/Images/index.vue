@@ -134,9 +134,10 @@
         :total="total"
         :page-sizes="[12, 24, 48, 96]"
         layout="total, sizes, prev, pager, next, jumper"
-        @current-change="loadData"
-        @size-change="loadData"
+        @current-change="handlePageChange"
+        @size-change="handleSizeChange"
         class="pagination"
+        :disabled="loading"
       />
     </el-card>
 
@@ -207,7 +208,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ZoomIn, Document, DocumentCopy, DocumentDelete, Clock, Refresh } from '@element-plus/icons-vue'
 import { getImageList, getImageDetail, retryImageOcr } from '@/api/modules/images'
@@ -222,6 +223,7 @@ const total = ref(0)
 const imageDialogVisible = ref(false)
 const selectedImage = ref<any>(null)
 const retryingId = ref<number | null>(null)
+const isChangingSize = ref(false)
 
 const filterForm = ref({
   document_id: undefined as number | undefined
@@ -245,16 +247,44 @@ const loadData = async () => {
     
     const res = await getImageList(params)
     
-    // 处理返回数据
-    const data = res?.data || res
+    // 处理返回数据 - 后端现在返回 { code: 0, message: "ok", data: { list: [], total: 0 } }
     let imageList: any[] = []
-    if (Array.isArray(data)) {
-      imageList = data
-      // 如果后端返回总数，使用总数；否则使用当前数组长度
-      total.value = (res as any)?.total || data.length
-    } else {
-      imageList = data?.items || data?.list || []
-      total.value = data?.total || imageList.length
+    let newTotal = 0
+    
+    if (res && typeof res === 'object') {
+      // 检查是否是新的分页格式
+      if (res.code === 0 && res.data && typeof res.data === 'object') {
+        imageList = res.data.list || res.data.items || []
+        newTotal = res.data.total || 0
+      } 
+      // 兼容旧格式：直接是数组
+      else if (Array.isArray(res)) {
+        imageList = res
+        newTotal = res.length
+      }
+      // 兼容旧格式：{ data: [...] }
+      else if (res.data) {
+        if (Array.isArray(res.data)) {
+          imageList = res.data
+          newTotal = (res as any).total || res.data.length
+        } else if (res.data.list || res.data.items) {
+          imageList = res.data.list || res.data.items || []
+          newTotal = res.data.total || imageList.length
+        }
+      }
+    }
+    
+    // 更新总数（确保是数字类型）
+    total.value = Number(newTotal) || 0
+    
+    // 数据加载后，检查当前页是否超出范围
+    // 只有在非改变每页数量的情况下才调整页码，避免与 handleSizeChange 冲突
+    if (!isChangingSize.value) {
+      const totalPages = Math.ceil(total.value / size.value)
+      if (totalPages > 0 && page.value > totalPages) {
+        // 如果超出范围，调整到最后一页
+        page.value = totalPages
+      }
     }
     
     // 确保所有图片URL都包含token（用于认证）
@@ -284,6 +314,43 @@ const loadData = async () => {
     total.value = 0
   } finally {
     loading.value = false
+  }
+}
+
+const handlePageChange = (newPage: number) => {
+  // 如果正在改变每页数量，忽略页码变化事件（避免冲突）
+  if (isChangingSize.value) {
+    return
+  }
+  // 确保页码变化时重新加载数据
+  if (page.value !== newPage) {
+    page.value = newPage
+  }
+  loadData()
+}
+
+const handleSizeChange = async (newSize: number) => {
+  // 标记正在改变每页数量
+  isChangingSize.value = true
+  
+  try {
+    // 更新每页数量
+    size.value = newSize
+    // 改变每页数量时，重置到第1页
+    page.value = 1
+    
+    // 等待 Vue 完成响应式更新
+    await nextTick()
+    
+    // 再等待一个 tick，确保分页组件也更新完成
+    await nextTick()
+    
+    // 重新加载数据
+    await loadData()
+  } finally {
+    // 恢复标记（延迟一点，确保所有事件处理完成）
+    await nextTick()
+    isChangingSize.value = false
   }
 }
 
@@ -627,6 +694,85 @@ const handleRetry = async (image: any) => {
   .pagination {
     margin-top: 20px;
     text-align: right;
+  }
+  
+  /* 优化分页组件样式 */
+  :deep(.el-pagination) {
+    color: rgba(255, 255, 255, 0.85);
+    
+    .el-pagination__total,
+    .el-pagination__jump {
+      color: rgba(255, 255, 255, 0.85);
+    }
+    
+    .btn-prev,
+    .btn-next {
+      color: rgba(255, 255, 255, 0.85);
+      
+      &:hover {
+        color: #409eff;
+      }
+      
+      &.disabled {
+        color: rgba(255, 255, 255, 0.3);
+      }
+    }
+    
+    .el-pager li {
+      color: rgba(255, 255, 255, 0.85);
+      background-color: transparent;
+      
+      &:hover {
+        color: #409eff;
+      }
+      
+      &.is-active {
+        color: #409eff;
+        background-color: rgba(64, 158, 255, 0.2);
+      }
+    }
+    
+    .el-pagination__editor {
+      .el-input {
+        .el-input__inner {
+          background-color: rgba(255, 255, 255, 0.08) !important;
+          border-color: rgba(255, 255, 255, 0.2) !important;
+          color: rgba(255, 255, 255, 0.95) !important;
+          font-size: 14px;
+          width: 50px;
+          height: 32px;
+          text-align: center;
+          
+          &::placeholder {
+            color: rgba(255, 255, 255, 0.5) !important;
+          }
+          
+          &:focus {
+            border-color: #409eff !important;
+            background-color: rgba(255, 255, 255, 0.12) !important;
+          }
+        }
+        
+        .el-input__wrapper {
+          background-color: rgba(255, 255, 255, 0.08) !important;
+          border-color: rgba(255, 255, 255, 0.2) !important;
+          box-shadow: none !important;
+          
+          &.is-focus {
+            border-color: #409eff !important;
+            box-shadow: 0 0 0 1px #409eff inset !important;
+          }
+        }
+      }
+    }
+    
+    .el-select {
+      .el-input__inner {
+        background-color: rgba(255, 255, 255, 0.08) !important;
+        border-color: rgba(255, 255, 255, 0.2) !important;
+        color: rgba(255, 255, 255, 0.95) !important;
+      }
+    }
   }
 
     .image-detail {

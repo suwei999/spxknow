@@ -1,6 +1,7 @@
 ﻿import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import autoprefixer from 'autoprefixer'
 
 // 从环境变量获取后端地址，默认 192.168.131.158:8081
 const getBackendTarget = () => {
@@ -15,6 +16,13 @@ export default defineConfig({
     alias: {
       '@': resolve(__dirname, 'src')
     }
+  },
+  css: {
+    postcss: {
+      plugins: [
+        autoprefixer(),
+      ],
+    },
   },
   server: {
     host: '0.0.0.0',

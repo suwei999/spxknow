@@ -1,4 +1,4 @@
-"""
+﻿"""
 Diagnosis Record Model
 """
 
@@ -57,4 +57,3 @@ class DiagnosisRecord(BaseModel):
         cascade="all, delete-orphan",
         order_by="DiagnosisMemory.created_at",
     )
-

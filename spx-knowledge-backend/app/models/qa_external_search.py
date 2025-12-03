@@ -1,4 +1,4 @@
-"""QA External Search Record Model"""
+﻿"""QA External Search Record Model"""
 
 from sqlalchemy import Column, String, Text, Float, Boolean, JSON
 
@@ -22,4 +22,3 @@ class QAExternalSearchRecord(BaseModel):
 
     def __repr__(self) -> str:
         return f"<QAExternalSearchRecord(id={self.id}, session_id={self.session_id})>"
-

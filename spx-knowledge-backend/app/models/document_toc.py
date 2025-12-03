@@ -1,4 +1,4 @@
-"""
+﻿"""
 Document TOC Model
 文档目录模型
 """
@@ -23,4 +23,3 @@ class DocumentTOC(BaseModel):
     
     def __repr__(self):
         return f"<DocumentTOC(id={self.id}, document_id={self.document_id}, level={self.level}, title='{self.title[:30]}...')>"
-

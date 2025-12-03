@@ -1,4 +1,4 @@
-"""Diagnosis iteration model."""
+﻿"""Diagnosis iteration model."""
 
 from sqlalchemy import Column, Integer, String, Text, JSON, ForeignKey
 from sqlalchemy.orm import relationship
@@ -27,4 +27,3 @@ class DiagnosisIteration(BaseModel):
 
     def __repr__(self) -> str:
         return f"<DiagnosisIteration id={self.id} diagnosis_id={self.diagnosis_id} iteration={self.iteration_no}>"
-

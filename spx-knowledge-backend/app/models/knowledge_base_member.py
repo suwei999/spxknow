@@ -1,4 +1,4 @@
-"""
+﻿"""
 Knowledge Base Member Model
 """
 
@@ -57,5 +57,3 @@ class KnowledgeBaseMember(Base):
     knowledge_base = relationship("KnowledgeBase", back_populates="members")
     user = relationship("User", foreign_keys=[user_id])
     inviter = relationship("User", foreign_keys=[invited_by])
-
-

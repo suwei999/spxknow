@@ -1,4 +1,4 @@
-"""
+﻿"""
 Document Upload Batch Model
 """
 
@@ -22,4 +22,3 @@ class DocumentUploadBatch(BaseModel):
     # 关系
     documents = relationship("Document", back_populates="batch")
     knowledge_base = relationship("KnowledgeBase")
-

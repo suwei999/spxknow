@@ -1,4 +1,4 @@
-"""
+﻿"""
 User Statistics Model
 用户统计模型
 """
@@ -45,4 +45,3 @@ class DocumentTypeStatistics(BaseModel):
     
     def __repr__(self):
         return f"<DocumentTypeStatistics(id={self.id}, user_id={self.user_id}, file_type={self.file_type}, count={self.count})>"
-

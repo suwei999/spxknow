@@ -1,4 +1,4 @@
-"""
+﻿"""
 Cluster Configuration Model
 """
 
@@ -53,4 +53,3 @@ class ClusterConfig(BaseModel):
         back_populates="cluster",
         cascade="all, delete-orphan",
     )
-

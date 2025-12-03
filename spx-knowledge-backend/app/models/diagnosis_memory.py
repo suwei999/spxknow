@@ -1,4 +1,4 @@
-"""Diagnosis memory model."""
+﻿"""Diagnosis memory model."""
 
 from sqlalchemy import Column, Integer, String, Text, JSON, ForeignKey
 from sqlalchemy.orm import relationship
@@ -24,4 +24,3 @@ class DiagnosisMemory(BaseModel):
 
     def __repr__(self) -> str:
         return f"<DiagnosisMemory id={self.id} diagnosis_id={self.diagnosis_id} type={self.memory_type}>"
-

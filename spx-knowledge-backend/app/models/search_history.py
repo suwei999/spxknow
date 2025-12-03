@@ -1,4 +1,4 @@
-"""
+﻿"""
 Search History Model
 搜索历史模型
 """
@@ -32,4 +32,3 @@ class SearchHotword(BaseModel):
     
     def __repr__(self):
         return f"<SearchHotword(id={self.id}, keyword='{self.keyword}', count={self.search_count})>"
-

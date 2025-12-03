@@ -1,4 +1,4 @@
-"""
+﻿"""
 QA Session Model
 根据知识问答系统设计文档实现问答会话模型
 """
@@ -34,4 +34,3 @@ class QASession(BaseModel):
     
     def __repr__(self):
         return f"<QASession(session_id='{self.session_id}', name='{self.session_name}')>"
-

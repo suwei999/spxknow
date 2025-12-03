@@ -1,4 +1,4 @@
-"""
+﻿"""
 Resource sync state model.
 """
 
@@ -20,4 +20,3 @@ class ResourceSyncState(BaseModel):
     # 注意：created_at, updated_at, is_deleted 字段由 BaseModel 提供
     # 但为了明确，这里显式覆盖 updated_at 以使用数据库的 ON UPDATE 功能
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="更新时间")
-

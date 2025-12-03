@@ -1,4 +1,4 @@
-"""
+﻿"""
 User Model
 用户认证系统数据模型
 """
@@ -69,4 +69,3 @@ class EmailVerification(BaseModel):
     
     def __repr__(self):
         return f"<EmailVerification(id={self.id}, user_id={self.user_id}, email='{self.email}')>"
-

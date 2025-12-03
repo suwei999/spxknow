@@ -1,4 +1,4 @@
-"""
+﻿"""
 Resource change event model.
 """
 
@@ -20,4 +20,3 @@ class ResourceEvent(BaseModel):
     event_type = Column(String(32), nullable=False, comment="事件类型")
     diff = Column(JSON, comment="变更摘要")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="事件时间")
-

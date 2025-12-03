@@ -1,4 +1,4 @@
-"""
+﻿"""
 Export Task Model
 导出任务模型
 """
@@ -23,4 +23,3 @@ class ExportTask(BaseModel):
     
     def __repr__(self):
         return f"<ExportTask(id={self.id}, user_id={self.user_id}, export_type={self.export_type}, status={self.status})>"
-

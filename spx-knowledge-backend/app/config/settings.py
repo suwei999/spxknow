@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     OCR_PREPROCESS_DENOISE: bool = False
     OLLAMA_OCR_MODEL: str = "qwen2-vl:7b"
     OLLAMA_OCR_BASE_URL: str | None = None
-    OLLAMA_OCR_TIMEOUT: int = 120
+    OLLAMA_OCR_TIMEOUT: int = 300  # 增加到 300 秒（5分钟），适配大图片 OCR 处理
     OLLAMA_OCR_MAX_RETRIES: int = 2
     
     # QA系统配置

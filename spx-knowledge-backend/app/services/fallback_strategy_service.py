@@ -1,4 +1,4 @@
-"""
+﻿"""
 Fallback Strategy Service
 根据知识问答系统设计文档实现降级处理策略
 """

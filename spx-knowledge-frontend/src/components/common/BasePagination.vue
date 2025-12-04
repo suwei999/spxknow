@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-pagination
     v-model:current-page="currentPage"
     v-model:page-size="pageSize"
@@ -61,4 +61,3 @@ const handleCurrentChange = (page: number) => {
   margin-top: 20px;
 }
 </style>
-

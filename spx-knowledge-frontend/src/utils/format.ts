@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 格式化文件大小
  */
 export const formatFileSize = (bytes: number): string => {
@@ -73,4 +73,3 @@ export const truncateText = (text: string, length: number, suffix: string = '...
   if (text.length <= length) return text
   return text.substring(0, length) + suffix
 }
-

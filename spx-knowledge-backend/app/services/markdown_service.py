@@ -1,4 +1,4 @@
-"""
+﻿"""
 Markdown Document Service
 根据设计文档实现 Markdown 文档解析服务
 """
@@ -556,4 +556,3 @@ class MarkdownService:
             })
         
         return segments
-

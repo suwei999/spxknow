@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 错误处理工具
  */
 
@@ -222,4 +222,3 @@ export const logError = (error: any, context: string) => {
     timestamp: new Date().toISOString()
   })
 }
-

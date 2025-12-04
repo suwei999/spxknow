@@ -1,4 +1,4 @@
-"""
+﻿"""
 Document Status API Routes
 根据文档处理流程设计实现文档状态查询API
 """
@@ -268,4 +268,3 @@ async def get_processing_history(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"获取文档处理历史失败: {str(e)}"
         )
-

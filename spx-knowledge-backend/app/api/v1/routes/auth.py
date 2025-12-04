@@ -1,4 +1,4 @@
-"""
+﻿"""
 Auth API Routes
 用户认证路由
 """
@@ -270,4 +270,3 @@ def confirm_password_reset(
     except Exception as e:
         logger.error(f"密码重置错误: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="密码重置失败")
-

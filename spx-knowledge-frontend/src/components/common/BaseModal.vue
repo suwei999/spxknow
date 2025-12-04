@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-dialog
     v-model="visible"
     :title="title"
@@ -55,4 +55,3 @@ const handleConfirm = () => {
 <style lang="scss" scoped>
 // Base Modal styles
 </style>
-

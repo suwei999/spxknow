@@ -1,4 +1,4 @@
-"""
+﻿"""
 检查数据库中是否有 user_id 字段
 """
 
@@ -161,4 +161,3 @@ def check_user_id_fields():
 
 if __name__ == "__main__":
     check_user_id_fields()
-

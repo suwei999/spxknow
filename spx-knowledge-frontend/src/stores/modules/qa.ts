@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { getQASessions, createQASession, deleteQASession, getSearchTypes, getAvailableModels } from '@/api/modules/qa'
 
@@ -167,4 +167,3 @@ export const useQAStore = defineStore('qa', () => {
     reset
   }
 })
-

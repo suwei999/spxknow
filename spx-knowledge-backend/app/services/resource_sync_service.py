@@ -1,4 +1,4 @@
-"""
+﻿"""
 Kubernetes resource synchronization service.
 """
 
@@ -1044,4 +1044,3 @@ async def list_snapshots(
             }
         )
     return data, total
-

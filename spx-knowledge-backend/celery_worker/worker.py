@@ -1,4 +1,4 @@
-"""
+﻿"""
 Celery worker launcher for Windows/Linux.
 
 Usage (PowerShell):
@@ -118,9 +118,9 @@ def main() -> None:
     else:
         # 根据 OBSERVABILITY_ENABLE_SCHEDULE 决定默认队列
         if settings.OBSERVABILITY_ENABLE_SCHEDULE:
-            queues = "document,vector,index,image,version,cleanup,notification,observability,celery"
+            queues = "document,vector,index,image,version,cleanup,notification,observability,security_scan,celery"
         else:
-            queues = "document,vector,index,image,version,cleanup,notification,celery"
+            queues = "document,vector,index,image,version,cleanup,notification,security_scan,celery"
             logging.getLogger("celery").info("OBSERVABILITY_ENABLE_SCHEDULE=False，默认排除 observability 队列")
     
     pool = "solo" if os.name == "nt" else "prefork"
@@ -193,5 +193,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

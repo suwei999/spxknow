@@ -1,4 +1,5 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
+import { WS_BASE_URL } from '@/config/api'
 
 // 获取知识库列表（用于问答）
 export const getKnowledgeBases = () => {
@@ -168,8 +169,7 @@ export const deleteQAHistory = (questionId: string) => {
 
 // 流式问答（WebSocket地址）
 export const getStreamURL = (sessionId: string) => {
-  const wsBaseURL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000'
-  return `${wsBaseURL}/api/qa/sessions/${sessionId}/stream`
+  return `${WS_BASE_URL}/api/qa/sessions/${sessionId}/stream`
 }
 
 // 外部联网搜索
@@ -188,4 +188,3 @@ export const externalSearch = (data: {
     data
   })
 }
-

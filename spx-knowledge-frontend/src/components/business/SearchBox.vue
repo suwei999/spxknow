@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="search-box">
     <el-input
       v-model="query"
@@ -88,4 +88,3 @@ const handleSuggestionClick = (suggestion: string) => {
   }
 }
 </style>
-

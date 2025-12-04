@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 export const useAppStore = defineStore('app', () => {
@@ -29,4 +29,3 @@ export const useAppStore = defineStore('app', () => {
     setLoading
   }
 })
-

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Celery tasks for observability workflows.
 """
 
@@ -221,4 +221,3 @@ def continue_diagnosis(record_id: int) -> None:
         asyncio.run(_continue_diagnosis_async(db, record_id))
     finally:
         db.close()
-

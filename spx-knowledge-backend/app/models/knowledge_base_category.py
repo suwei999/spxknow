@@ -1,4 +1,4 @@
-"""
+﻿"""
 Knowledge Base Category Model
 """
 
@@ -23,7 +23,7 @@ class KnowledgeBaseCategory(BaseModel):
     
     # 关系
     knowledge_bases = relationship("KnowledgeBase", back_populates="category")
-    # 自关联：显式引用远端主键列，避免将内置函数 id 误用为列
+    # 自关联：显式引用远端主键列，避免将内置函数id误用为列
     parent = relationship(
         "KnowledgeBaseCategory",
         remote_side="KnowledgeBaseCategory.id",

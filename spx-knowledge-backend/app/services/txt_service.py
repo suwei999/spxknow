@@ -1,4 +1,4 @@
-import re
+﻿import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -179,4 +179,3 @@ class TxtService:
         if stripped.endswith(":") and len(stripped) <= 60:
             return "heading"
         return "paragraph"
-

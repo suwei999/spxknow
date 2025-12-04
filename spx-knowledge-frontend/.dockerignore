@@ -1,0 +1,47 @@
+# 依赖
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# 构建产物
+dist
+dist-ssr
+build
+
+# 测试
+coverage
+.nyc_output
+
+# 开发工具
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# 环境变量
+.env
+.env.local
+.env.production
+.env.development
+
+# Git
+.git
+.gitignore
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# 其他
+.DS_Store
+*.log
+.pytest_cache
+temp_original.vue
+audit-result.json
+SECURITY_AUDIT.md
+check_braces.py
+brace_check.py
+

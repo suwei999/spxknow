@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 本地存储工具
  */
 
@@ -87,4 +87,3 @@ export const sessionStorage = {
     }
   }
 }
-

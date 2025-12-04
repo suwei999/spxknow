@@ -1,4 +1,4 @@
--- Migration: 导出任务表
+﻿-- Migration: 导出任务表
 -- 文件：migrations/2025012304_export_tasks_table.sql
 -- 创建日期：2025-01-23
 
@@ -24,4 +24,3 @@ CREATE TABLE IF NOT EXISTS `export_tasks` (
     INDEX `idx_is_deleted` (`is_deleted`),
     FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='导出任务表';
-

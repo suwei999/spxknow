@@ -1,4 +1,4 @@
-"""
+﻿"""
 清理 Celery Beat 调度数据库文件。
 
 如果 Beat 任务被重复触发，可能是调度数据库文件损坏或包含旧的调度记录。
@@ -62,4 +62,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"清理 Beat 调度文件时出错: {e}", exc_info=True)
         sys.exit(1)
-

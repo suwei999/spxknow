@@ -1,4 +1,4 @@
-"""
+﻿"""
 Performance Monitoring Service
 根据文档修改功能设计实现性能监控和状态跟踪
 """

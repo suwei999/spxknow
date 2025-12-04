@@ -1,4 +1,4 @@
-import uvicorn
+﻿import uvicorn
 import os
 import asyncio
 
@@ -29,5 +29,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # 显式捕获，确保进程快速退出
         pass
-
-

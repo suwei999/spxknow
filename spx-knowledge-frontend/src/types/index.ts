@@ -1,4 +1,4 @@
-// 通用类型
+﻿// 通用类型
 export interface ApiResponse<T = any> {
   code: number
   message: string
@@ -24,7 +24,12 @@ export interface KnowledgeBase {
   description: string
   category_id: number
   category_name: string
-  status: string
+  is_active?: boolean
+  // 共享相关字段
+  visibility?: 'private' | 'shared' | 'public' | string
+  role?: 'owner' | 'admin' | 'editor' | 'viewer' | string
+  // 统计字段
+  document_count?: number
   created_at: string
   updated_at: string
 }
@@ -261,4 +266,3 @@ export interface DiagnosisMemoryList {
   list: DiagnosisMemory[]
   total: number
 }
-

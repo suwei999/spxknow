@@ -1,4 +1,4 @@
--- Migration: 搜索历史表
+﻿-- Migration: 搜索历史表
 -- 文件：migrations/2025012301_search_history_table.sql
 -- 创建日期：2025-01-23
 
@@ -38,4 +38,3 @@ CREATE TABLE IF NOT EXISTS `search_hotwords` (
     INDEX `idx_last_searched` (`last_searched_at` DESC),
     INDEX `idx_is_deleted` (`is_deleted`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='搜索热词统计表';
-

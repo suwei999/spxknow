@@ -1,4 +1,4 @@
--- Migration: 用户统计表
+﻿-- Migration: 用户统计表
 -- 文件：migrations/2025012303_user_statistics_tables.sql
 -- 创建日期：2025-01-23
 
@@ -51,4 +51,3 @@ CREATE TABLE IF NOT EXISTS `document_type_statistics` (
     INDEX `idx_is_deleted` (`is_deleted`),
     FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档类型统计表';
-

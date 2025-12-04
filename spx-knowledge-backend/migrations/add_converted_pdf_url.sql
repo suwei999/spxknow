@@ -1,4 +1,4 @@
--- 迁移脚本：为documents表添加converted_pdf_url字段
+﻿-- 迁移脚本：为documents表添加converted_pdf_url字段
 -- 用于存储DOCX等Office文档转换后的PDF文件路径（MinIO对象键）
 
 -- 如果字段不存在，则添加
@@ -19,4 +19,3 @@ SET @preparedStatement = (SELECT IF(
 PREPARE alterIfNotExists FROM @preparedStatement;
 EXECUTE alterIfNotExists;
 DEALLOCATE PREPARE alterIfNotExists;
-

@@ -1,4 +1,4 @@
-"""Document Processing Tasks (DOCX / PDF / TXT, no Unstructured)"""
+﻿"""Document Processing Tasks (DOCX / PDF / TXT, no Unstructured)"""
 
 import os
 import tempfile
@@ -6,6 +6,7 @@ import time
 import hashlib
 import datetime
 import shutil
+import io
 from typing import Any, Dict, List, Optional
 from celery import current_task
 from app.tasks.celery_app import celery_app
@@ -219,6 +220,63 @@ def process_document_task(self, document_id: int):
                     "presentation_size", "slides"):
             if parse_metadata.get(key) is not None:
                 doc_meta[key] = parse_metadata[key]
+        
+        # 生成JSON/XML预览数据（如果文件类型是JSON或XML）
+        structured_type = doc_meta.get("structured_type")
+        if structured_type in ("json", "xml") and not doc_meta.get("preview_samples"):
+            try:
+                from app.services.structured_preview_service import StructuredPreviewService
+                preview_service = StructuredPreviewService(db)
+                
+                # 读取文件内容（限制1MB）
+                max_preview_size = 1024 * 1024  # 1MB
+                file_size = os.path.getsize(temp_file_path) if os.path.exists(temp_file_path) else 0
+                
+                if file_size > 0 and file_size <= max_preview_size:
+                    with open(temp_file_path, 'rb') as f:
+                        file_content = f.read()
+                    
+                    if structured_type == "json":
+                        try:
+                            import json
+                            # 解析JSON
+                            json_data = json.loads(file_content.decode('utf-8', errors='ignore'))
+                            doc_meta["preview_samples"] = json_data
+                            logger.info(f"[任务ID: {task_id}] JSON预览数据生成成功")
+                        except Exception as e:
+                            logger.warning(f"[任务ID: {task_id}] JSON预览数据生成失败: {e}")
+                    elif structured_type == "xml":
+                        try:
+                            import xml.etree.ElementTree as ET
+                            # 解析XML
+                            xml_tree = ET.parse(io.BytesIO(file_content))
+                            xml_root = xml_tree.getroot()
+                            # 转换为字典（简化处理）
+                            def xml_to_dict(element):
+                                result = {}
+                                if element.text and element.text.strip():
+                                    result['_text'] = element.text.strip()
+                                if element.attrib:
+                                    result['_attributes'] = element.attrib
+                                for child in element:
+                                    child_dict = xml_to_dict(child)
+                                    if child.tag in result:
+                                        if not isinstance(result[child.tag], list):
+                                            result[child.tag] = [result[child.tag]]
+                                        result[child.tag].append(child_dict)
+                                    else:
+                                        result[child.tag] = child_dict
+                                return result
+                            xml_dict = xml_to_dict(xml_root)
+                            doc_meta["preview_samples"] = xml_dict
+                            logger.info(f"[任务ID: {task_id}] XML预览数据生成成功")
+                        except Exception as e:
+                            logger.warning(f"[任务ID: {task_id}] XML预览数据生成失败: {e}")
+                else:
+                    logger.info(f"[任务ID: {task_id}] 文件过大（{file_size} bytes > {max_preview_size} bytes），跳过预览数据生成")
+            except Exception as e:
+                logger.warning(f"[任务ID: {task_id}] 生成预览数据时出错（不影响主流程）: {e}", exc_info=True)
+        
         document.meta = doc_meta
         db.commit()
         
@@ -1897,6 +1955,11 @@ def process_document_task(self, document_id: int):
             chunk_start = time.time()
             
             try:
+                # ✅ 跳过图片分块：图片分块不进行文本向量化，图片向量化已在图片处理阶段完成
+                if chunk.chunk_type == 'image':
+                    logger.debug(f"[任务ID: {task_id}] 分块 {chunk.id} 是图片类型，跳过文本向量化（图片向量化已在图片处理阶段完成）")
+                    continue
+                
                 # 获取对应文本，StopIteration 时置空
                 try:
                     chunk_text = next(text_iter)
@@ -2083,6 +2146,27 @@ def process_document_task(self, document_id: int):
         vectorize_total_time = time.time() - vectorize_start
         avg_time = (vectorize_total_time / len(db_chunks)) if len(db_chunks) else 0.0
         logger.info(f"[任务ID: {task_id}] 向量化完成: 成功={success_count}, 失败={error_count}, 总耗时={vectorize_total_time:.2f}秒, 平均耗时={avg_time:.2f}秒/分块")
+        
+        # 自动标签/摘要生成（向量化后、索引前，失败不阻塞）
+        # 检查全局开关和知识库级别配置
+        global_enabled = getattr(settings, 'ENABLE_AUTO_TAGGING', False)
+        kb_enabled = getattr(document.knowledge_base, 'enable_auto_tagging', True) if document.knowledge_base else True
+        
+        if global_enabled and kb_enabled:
+            try:
+                logger.info(f"[任务ID: {task_id}] 开始生成自动标签/摘要（知识库ID={document.knowledge_base_id}, 知识库配置={kb_enabled}）")
+                from app.services.auto_tagging_service import AutoTaggingService
+                import asyncio
+                tagging_service = AutoTaggingService(db)
+                result = asyncio.run(tagging_service.generate_tags_and_summary(document_id))
+                if result:
+                    logger.info(f"[任务ID: {task_id}] 自动标签/摘要生成成功: keywords={result.get('keywords', [])}, summary={result.get('summary', '')[:50]}...")
+                else:
+                    logger.warning(f"[任务ID: {task_id}] 自动标签/摘要生成失败（不影响主流程）")
+            except Exception as e:
+                logger.warning(f"[任务ID: {task_id}] 自动标签/摘要生成异常（不影响主流程）: {e}", exc_info=True)
+        else:
+            logger.debug(f"[任务ID: {task_id}] 自动标签/摘要未启用（全局={global_enabled}, 知识库={kb_enabled}）")
         
         current_task.update_state(
             state="PROGRESS",
@@ -2321,6 +2405,11 @@ def reprocess_document_task(self, document_id: int):
         error_count = 0
         
         for i, chunk in enumerate(db_chunks):
+            # ✅ 跳过图片分块：图片分块不进行文本向量化，图片向量化已在图片处理阶段完成
+            if getattr(chunk, 'chunk_type', '').lower() == 'image':
+                logger.debug(f"分块 {chunk.id} 是图片类型，跳过重新向量化（图片向量化已在图片处理阶段完成）")
+                continue
+            
             # 获取文本：优先从 MinIO 流式读取，否则从 DB
             if store_text:
                 chunk_text = chunk.content or ""

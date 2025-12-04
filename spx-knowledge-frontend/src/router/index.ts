@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+﻿import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 
 // 路由配置
@@ -194,6 +194,15 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'tasks/failures',
+        name: 'TaskFailures',
+        component: () => import('@/views/Tasks/failures.vue'),
+        meta: {
+          title: '失败任务中心',
+          keepAlive: true
+        }
+      },
+      {
         path: 'statistics',
         name: 'Statistics',
         component: () => import('@/views/Statistics/index.vue'),
@@ -291,4 +300,3 @@ router.beforeEach(async (to, from, next) => {
 })
 
 export default router
-

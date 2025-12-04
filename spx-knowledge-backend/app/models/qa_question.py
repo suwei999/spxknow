@@ -1,4 +1,4 @@
-"""
+﻿"""
 QA Question Model
 根据知识问答系统设计文档实现问答记录模型
 """
@@ -69,4 +69,3 @@ class QAStatistics(BaseModel):
     
     def __repr__(self):
         return f"<QAStatistics(knowledge_base_id={self.knowledge_base_id}, date='{self.date}')>"
-

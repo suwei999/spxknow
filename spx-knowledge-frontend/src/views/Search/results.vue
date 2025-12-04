@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="search-results-page">
     <el-card>
       <template #header>
@@ -174,4 +174,3 @@ onMounted(() => {
   }
 }
 </style>
-

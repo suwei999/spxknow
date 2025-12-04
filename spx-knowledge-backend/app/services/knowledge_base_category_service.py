@@ -1,4 +1,4 @@
-"""
+﻿"""
 Knowledge Base Category Service
 根据文档处理流程设计实现知识库分类管理服务
 """
@@ -335,4 +335,3 @@ class KnowledgeBaseCategoryService:
                 code=ErrorCode.VALIDATION_ERROR,
                 message=f"删除分类失败: {str(e)}"
             )
-

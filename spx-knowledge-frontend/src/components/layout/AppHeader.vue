@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <header class="app-header">
     <div class="header-left">
       <el-icon :size="20" @click="handleToggleSidebar">
@@ -137,4 +137,3 @@ const handleCommand = async (command: string) => {
   }
 }
 </style>
-

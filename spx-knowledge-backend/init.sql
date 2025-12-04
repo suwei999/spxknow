@@ -1,4 +1,4 @@
--- SPX Knowledge Base MySQL 初始化SQL
+﻿-- SPX Knowledge Base MySQL 初始化SQL
 -- 创建数据库
 
 CREATE DATABASE IF NOT EXISTS `spx_knowledge` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -35,7 +35,10 @@ CREATE TABLE IF NOT EXISTS `knowledge_bases` (
     `name` VARCHAR(255) NOT NULL COMMENT '知识库名称',
     `description` TEXT COMMENT '知识库描述',
     `category_id` INT NULL COMMENT '分类ID',
+    `user_id` INT NULL COMMENT '用户ID（数据隔离/owner）',
+    `visibility` VARCHAR(20) NOT NULL DEFAULT 'private' COMMENT '可见性: private/shared/public(预留)',
     `is_active` BOOLEAN DEFAULT TRUE COMMENT '是否激活',
+    `enable_auto_tagging` BOOLEAN DEFAULT TRUE COMMENT '是否启用自动标签/摘要（知识库级别配置）',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
@@ -45,6 +48,79 @@ CREATE TABLE IF NOT EXISTS `knowledge_bases` (
     INDEX `idx_kb_is_active` (`is_active`),
     CONSTRAINT `fk_kb_category` FOREIGN KEY (`category_id`) REFERENCES `knowledge_base_categories` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库表';
+
+-- ============================================
+-- 2.1. 知识库成员表（知识库共享功能）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `knowledge_base_members` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `knowledge_base_id` INT NOT NULL COMMENT '知识库ID',
+    `user_id` INT NOT NULL COMMENT '用户ID',
+    `role` VARCHAR(20) NOT NULL DEFAULT 'viewer' COMMENT '角色: owner/viewer/editor/admin',
+    `invited_by` INT NULL COMMENT '邀请人ID',
+    `invited_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '邀请时间',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY `uk_kb_member` (`knowledge_base_id`, `user_id`),
+    CONSTRAINT `fk_kb_member_kb` FOREIGN KEY (`knowledge_base_id`) REFERENCES `knowledge_bases` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_kb_member_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库成员表';
+
+-- ============================================
+-- 3.1. 文档上传批次表
+-- ============================================
+CREATE TABLE IF NOT EXISTS `document_upload_batches` (
+    `id` INT NOT NULL AUTO_INCREMENT COMMENT '批次ID',
+    `user_id` INT NULL COMMENT '用户ID（数据隔离）',
+    `knowledge_base_id` INT NOT NULL COMMENT '知识库ID',
+    `total_files` INT NOT NULL DEFAULT 0 COMMENT '总文件数',
+    `processed_files` INT NOT NULL DEFAULT 0 COMMENT '已处理文件数',
+    `success_files` INT NOT NULL DEFAULT 0 COMMENT '成功文件数',
+    `failed_files` INT NOT NULL DEFAULT 0 COMMENT '失败文件数',
+    `status` VARCHAR(50) NOT NULL DEFAULT 'pending' COMMENT '批次状态: pending/processing/completed/failed/completed_with_errors',
+    `error_summary` TEXT COMMENT '错误摘要（JSON格式）',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
+    PRIMARY KEY (`id`),
+    INDEX `idx_batch_user_id` (`user_id`),
+    INDEX `idx_batch_kb_id` (`knowledge_base_id`),
+    INDEX `idx_batch_status` (`status`),
+    CONSTRAINT `fk_batch_kb` FOREIGN KEY (`knowledge_base_id`) REFERENCES `knowledge_bases` (`id`) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档上传批次表';
+
+-- ============================================
+-- 3.2. 失败任务视图
+-- ============================================
+CREATE OR REPLACE VIEW `v_failure_tasks` AS
+SELECT 
+    id, 
+    'document' AS task_type, 
+    original_filename AS filename,
+    status, 
+    error_message, 
+    updated_at AS last_processed_at,
+    knowledge_base_id, 
+    user_id, 
+    COALESCE(retry_count, 0) AS retry_count, 
+    NULL AS document_id
+FROM documents
+WHERE status = 'failed' AND is_deleted = FALSE
+UNION ALL
+SELECT 
+    di.id, 
+    'image' AS task_type, 
+    di.image_path AS filename,
+    di.status, 
+    di.error_message, 
+    di.last_processed_at,
+    d.knowledge_base_id, 
+    d.user_id, 
+    COALESCE(di.retry_count, 0) AS retry_count, 
+    di.document_id
+FROM document_images di
+INNER JOIN documents d ON di.document_id = d.id
+WHERE di.status = 'failed' AND di.is_deleted = FALSE;
 
 -- ============================================
 -- 3. 文档表
@@ -58,12 +134,15 @@ CREATE TABLE IF NOT EXISTS `documents` (
     `file_path` VARCHAR(500) COMMENT '文件路径',
     `converted_pdf_url` VARCHAR(500) COMMENT '转换后的PDF文件路径（MinIO对象键），用于预览',
     `knowledge_base_id` INT NOT NULL COMMENT '知识库ID',
+    `batch_id` INT NULL COMMENT '所属批量上传批次ID',
     `category_id` INT NULL COMMENT '分类ID',
+    `user_id` INT NULL COMMENT '用户ID（数据隔离）',
     `tags` JSON COMMENT '标签列表JSON',
     `metadata` JSON COMMENT '元数据JSON',
     `status` VARCHAR(50) DEFAULT 'uploaded' COMMENT '处理状态',
     `processing_progress` FLOAT DEFAULT 0.0 COMMENT '处理进度',
     `error_message` TEXT COMMENT '错误信息',
+    `retry_count` INT DEFAULT 0 COMMENT '任务重试次数',
     `last_modified_at` DATETIME COMMENT '最后修改时间',
     `modification_count` INT DEFAULT 0 COMMENT '修改次数',
     `last_modified_by` VARCHAR(100) COMMENT '最后修改者',
@@ -72,10 +151,12 @@ CREATE TABLE IF NOT EXISTS `documents` (
     `is_deleted` BOOLEAN DEFAULT FALSE COMMENT '是否删除',
     PRIMARY KEY (`id`),
     INDEX `idx_doc_knowledge_base_id` (`knowledge_base_id`),
+    INDEX `idx_doc_batch_id` (`batch_id`),
     INDEX `idx_doc_category_id` (`category_id`),
     INDEX `idx_doc_status` (`status`),
     INDEX `idx_doc_file_hash` (`file_hash`),
     CONSTRAINT `fk_doc_kb` FOREIGN KEY (`knowledge_base_id`) REFERENCES `knowledge_bases` (`id`) ON DELETE RESTRICT,
+    CONSTRAINT `fk_doc_batch` FOREIGN KEY (`batch_id`) REFERENCES `document_upload_batches` (`id`) ON DELETE SET NULL,
     CONSTRAINT `fk_doc_category` FOREIGN KEY (`category_id`) REFERENCES `knowledge_base_categories` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档表';
 

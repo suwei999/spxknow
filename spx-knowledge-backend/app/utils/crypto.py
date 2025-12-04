@@ -1,4 +1,4 @@
-"""
+﻿"""
 Utility helpers for encrypting sensitive fields.
 """
 
@@ -43,4 +43,3 @@ class CryptoManager:
 
 
 crypto_manager = CryptoManager()
-

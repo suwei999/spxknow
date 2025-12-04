@@ -1,4 +1,4 @@
-"""
+﻿"""
 清理 Redis 中的 Celery 任务结果
 用于修复异常序列化问题
 """
@@ -102,4 +102,3 @@ if __name__ == "__main__":
         logger.info(f"[OK] 清理完成，共删除 {deleted} 个键")
     else:
         logger.info("[INFO] 没有找到需要清理的键，或清理过程中出现错误")
-

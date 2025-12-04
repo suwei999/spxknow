@@ -1,4 +1,4 @@
-"""
+﻿"""
 Health Check Script
 """
 

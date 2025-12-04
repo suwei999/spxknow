@@ -1,4 +1,4 @@
-"""
+﻿"""
 Export Service
 导出服务
 """
@@ -873,4 +873,3 @@ class ExportService:
             self.db.rollback()
             logger.error(f"删除导出任务失败: task_id={task_id}, user_id={user_id}, 错误: {e}", exc_info=True)
             return False
-

@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { getDocuments } from '@/api/modules/documents'
 import type { Document, PaginationResult } from '@/types'
@@ -70,4 +70,3 @@ export const useDocumentsStore = defineStore('documents', () => {
     clear
   }
 })
-

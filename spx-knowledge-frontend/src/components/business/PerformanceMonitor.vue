@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-card class="performance-monitor">
     <template #header>
       <div class="monitor-header">
@@ -137,4 +137,3 @@ onMounted(() => {
   }
 }
 </style>
-

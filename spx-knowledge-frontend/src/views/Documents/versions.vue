@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="document-versions-page" v-loading="loading">
     <el-card>
       <template #header>
@@ -151,4 +151,3 @@ onMounted(() => {
   }
 }
 </style>
-

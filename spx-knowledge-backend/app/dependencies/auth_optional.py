@@ -1,4 +1,4 @@
-"""
+﻿"""
 可选认证依赖 - 用于不需要强制认证的路由
 """
 
@@ -12,4 +12,3 @@ security = HTTPBearer(auto_error=False)
 def skip_auth():
     """跳过认证的依赖函数"""
     return None
-

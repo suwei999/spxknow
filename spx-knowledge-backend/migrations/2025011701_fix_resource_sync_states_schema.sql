@@ -1,4 +1,4 @@
--- Migration: Fix resource_sync_states table schema
+﻿-- Migration: Fix resource_sync_states table schema
 -- Add missing created_at and is_deleted columns to match BaseModel
 
 USE `spx_knowledge`;
@@ -10,4 +10,3 @@ ALTER TABLE `resource_sync_states`
 
 -- Update existing records to set is_deleted = false
 UPDATE `resource_sync_states` SET `is_deleted` = FALSE WHERE `is_deleted` IS NULL;
-

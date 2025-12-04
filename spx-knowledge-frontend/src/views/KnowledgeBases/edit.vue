@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-card>
     <template #header>
       <span>编辑知识库</span>
@@ -146,8 +146,145 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
+:deep(.el-card) {
+  background: rgba(6, 12, 24, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+  
+  .el-card__header {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.95);
+    font-size: 18px;
+    font-weight: 600;
+  }
+  
+  .el-card__body {
+    color: rgba(255, 255, 255, 0.85);
+  }
+}
+
 .el-form {
   max-width: 800px;
+  
+  /* 表单标签样式 */
+  :deep(.el-form-item__label) {
+    color: rgba(255, 255, 255, 0.95) !important;
+    font-size: 15px;
+    font-weight: 600;
+    
+    &::before {
+      color: #f56c6c !important;
+    }
+  }
+  
+  /* 输入框样式 */
+  :deep(.el-input__inner),
+  :deep(.el-textarea__inner) {
+    background: rgba(255, 255, 255, 0.08) !important;
+    border-color: rgba(255, 255, 255, 0.2) !important;
+    color: rgba(255, 255, 255, 0.95) !important;
+    font-size: 15px;
+    
+    &::placeholder {
+      color: rgba(255, 255, 255, 0.5) !important;
+    }
+    
+    &:focus {
+      border-color: #409eff !important;
+      background: rgba(255, 255, 255, 0.12) !important;
+    }
+    
+    &:disabled {
+      background: rgba(255, 255, 255, 0.05) !important;
+      color: rgba(255, 255, 255, 0.6) !important;
+    }
+  }
+  
+  /* 下拉选择框样式 */
+  :deep(.el-select) {
+    .el-input__inner {
+      background: rgba(255, 255, 255, 0.08) !important;
+      border-color: rgba(255, 255, 255, 0.2) !important;
+      color: rgba(255, 255, 255, 0.95) !important;
+    }
+    
+    .el-input__suffix {
+      .el-select__caret {
+        color: rgba(255, 255, 255, 0.6) !important;
+      }
+    }
+  }
+  
+  /* 下拉选项样式 */
+  :deep(.el-select-dropdown) {
+    background: rgba(6, 12, 24, 0.98) !important;
+    border: 1px solid rgba(64, 158, 255, 0.3) !important;
+    
+    .el-select-dropdown__item {
+      color: rgba(255, 255, 255, 0.9) !important;
+      background: transparent !important;
+      
+      &:hover {
+        background: rgba(64, 158, 255, 0.15) !important;
+        color: rgba(255, 255, 255, 1) !important;
+      }
+      
+      &.selected {
+        color: #409eff !important;
+        background: rgba(64, 158, 255, 0.1) !important;
+      }
+    }
+  }
+  
+  /* 开关样式 */
+  :deep(.el-switch) {
+    .el-switch__label {
+      color: rgba(255, 255, 255, 0.9) !important;
+      font-size: 14px;
+      font-weight: 500;
+      
+      &.is-active {
+        color: #409eff !important;
+      }
+    }
+    
+    .el-switch__core {
+      background-color: rgba(255, 255, 255, 0.2) !important;
+      border-color: rgba(255, 255, 255, 0.3) !important;
+    }
+    
+    &.is-checked .el-switch__core {
+      background-color: #409eff !important;
+      border-color: #409eff !important;
+    }
+  }
+  
+  /* 按钮样式 */
+  :deep(.el-button) {
+    font-size: 15px;
+    font-weight: 500;
+    
+    &:not(.el-button--primary):not(.el-button--danger) {
+      color: rgba(255, 255, 255, 0.9) !important;
+      border-color: rgba(255, 255, 255, 0.3) !important;
+      background: rgba(255, 255, 255, 0.08) !important;
+      
+      &:hover {
+        color: #409eff !important;
+        border-color: #409eff !important;
+        background: rgba(64, 158, 255, 0.1) !important;
+      }
+    }
+    
+    &.el-button--primary {
+      background: #409eff !important;
+      border-color: #409eff !important;
+      
+      &:hover {
+        background: #66b1ff !important;
+        border-color: #66b1ff !important;
+      }
+    }
+  }
 }
 </style>
-

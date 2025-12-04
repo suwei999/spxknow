@@ -1,4 +1,4 @@
--- 为历史数据设置安全扫描字段的默认值
+﻿-- 为历史数据设置安全扫描字段的默认值
 -- 历史数据由于在添加安全扫描功能之前上传，无法进行扫描
 -- 因此设置为 'pending' 状态和 'none' 方法
 
@@ -19,4 +19,3 @@ WHERE
     OR `security_scan_status` = 'pending'
     AND (`security_scan_method` IS NULL OR `security_scan_method` = 'none')
     AND `security_scan_result` IS NULL;
-

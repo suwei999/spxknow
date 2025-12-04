@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="qa-page">
     <el-row :gutter="20">
       <el-col :span="6">
@@ -221,7 +221,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="configDialogVisible = false">取消</el-button>
+        <el-button class="dialog-cancel-btn" @click="configDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="savingConfig" @click="handleSaveConfig">
           保存
         </el-button>
@@ -262,7 +262,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createSessionDialogVisible = false">取消</el-button>
+        <el-button class="dialog-cancel-btn" @click="createSessionDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleConfirmCreateSession">
           创建
         </el-button>
@@ -1199,5 +1199,17 @@ onMounted(() => {
     margin-bottom: 18px;
   }
 }
-</style>
 
+:deep(.dialog-cancel-btn) {
+  color: #cbd5f5;
+  border-color: #475569;
+  background-color: rgba(71, 85, 105, 0.2);
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: #e2e8f0;
+    border-color: #64748b;
+    background-color: rgba(71, 85, 105, 0.4);
+  }
+}
+</style>

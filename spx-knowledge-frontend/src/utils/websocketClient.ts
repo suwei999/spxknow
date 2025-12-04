@@ -1,4 +1,4 @@
-import { ElMessage } from 'element-plus'
+﻿import { ElMessage } from 'element-plus'
 
 export interface WebSocketMessage {
   type: string
@@ -296,4 +296,3 @@ export class WebSocketClient {
     return this.ws?.readyState === WebSocket.OPEN
   }
 }
-

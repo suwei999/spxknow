@@ -1,8 +1,10 @@
-# Models package
+﻿# Models package
 # Ensure all model modules are imported so that SQLAlchemy can resolve string-based relationships
 from app.models.knowledge_base import KnowledgeBase  # noqa: F401
+from app.models.knowledge_base_member import KnowledgeBaseMember  # noqa: F401
 from app.models.knowledge_base_category import KnowledgeBaseCategory  # noqa: F401
 from app.models.document import Document  # noqa: F401
+from app.models.batch import DocumentUploadBatch  # noqa: F401
 from app.models.chunk import DocumentChunk  # noqa: F401
 from app.models.chunk_version import ChunkVersion  # noqa: F401
 from app.models.version import DocumentVersion  # noqa: F401

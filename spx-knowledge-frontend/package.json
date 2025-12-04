@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "spx-knowledge-frontend",
   "version": "1.0.0",
   "description": "SPX Knowledge Base Frontend",
@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
+    "build:prod": "vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore",
     "test": "vitest",
@@ -25,6 +26,7 @@
     "pinia": "^2.1.7",
     "vue": "^3.4.21",
     "vue-echarts": "^6.7.1",
+    "vue-json-pretty": "^2.6.0",
     "vue-router": "^4.4.0"
   },
   "devDependencies": {

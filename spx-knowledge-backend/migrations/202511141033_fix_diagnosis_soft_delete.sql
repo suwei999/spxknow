@@ -1,4 +1,4 @@
--- Migration: ensure diagnosis iteration & memory tables align with BaseModel
+﻿-- Migration: ensure diagnosis iteration & memory tables align with BaseModel
 USE `spx_knowledge`;
 
 -- diagnosis_iterations 需要软删除标记
@@ -55,4 +55,3 @@ SET @preparedStatement = (SELECT IF(
 PREPARE alterIfNotExists FROM @preparedStatement;
 EXECUTE alterIfNotExists;
 DEALLOCATE PREPARE alterIfNotExists;
-

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Request ID Middleware
 """
 

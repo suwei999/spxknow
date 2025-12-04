@@ -1,4 +1,4 @@
-"""
+﻿"""
 从 MinIO 的 chunks.jsonl.gz 回灌 OpenSearch 索引
 用法（PowerShell）：
   .\venv\Scripts\python.exe scripts\reindex_from_minio.py --document-id 123
@@ -81,5 +81,3 @@ if __name__ == "__main__":
     ap.add_argument("--category-id", type=int, default=None)
     args = ap.parse_args()
     main(args.document_id, args.kb_id, args.category_id)
-
-

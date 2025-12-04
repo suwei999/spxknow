@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 import type { Document, PaginationParams, PaginationResult } from '@/types'
 
 // 文档列表
@@ -161,6 +161,30 @@ export const batchUploadDocuments = (data: FormData) => {
     headers: {
       'Content-Type': 'multipart/form-data'
     }
+  })
+}
+
+// 获取批次状态
+export const getBatchStatus = (batchId: number) => {
+  return request({
+    url: `/documents/batch/${batchId}/status`,
+    method: 'get'
+  })
+}
+
+// 获取结构化预览
+export const getStructuredPreview = (documentId: number) => {
+  return request({
+    url: `/documents/${documentId}/structured-preview`,
+    method: 'get'
+  })
+}
+
+// 重新生成标签和摘要
+export const regenerateSummary = (documentId: number) => {
+  return request({
+    url: `/documents/${documentId}/regenerate-summary`,
+    method: 'post'
   })
 }
 
@@ -389,4 +413,3 @@ export const updateDocument = (id: number, data: any) => {
 export const updateDocumentContent = (documentId: number, chunkId: number, data: any) => {
   return updateChunk(documentId, chunkId, data)
 }
-

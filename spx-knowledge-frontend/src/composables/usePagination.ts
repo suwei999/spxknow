@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+﻿import { ref, computed } from 'vue'
 
 export const usePagination = (initialPage = 1, initialSize = 20) => {
   const page = ref(initialPage)
@@ -55,4 +55,3 @@ export const usePagination = (initialPage = 1, initialSize = 20) => {
     reset
   }
 }
-

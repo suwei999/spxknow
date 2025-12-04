@@ -1,4 +1,4 @@
-"""
+﻿"""
 Prometheus metrics querying service with template support.
 """
 
@@ -345,4 +345,3 @@ class PrometheusMetricsService:
         }
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
         return f"obs:metrics:{digest}"
-

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-dialog v-model="visible" :title="`预览: ${fileName}`" width="900px" top="5vh">
     <div class="file-preview">
       <!-- 图片预览 -->
@@ -172,4 +172,3 @@ const createdTime = computed(() => {
   }
 }
 </style>
-

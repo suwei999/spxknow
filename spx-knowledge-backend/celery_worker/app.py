@@ -1,4 +1,4 @@
-"""
+﻿"""
 FastAPI entry for the Celery Worker Service.
 
 - Health endpoints to verify environment and Redis connectivity
@@ -50,9 +50,9 @@ async def lifespan(app: FastAPI):
             else:
                 # 根据 OBSERVABILITY_ENABLE_SCHEDULE 决定默认队列
                 if settings.OBSERVABILITY_ENABLE_SCHEDULE:
-                    queues = "document,vector,index,image,version,cleanup,notification,observability,celery"
+                    queues = "document,vector,index,image,version,cleanup,notification,observability,security_scan,celery"
                 else:
-                    queues = "document,vector,index,image,version,cleanup,notification,celery"
+                    queues = "document,vector,index,image,version,cleanup,notification,security_scan,celery"
                     logger.info("OBSERVABILITY_ENABLE_SCHEDULE=False，默认排除 observability 队列")
             
             # 并发数配置：优先使用 settings，然后环境变量，最后自动计算
@@ -183,5 +183,3 @@ if __name__ == "__main__":
     import uvicorn
     # 作为独立健康检查服务运行，并自动在后台启动 Celery Worker（子进程）
     uvicorn.run("celery_worker.app:app", host="0.0.0.0", port=8010, reload=False)
-
-

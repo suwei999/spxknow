@@ -1,4 +1,4 @@
-"""
+﻿"""
 Document TOC Service
 文档目录服务
 """
@@ -498,5 +498,3 @@ class DocumentTOCService:
             logger.error(f"PPTX目录提取失败: {e}", exc_info=True)
             self.db.rollback()
             return []
-    
-

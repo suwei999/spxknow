@@ -1,4 +1,4 @@
-"""
+﻿"""
 Knowledge Base Tag Service
 根据文档处理流程设计实现知识库标签管理服务
 """
@@ -193,4 +193,3 @@ class KnowledgeBaseTagService:
         except Exception as e:
             logger.error(f"推荐标签错误: {e}", exc_info=True)
             return []
-

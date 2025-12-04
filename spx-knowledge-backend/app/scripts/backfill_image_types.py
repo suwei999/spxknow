@@ -1,4 +1,4 @@
-"""
+﻿"""
 Backfill image_type for existing DocumentImage records.
 """
 
@@ -19,4 +19,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="knowledge-base-detail-page">
     <el-card>
       <template #header>
@@ -12,18 +12,54 @@
       </template>
 
       <div v-if="detail" class="detail-content">
-        <el-descriptions :column="2" border>
-          <el-descriptions-item label="名称">{{ detail.name }}</el-descriptions-item>
-          <el-descriptions-item label="分类">{{ detail.category_name }}</el-descriptions-item>
-          <el-descriptions-item label="描述" :span="2">{{ detail.description }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="detail.is_active ? 'success' : 'info'">
-              {{ detail.is_active ? '启用' : '禁用' }}
-            </el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="创建时间">{{ formatDateTime(detail.created_at) }}</el-descriptions-item>
-          <el-descriptions-item label="更新时间">{{ formatDateTime(detail.updated_at) }}</el-descriptions-item>
-        </el-descriptions>
+        <div class="tech-info-panel">
+          <div class="info-item">
+            <div class="info-label">
+              <el-icon class="label-icon"><DocumentIcon /></el-icon>
+              <span>名称</span>
+            </div>
+            <div class="info-value">{{ detail.name }}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">
+              <el-icon class="label-icon"><Folder /></el-icon>
+              <span>分类</span>
+            </div>
+            <div class="info-value">{{ detail.category_name || '—' }}</div>
+          </div>
+          <div class="info-item full-width">
+            <div class="info-label">
+              <el-icon class="label-icon"><DocumentIcon /></el-icon>
+              <span>描述</span>
+            </div>
+            <div class="info-value">{{ detail.description || '—' }}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">
+              <el-icon class="label-icon"><CircleCheck /></el-icon>
+              <span>状态</span>
+            </div>
+            <div class="info-value">
+              <el-tag :type="detail.is_active ? 'success' : 'info'" class="status-tag">
+                {{ detail.is_active ? '启用' : '禁用' }}
+              </el-tag>
+            </div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">
+              <el-icon class="label-icon"><Clock /></el-icon>
+              <span>创建时间</span>
+            </div>
+            <div class="info-value">{{ formatDateTime(detail.created_at) }}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">
+              <el-icon class="label-icon"><Clock /></el-icon>
+              <span>更新时间</span>
+            </div>
+            <div class="info-value">{{ formatDateTime(detail.updated_at) }}</div>
+          </div>
+        </div>
 
         <el-divider>文档列表</el-divider>
 
@@ -58,6 +94,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
+import { Document as DocumentIcon, Folder, CircleCheck, Clock } from '@element-plus/icons-vue'
 import { getKnowledgeBaseDetail, deleteKnowledgeBase } from '@/api/modules/knowledge-bases'
 import { getDocuments } from '@/api/modules/documents'
 import { formatDateTime } from '@/utils/format'
@@ -156,10 +193,26 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .knowledge-base-detail-page {
+  :deep(.el-card) {
+    background: rgba(6, 12, 24, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.9);
+    
+    .el-card__header {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.95);
+    }
+    
+    .el-card__body {
+      color: rgba(255, 255, 255, 0.85);
+    }
+  }
+  
   .card-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    color: rgba(255, 255, 255, 0.95);
   }
 
   .detail-content {
@@ -167,6 +220,267 @@ onMounted(() => {
       margin-bottom: 20px;
     }
   }
+  
+  /* 优化表格 hover 效果，适配深色主题 */
+  :deep(.el-table) {
+    --el-table-row-hover-bg-color: rgba(64, 158, 255, 0.12) !important;
+    background-color: transparent;
+    color: rgba(255, 255, 255, 0.85);
+    
+    .el-table__header-wrapper {
+      background-color: rgba(6, 12, 24, 0.6);
+      
+      th {
+        background-color: rgba(6, 12, 24, 0.6) !important;
+        color: rgba(255, 255, 255, 0.9) !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+    }
+    
+    .el-table__body-wrapper {
+      background-color: transparent;
+      
+      tr {
+        background-color: transparent;
+        color: rgba(255, 255, 255, 0.85);
+        
+        &:hover {
+          background-color: rgba(64, 158, 255, 0.12) !important;
+          
+          td {
+            background-color: rgba(64, 158, 255, 0.12) !important;
+            color: rgba(255, 255, 255, 0.95) !important;
+          }
+        }
+        
+        td {
+          background-color: transparent;
+          color: rgba(255, 255, 255, 0.85);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+      }
+      
+      tr.el-table__row--striped {
+        background-color: rgba(255, 255, 255, 0.03);
+        
+        &:hover {
+          background-color: rgba(64, 158, 255, 0.12) !important;
+          
+          td {
+            background-color: rgba(64, 158, 255, 0.12) !important;
+          }
+        }
+      }
+    }
+  }
+  
+  /* 科技感信息面板 */
+  .tech-info-panel {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+    padding: 24px;
+    background: linear-gradient(135deg, rgba(6, 12, 24, 0.95) 0%, rgba(15, 23, 42, 0.9) 100%);
+    border: 1px solid rgba(64, 158, 255, 0.3);
+    border-radius: 12px;
+    box-shadow: 
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      0 0 0 1px rgba(64, 158, 255, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    position: relative;
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+    
+    /* 科技感光效 */
+    &::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, 
+        transparent 0%, 
+        rgba(64, 158, 255, 0.5) 50%, 
+        transparent 100%);
+      animation: shimmer 3s infinite;
+    }
+    
+    &::after {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle, rgba(64, 158, 255, 0.05) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    
+    .info-item {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(64, 158, 255, 0.15);
+      border-radius: 8px;
+      transition: all 0.3s ease;
+      position: relative;
+      z-index: 1;
+      
+      &:hover {
+        background: rgba(64, 158, 255, 0.08);
+        border-color: rgba(64, 158, 255, 0.3);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(64, 158, 255, 0.2);
+      }
+      
+      &.full-width {
+        grid-column: 1 / -1;
+      }
+      
+      .info-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.7);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+        
+        .label-icon {
+          font-size: 16px;
+          color: #409eff;
+          filter: drop-shadow(0 0 3px rgba(64, 158, 255, 0.4));
+        }
+      }
+      
+      .info-value {
+        font-size: 15px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.95);
+        line-height: 1.6;
+        word-break: break-word;
+        
+        .status-tag {
+          font-weight: 500;
+          padding: 4px 12px;
+          border-radius: 4px;
+        }
+      }
+    }
+  }
+  
+  @keyframes shimmer {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
+    }
+  }
+  
+  /* 优化分页组件样式 */
+  :deep(.el-pagination) {
+    color: rgba(255, 255, 255, 0.85);
+    margin-top: 16px;
+    
+    .el-pagination__total,
+    .el-pagination__jump {
+      color: rgba(255, 255, 255, 0.85);
+    }
+    
+    .btn-prev,
+    .btn-next {
+      color: rgba(255, 255, 255, 0.85);
+      
+      &:hover {
+        color: #409eff;
+      }
+      
+      &.disabled {
+        color: rgba(255, 255, 255, 0.3);
+      }
+    }
+    
+    .el-pager li {
+      color: rgba(255, 255, 255, 0.85);
+      background-color: transparent;
+      
+      &:hover {
+        color: #409eff;
+      }
+      
+      &.is-active {
+        color: #409eff;
+        background-color: rgba(64, 158, 255, 0.2);
+      }
+    }
+    
+    .el-pagination__editor {
+      .el-input {
+        .el-input__inner {
+          background-color: rgba(255, 255, 255, 0.08) !important;
+          border-color: rgba(255, 255, 255, 0.2) !important;
+          color: rgba(255, 255, 255, 0.95) !important;
+          font-size: 14px;
+          width: 50px;
+          height: 32px;
+          text-align: center;
+          
+          &::placeholder {
+            color: rgba(255, 255, 255, 0.5) !important;
+          }
+          
+          &:focus {
+            border-color: #409eff !important;
+            background-color: rgba(255, 255, 255, 0.12) !important;
+          }
+        }
+        
+        .el-input__wrapper {
+          background-color: rgba(255, 255, 255, 0.08) !important;
+          border-color: rgba(255, 255, 255, 0.2) !important;
+          box-shadow: none !important;
+          
+          &.is-focus {
+            border-color: #409eff !important;
+            box-shadow: 0 0 0 1px #409eff inset !important;
+          }
+        }
+      }
+    }
+  }
+  
+  /* 优化按钮样式 */
+  :deep(.el-button) {
+    &:not(.el-button--primary):not(.el-button--danger) {
+      color: rgba(255, 255, 255, 0.85);
+      border-color: rgba(255, 255, 255, 0.3);
+      background-color: rgba(255, 255, 255, 0.05);
+      
+      &:hover {
+        color: #409eff;
+        border-color: #409eff;
+        background-color: rgba(64, 158, 255, 0.1);
+      }
+    }
+  }
+  
+  /* 优化分割线样式 */
+  :deep(.el-divider) {
+    border-color: rgba(255, 255, 255, 0.1);
+    
+    .el-divider__text {
+      background-color: rgba(6, 12, 24, 0.9);
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 16px;
+      font-weight: 600;
+    }
+  }
 }
 </style>
-

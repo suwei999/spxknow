@@ -1,4 +1,4 @@
-"""
+﻿"""
 Document Schemas
 """
 
@@ -37,6 +37,11 @@ class DocumentUpdate(BaseUpdateSchema):
     status: Optional[str] = None
     processing_progress: Optional[float] = None
     error_message: Optional[str] = None
+    # 乐观并发控制字段：前端在更新时携带当前 known 的 updated_at，后端用于冲突检测
+    expected_updated_at: Optional[datetime] = Field(
+        default=None,
+        description="期望的文档更新时间（用于乐观并发控制，不匹配则认为有并发修改）",
+    )
 
 class DocumentResponse(BaseResponseSchema):
     """文档响应模式"""

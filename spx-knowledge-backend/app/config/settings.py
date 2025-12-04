@@ -1,4 +1,4 @@
-"""
+﻿"""
 Configuration Management
 """
 
@@ -263,6 +263,17 @@ class Settings(BaseSettings):
     EXTERNAL_SEARCH_CATEGORIES: Optional[str] = None
     EXTERNAL_SEARCH_INTENT_MODEL: Optional[str] = None
     
+    # 自动标签/摘要配置
+    ENABLE_AUTO_TAGGING: bool = True
+    AUTO_TAGGING_MODEL: Optional[str] = None  # 默认使用 OLLAMA_MODEL
+    AUTO_TAGGING_MAX_CONTENT_LENGTH: int = 10000
+    
+    # 批量上传配置
+    BATCH_UPLOAD_MAX_FILES: int = 100
+    BATCH_UPLOAD_MAX_SIZE: int = 1024 * 1024 * 1024  # 1GB
+    STRUCTURED_PREVIEW_MAX_SIZE: int = 10 * 1024 * 1024  # 10MB
+    ENABLE_BATCH_SECURITY_SCAN_QUEUE: bool = True  # 批量上传时是否使用专用扫描队列
+    
     # 文本质量阈值
     MAX_NEWLINE_RATIO: float = 0.5
     MAX_SPECIAL_CHAR_RATIO: float = 0.1
@@ -278,8 +289,8 @@ class Settings(BaseSettings):
     
     # 安全
     SECRET_KEY: str = "your-secret-key-here"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120  # 2小时，减少频繁刷新
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30  # 30天，延长会话有效期
     
     # 登录安全
     MAX_LOGIN_ATTEMPTS: int = 5

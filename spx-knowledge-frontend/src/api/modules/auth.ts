@@ -1,4 +1,5 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
+import { API_BASE_URL } from '@/config/api'
 
 // 用户信息类型
 export interface UserInfo {
@@ -104,6 +105,5 @@ export const getCurrentUser = () => {
 
 // 获取Token刷新URL（用于WebSocket）
 export const getRefreshURL = () => {
-  return `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'}/auth/refresh`
+  return `${API_BASE_URL}/auth/refresh`
 }
-

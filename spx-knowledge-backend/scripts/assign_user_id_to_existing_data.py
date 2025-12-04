@@ -1,4 +1,4 @@
-"""
+﻿"""
 为现有数据分配 user_id
 将 user_id 为 NULL 的记录分配给第一个用户（通常是管理员）
 """
@@ -131,4 +131,3 @@ if __name__ == "__main__":
         assign_user_id_to_existing_data()
     else:
         print("已取消操作")
-

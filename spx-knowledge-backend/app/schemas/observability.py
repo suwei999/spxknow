@@ -1,4 +1,4 @@
-"""
+﻿"""
 Schemas for Kubernetes observability integration.
 """
 
@@ -293,4 +293,3 @@ class DiagnosisFeedbackRequest(BaseModel):
             if not values.feedback_notes or not values.feedback_notes.strip():
                 raise ValueError("continue_investigation/custom 反馈必须填写备注")
         return values
-

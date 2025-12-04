@@ -1,4 +1,4 @@
-"""
+﻿"""
 Document Image Model
 """
 

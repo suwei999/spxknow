@@ -1,4 +1,4 @@
-"""
+﻿"""
 Service for cluster configuration management and connectivity checks.
 """
 
@@ -1020,4 +1020,3 @@ class ResourceSnapshotService(BaseService[ResourceSnapshot]):
         if existing.resource_version != payload.get("resource_version"):
             diff["resource_version"] = {"before": existing.resource_version, "after": payload.get("resource_version")}
         return diff
-

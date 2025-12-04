@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="register-container">
     <div class="register-box">
       <div class="register-header">
@@ -247,4 +247,3 @@ const handleRegister = async () => {
   }
 }
 </style>
-

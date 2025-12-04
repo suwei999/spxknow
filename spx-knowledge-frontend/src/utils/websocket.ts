@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WebSocket工具
  */
 
@@ -217,4 +217,3 @@ export const subscribeToModificationStatus = (
     ElMessage.error(`修改失败: ${data.error}`)
   })
 }
-

@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { searchByImage, searchByText, getImageList, searchImageViaQA } from '@/api/modules/images'
 import { useQAStore } from './qa'
@@ -164,4 +164,3 @@ export const useImagesStore = defineStore('images', () => {
     resetSearch
   }
 })
-

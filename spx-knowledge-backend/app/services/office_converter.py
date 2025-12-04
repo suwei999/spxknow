@@ -1,4 +1,4 @@
-import subprocess
+﻿import subprocess
 import tempfile
 import os
 import shutil
@@ -224,4 +224,3 @@ def compress_pdf(input_pdf: str, output_pdf: str, quality: str = "screen") -> bo
     except Exception as e:
         logger.warning(f"[Ghostscript] 压缩异常: {e}")
         return False
-

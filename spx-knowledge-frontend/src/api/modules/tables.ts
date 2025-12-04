@@ -1,4 +1,4 @@
-import request from '../utils/request'
+﻿import request from '../utils/request'
 
 // 获取整表 JSON（用于懒加载表格内容）
 export const getTableByUid = (tableUid: string) => {
@@ -28,5 +28,3 @@ export const getChunkContext = (
     params
   })
 }
-
-

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-card class="knowledge-base-card" shadow="hover" @click="handleClick">
     <template #header>
       <div class="card-header">
@@ -109,4 +109,3 @@ const getStatusText = (status: string) => {
   }
 }
 </style>
-

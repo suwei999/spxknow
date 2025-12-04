@@ -1,4 +1,4 @@
-"""
+﻿"""
 Document Recommendation API Routes
 根据文档处理流程设计实现智能标签推荐API
 """

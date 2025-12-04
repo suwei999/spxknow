@@ -1,4 +1,4 @@
-"""
+﻿"""
 Image Vectorization API Routes
 根据文档处理流程设计实现图片向量化API接口
 """

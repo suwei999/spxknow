@@ -1,4 +1,4 @@
-"""
+﻿"""
 Routes for Kubernetes observability integration.
 """
 
@@ -589,5 +589,3 @@ async def alert_webhook(
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Alert diagnosis failed: %s", exc)
     return {"code": 0, "message": "ok", "data": {"processed": processed, "count": len(processed)}}
-
-

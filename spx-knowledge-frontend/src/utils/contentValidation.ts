@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 内容验证工具
  */
 
@@ -210,4 +210,3 @@ export const validateIntegrity = (content: string) => {
     issues
   }
 }
-

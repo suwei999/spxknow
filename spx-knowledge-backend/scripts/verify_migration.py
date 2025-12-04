@@ -1,4 +1,4 @@
-"""
+﻿"""
 详细验证迁移结果
 """
 
@@ -214,4 +214,3 @@ def verify_migration():
 
 if __name__ == "__main__":
     verify_migration()
-

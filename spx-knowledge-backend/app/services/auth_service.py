@@ -1,4 +1,4 @@
-"""
+﻿"""
 Auth Service
 认证服务
 """
@@ -238,4 +238,3 @@ class AuthService:
         ).first()
         
         return user
-

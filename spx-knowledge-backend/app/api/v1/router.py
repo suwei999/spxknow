@@ -1,4 +1,4 @@
-"""
+﻿"""
 API Router Configuration
 """
 
@@ -26,6 +26,7 @@ from app.api.v1.routes import (
     observability,
     statistics,
     exports,
+    tasks,
 )
 from app.dependencies.auth import get_current_user
 
@@ -145,4 +146,10 @@ api_router.include_router(
     exports.router,
     prefix="/exports",
     tags=["导出功能"]
+)
+
+api_router.include_router(
+    tasks.router,
+    prefix="/tasks",
+    tags=["任务管理"]
 )

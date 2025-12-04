@@ -1,4 +1,4 @@
-"""
+﻿"""
 Image Search Schemas
 根据文档处理流程设计实现图片搜索相关的Pydantic模型
 """

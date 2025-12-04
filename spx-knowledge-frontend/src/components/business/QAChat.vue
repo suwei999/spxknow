@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="qa-chat">
     <!-- 查询方式选择 -->
     <div class="query-config">
@@ -472,4 +472,3 @@ defineExpose({
   }
 }
 </style>
-

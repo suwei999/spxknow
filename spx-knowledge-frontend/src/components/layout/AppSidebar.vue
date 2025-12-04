@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <aside class="app-sidebar" :class="{ collapsed }">
     <el-menu
       :default-active="activeMenu"
@@ -116,4 +116,3 @@ const activeMenu = computed(() => route.path)
   }
 }
 </style>
-

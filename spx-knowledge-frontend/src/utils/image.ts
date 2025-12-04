@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 图片工具函数
  */
 
@@ -93,4 +93,3 @@ export const uploadImage = (file: File): Promise<string> => {
     reader.readAsDataURL(file)
   })
 }
-

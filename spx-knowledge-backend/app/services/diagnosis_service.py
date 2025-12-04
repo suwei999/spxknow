@@ -1,4 +1,4 @@
-"""
+﻿"""
 Diagnosis orchestration service.
 """
 
@@ -1793,5 +1793,3 @@ class DiagnosisService:
             "status": status,
             "message": message,
         }
-
-

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Logging Configuration
 """
 
@@ -210,4 +210,3 @@ setup_logging()
 
 # 创建全局日志记录器
 logger = logging.getLogger('spx-knowledge-backend')
-

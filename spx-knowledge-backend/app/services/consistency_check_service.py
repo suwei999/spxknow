@@ -1,4 +1,4 @@
-"""
+﻿"""
 Consistency Check Service
 根据文档修改功能设计实现数据一致性检查服务
 """
@@ -353,4 +353,3 @@ class ConsistencyCheckService:
             return True
         except Exception as e:
             return True
-

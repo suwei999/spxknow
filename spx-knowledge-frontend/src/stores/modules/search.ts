@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { search } from '@/api/modules/search'
 
@@ -102,4 +102,3 @@ export const useSearchStore = defineStore('search', () => {
     setSearchType
   }
 })
-

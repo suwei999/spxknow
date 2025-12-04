@@ -1,4 +1,4 @@
-"""
+﻿"""
 清理 Redis 中与 Celery Beat 和任务锁相关的数据。
 
 如果 Beat 任务被重复触发，可能是 Redis 中存储了旧的锁或任务数据。
@@ -130,4 +130,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"执行清理脚本时出错: {e}", exc_info=True)
         sys.exit(1)
-

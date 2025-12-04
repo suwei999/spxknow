@@ -1,4 +1,4 @@
-"""
+﻿"""
 Diagnosis report and knowledge base service.
 负责生成诊断报告和知识沉淀
 """
@@ -329,4 +329,3 @@ class DiagnosisReportService:
         except Exception as exc:  # pylint: disable=broad-except
             logger.error(f"知识沉淀失败: {exc}", exc_info=True)
             # 不抛出异常，避免影响诊断流程
-

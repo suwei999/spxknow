@@ -1,4 +1,4 @@
--- 添加安全扫描相关字段到 documents 表
+﻿-- 添加安全扫描相关字段到 documents 表
 -- 用于记录 ClamAV 扫描结果和状态
 
 ALTER TABLE `documents` 
@@ -9,4 +9,3 @@ ADD COLUMN `security_scan_timestamp` DATETIME COMMENT '安全扫描时间' AFTER
 
 -- 添加索引以便查询
 CREATE INDEX `idx_doc_security_scan_status` ON `documents` (`security_scan_status`);
-

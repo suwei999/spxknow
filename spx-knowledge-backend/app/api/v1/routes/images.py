@@ -483,8 +483,8 @@ async def retry_image_ocr(
 
 @router.get("/file")
 async def get_image_file(
-    object: str = Query(..., description="MinIO对象路径"),
     request: Request,
+    object: str = Query(..., description="MinIO对象路径"),
     db: Session = Depends(get_db)
 ):
     """图片代理：通过 MinIO 读取并返回图片二进制，避免前端直连 MinIO。需要 doc:view 权限"""

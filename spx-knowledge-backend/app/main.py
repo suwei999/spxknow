@@ -136,7 +136,7 @@ from fastapi.responses import Response
 from app.dependencies.auth import get_current_user
 
 @app.get("/images/file")
-async def compat_image_proxy(object: str = Query(..., description="MinIO对象路径"), request: Request):
+async def compat_image_proxy(request: Request, object: str = Query(..., description="MinIO对象路径")):
     """兼容性图片代理（无 /api 前缀的场景，需要认证）"""
     # 自己处理认证（因为不在 /api/ 路径下，中间件不会处理）
     from app.core.security import verify_token

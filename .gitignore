@@ -1,6 +1,8 @@
 RAGDOCS/
 docs/
-models/
+# 忽略模型文件目录（大文件），但不忽略 app/models/（业务代码）
+spx-knowledge-backend/models/
+docs/models/
 
 # Python
 __pycache__/

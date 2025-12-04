@@ -361,6 +361,57 @@ async def get_image_vectors(
             detail=f"获取图片向量信息失败: {str(e)}"
         )
 
+@router.get("/file")
+async def get_image_file(
+    request: Request,
+    object: str = Query(..., description="MinIO对象路径"),
+    db: Session = Depends(get_db)
+):
+    """图片代理：通过 MinIO 读取并返回图片二进制，避免前端直连 MinIO。需要 doc:view 权限"""
+    try:
+        # 获取当前用户ID
+        user_id = get_current_user_id(request)
+        
+        # 权限检查：需要通过图片路径找到对应的文档，然后检查权限
+        # 图片路径格式通常是：documents/{document_id}/images/...
+        # 尝试从路径中提取 document_id
+        try:
+            parts = object.split('/')
+            if 'documents' in parts:
+                doc_idx = parts.index('documents')
+                if doc_idx + 1 < len(parts):
+                    doc_id_str = parts[doc_idx + 1]
+                    try:
+                        doc_id = int(doc_id_str)
+                        doc = db.query(Document).filter(Document.id == doc_id).first()
+                        if doc:
+                            perm = KnowledgeBasePermissionService(db)
+                            perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
+                    except (ValueError, TypeError):
+                        pass  # 如果无法解析文档ID，跳过权限检查（向后兼容）
+        except Exception:
+            pass  # 如果权限检查失败，继续执行（向后兼容）
+        
+        minio = MinioStorageService()
+        data = minio.download_file(object)
+
+        lower = object.lower()
+        if lower.endswith((".jpg", ".jpeg")):
+            content_type = "image/jpeg"
+        elif lower.endswith(".png"):
+            content_type = "image/png"
+        elif lower.endswith(".gif"):
+            content_type = "image/gif"
+        elif lower.endswith(".webp"):
+            content_type = "image/webp"
+        else:
+            content_type = "application/octet-stream"
+
+        return Response(content=data, media_type=content_type)
+    except Exception as e:
+        logger.error(f"图片代理错误: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="图片不存在或无法访问")
+
 @router.get("/{image_id}", response_model=ImageResponse)
 async def get_image(
     request: Request,
@@ -480,54 +531,3 @@ async def retry_image_ocr(
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="重试失败，请稍后再试")
     return {"status": "success", "message": "图片OCR已重新执行"}
-
-@router.get("/file")
-async def get_image_file(
-    request: Request,
-    object: str = Query(..., description="MinIO对象路径"),
-    db: Session = Depends(get_db)
-):
-    """图片代理：通过 MinIO 读取并返回图片二进制，避免前端直连 MinIO。需要 doc:view 权限"""
-    try:
-        # 获取当前用户ID
-        user_id = get_current_user_id(request)
-        
-        # 权限检查：需要通过图片路径找到对应的文档，然后检查权限
-        # 图片路径格式通常是：documents/{document_id}/images/...
-        # 尝试从路径中提取 document_id
-        try:
-            parts = object.split('/')
-            if 'documents' in parts:
-                doc_idx = parts.index('documents')
-                if doc_idx + 1 < len(parts):
-                    doc_id_str = parts[doc_idx + 1]
-                    try:
-                        doc_id = int(doc_id_str)
-                        doc = db.query(Document).filter(Document.id == doc_id).first()
-                        if doc:
-                            perm = KnowledgeBasePermissionService(db)
-                            perm.ensure_permission(doc.knowledge_base_id, user_id, "doc:view")
-                    except (ValueError, TypeError):
-                        pass  # 如果无法解析文档ID，跳过权限检查（向后兼容）
-        except Exception:
-            pass  # 如果权限检查失败，继续执行（向后兼容）
-        
-        minio = MinioStorageService()
-        data = minio.download_file(object)
-
-        lower = object.lower()
-        if lower.endswith((".jpg", ".jpeg")):
-            content_type = "image/jpeg"
-        elif lower.endswith(".png"):
-            content_type = "image/png"
-        elif lower.endswith(".gif"):
-            content_type = "image/gif"
-        elif lower.endswith(".webp"):
-            content_type = "image/webp"
-        else:
-            content_type = "application/octet-stream"
-
-        return Response(content=data, media_type=content_type)
-    except Exception as e:
-        logger.error(f"图片代理错误: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="图片不存在或无法访问")

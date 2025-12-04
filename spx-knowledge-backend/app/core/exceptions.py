@@ -71,12 +71,19 @@ def setup_exception_handlers(app: FastAPI):
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         """请求验证异常处理器"""
+        # 记录详细的验证错误信息
+        error_details = exc.errors()
+        logger.error(
+            f"请求参数验证失败: {request.method} {request.url.path} "
+            f"查询参数: {dict(request.query_params)} "
+            f"错误详情: {error_details}"
+        )
         return JSONResponse(
             status_code=422,
             content={
                 "error": True,
                 "message": "请求参数验证失败",
-                "details": exc.errors()
+                "details": error_details
             }
         )
     

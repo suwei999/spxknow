@@ -26,47 +26,41 @@ echo ""
 # 尝试安装方式
 INSTALL_SUCCESS=false
 
-# 方式1: 尝试稳定版 CUDA 12.4
-echo "3. 尝试方式1: 安装稳定版 (CUDA 12.4)..."
-if pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 2>&1 | tee /tmp/pytorch_install.log; then
+# 方式1: 先卸载旧版本（如果存在）
+echo "3. 卸载旧版本 PyTorch（如果存在）..."
+pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
+echo ""
+
+# 方式2: 尝试 nightly 版本 CUDA 12.4（RTX 5090 需要支持 sm_120）
+echo "4. 尝试方式1: 安装 nightly 版本 (CUDA 12.4，支持 sm_120)..."
+if pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu124 2>&1 | tee /tmp/pytorch_install.log; then
     INSTALL_SUCCESS=true
-    echo "✅ 稳定版安装成功"
+    echo "✅ nightly 版本安装成功"
 else
-    echo "❌ 稳定版安装失败，尝试其他方式..."
+    echo "❌ nightly 版本安装失败，尝试其他方式..."
 fi
 
-# 方式2: 如果稳定版失败，尝试 CUDA 12.1
+# 方式3: 如果 nightly 失败，尝试稳定版 CUDA 12.4
 if [ "$INSTALL_SUCCESS" = false ]; then
     echo ""
-    echo "4. 尝试方式2: 安装稳定版 (CUDA 12.1)..."
-    if pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 2>&1 | tee /tmp/pytorch_install.log; then
-        INSTALL_SUCCESS=true
-        echo "✅ CUDA 12.1 版本安装成功"
-    else
-        echo "❌ CUDA 12.1 安装失败，尝试其他方式..."
-    fi
-fi
-
-# 方式3: 如果都失败，尝试只安装 torch（rerank 可能不需要 torchvision）
-if [ "$INSTALL_SUCCESS" = false ]; then
-    echo ""
-    echo "5. 尝试方式3: 只安装 torch（避免依赖冲突）..."
+    echo "5. 尝试方式2: 安装稳定版 (CUDA 12.4)..."
     if pip install torch --index-url https://download.pytorch.org/whl/cu124 2>&1 | tee /tmp/pytorch_install.log; then
         INSTALL_SUCCESS=true
-        echo "✅ torch 安装成功（未安装 torchvision/torchaudio）"
-        echo "⚠️  注意: rerank 服务通常只需要 torch，不需要 torchvision"
+        echo "✅ 稳定版安装成功"
     else
-        echo "❌ torch 单独安装也失败"
+        echo "❌ 稳定版安装失败，尝试其他方式..."
     fi
 fi
 
-# 方式4: 尝试 CUDA 12.1 的 torch
+# 方式4: 如果都失败，尝试 CUDA 12.1 nightly
 if [ "$INSTALL_SUCCESS" = false ]; then
     echo ""
-    echo "6. 尝试方式4: 只安装 torch (CUDA 12.1)..."
-    if pip install torch --index-url https://download.pytorch.org/whl/cu121 2>&1 | tee /tmp/pytorch_install.log; then
+    echo "6. 尝试方式3: 安装 nightly 版本 (CUDA 12.1)..."
+    if pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121 2>&1 | tee /tmp/pytorch_install.log; then
         INSTALL_SUCCESS=true
-        echo "✅ torch (CUDA 12.1) 安装成功"
+        echo "✅ CUDA 12.1 nightly 版本安装成功"
+    else
+        echo "❌ CUDA 12.1 nightly 安装失败"
     fi
 fi
 

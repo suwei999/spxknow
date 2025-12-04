@@ -1,5 +1,6 @@
 RAGDOCS/
 docs/
+models/
 
 # Python
 __pycache__/

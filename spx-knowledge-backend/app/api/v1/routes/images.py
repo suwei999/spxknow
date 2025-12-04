@@ -3,7 +3,7 @@ Image API Routes
 根据文档处理流程设计实现图片搜索API接口
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response, Request
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response, Request, Query
 from typing import List, Optional
 from app.schemas.image import ImageResponse, ImageSearchRequest, ImageSearchResponse
 from app.services.image_service import ImageService
@@ -483,7 +483,7 @@ async def retry_image_ocr(
 
 @router.get("/file")
 async def get_image_file(
-    object: str,
+    object: str = Query(..., description="MinIO对象路径"),
     request: Request,
     db: Session = Depends(get_db)
 ):

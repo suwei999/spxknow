@@ -1955,6 +1955,11 @@ def process_document_task(self, document_id: int):
             chunk_start = time.time()
             
             try:
+                # ✅ 跳过图片分块：图片分块不进行文本向量化，图片向量化已在图片处理阶段完成
+                if chunk.chunk_type == 'image':
+                    logger.debug(f"[任务ID: {task_id}] 分块 {chunk.id} 是图片类型，跳过文本向量化（图片向量化已在图片处理阶段完成）")
+                    continue
+                
                 # 获取对应文本，StopIteration 时置空
                 try:
                     chunk_text = next(text_iter)
@@ -2400,6 +2405,11 @@ def reprocess_document_task(self, document_id: int):
         error_count = 0
         
         for i, chunk in enumerate(db_chunks):
+            # ✅ 跳过图片分块：图片分块不进行文本向量化，图片向量化已在图片处理阶段完成
+            if getattr(chunk, 'chunk_type', '').lower() == 'image':
+                logger.debug(f"分块 {chunk.id} 是图片类型，跳过重新向量化（图片向量化已在图片处理阶段完成）")
+                continue
+            
             # 获取文本：优先从 MinIO 流式读取，否则从 DB
             if store_text:
                 chunk_text = chunk.content or ""

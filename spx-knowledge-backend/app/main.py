@@ -129,14 +129,14 @@ app.include_router(tables_routes.router, prefix="/api")
 app.include_router(ws_routes.router, prefix="/ws")
 
 # 兼容性图片代理（无 /api 前缀的场景，需要认证）
-from fastapi import HTTPException, Depends, Request, status
+from fastapi import HTTPException, Depends, Request, status, Query
 from app.services.minio_storage_service import MinioStorageService
 from app.core.logging import logger
 from fastapi.responses import Response
 from app.dependencies.auth import get_current_user
 
 @app.get("/images/file")
-async def compat_image_proxy(object: str, request: Request):
+async def compat_image_proxy(object: str = Query(..., description="MinIO对象路径"), request: Request):
     """兼容性图片代理（无 /api 前缀的场景，需要认证）"""
     # 自己处理认证（因为不在 /api/ 路径下，中间件不会处理）
     from app.core.security import verify_token

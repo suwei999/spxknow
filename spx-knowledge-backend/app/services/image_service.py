@@ -78,10 +78,30 @@ class ImageService(BaseService[DocumentImage]):
             return ""  # 返回空字符串而不是抛出异常，允许继续处理
         
         service = self._get_ollama_service()
-        return service.extract_text_from_image(
+        ocr_text = service.extract_text_from_image(
             image_bytes=image_bytes,
             image_mime=image_mime,
         )
+        # 保护措施：MEDIUMTEXT 最大 16MB，但为了安全起见，限制为 10MB
+        # 统一在这里处理，避免重复代码
+        return self._truncate_ocr_text(ocr_text) if ocr_text else ""
+    
+    def _truncate_ocr_text(self, ocr_text: str) -> str:
+        """截断 OCR 文本到安全长度（10MB）"""
+        MAX_OCR_TEXT_LENGTH = 10 * 1024 * 1024  # 10MB in bytes
+        if not ocr_text:
+            return ""
+        ocr_bytes = ocr_text.encode('utf-8')
+        if len(ocr_bytes) <= MAX_OCR_TEXT_LENGTH:
+            return ocr_text
+        # 截断到最大长度，确保在 UTF-8 字符边界处截断
+        truncated_bytes = ocr_bytes[:MAX_OCR_TEXT_LENGTH]
+        # 从末尾向前查找，找到最后一个完整的 UTF-8 字符边界
+        while truncated_bytes and (truncated_bytes[-1] & 0xC0) == 0x80:
+            truncated_bytes = truncated_bytes[:-1]
+        truncated_text = truncated_bytes.decode('utf-8', errors='ignore')
+        logger.warning(f"OCR 文本过长（{len(ocr_bytes)} 字节），已截断到 {len(truncated_bytes)} 字节")
+        return truncated_text
     
     def _mark_status(
         self,
@@ -290,12 +310,12 @@ class ImageService(BaseService[DocumentImage]):
         error_message = None
         try:
             mime = f"image/{inferred_type}" if inferred_type and inferred_type != "unknown" else "image/png"
-            ocr_text = self._perform_qwen_ocr(data, mime)
+            ocr_text = self._perform_qwen_ocr(data, mime)  # 内部已处理截断
             status = "completed"
         except Exception as exc:
             error_message = str(exc)
             status = "failed"
-            logger.warning(f"Qwen OCR 失败（image sha={sha[:8]}...）：{exc}")
+            logger.error(f"Qwen OCR 失败（image sha={sha[:8]}..., 大小={len(data)} bytes）: {exc}", exc_info=True)
         image = DocumentImage(
             document_id=document_id,
             image_path=object_name,
@@ -383,7 +403,7 @@ class ImageService(BaseService[DocumentImage]):
             ocr_text = ""
             for attempt in range(retries + 1):
                 try:
-                    ocr_text = self._perform_qwen_ocr(image_bytes, mime)
+                    ocr_text = self._perform_qwen_ocr(image_bytes, mime)  # 内部已处理截断
                     image.retry_count = attempt
                     self.db.commit()
                     break
@@ -396,7 +416,7 @@ class ImageService(BaseService[DocumentImage]):
                         time.sleep(settings.OCR_RETRY_DELAY_SECONDS)
             else:
                 # OCR 失败，但图片有效，记录错误但继续处理向量
-                logger.warning(f"图片 {image_id} OCR 失败: {last_error}, 继续处理向量")
+                logger.error(f"图片 {image_id} OCR 失败（已重试 {retries + 1} 次）: {last_error}, 继续处理向量")
                 image.ocr_text = ""
             
             image.ocr_text = ocr_text

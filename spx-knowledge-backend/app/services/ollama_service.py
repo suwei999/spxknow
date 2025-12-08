@@ -112,7 +112,8 @@ class OllamaService:
         timeout: Optional[int] = None,
     ) -> str:
         """调用 Ollama 多模态模型识别图片文字"""
-        prompt_text = prompt or "请识别这张图片中的所有文字，保持段落与换行。"
+        # 优化 prompt：更简洁明确，减少模型思考时间
+        prompt_text = prompt or "识别图片中的所有文字，直接输出文本内容，保持原有格式。"
         target_model = model or settings.OLLAMA_OCR_MODEL or settings.OLLAMA_MODEL
         base_url = settings.OLLAMA_OCR_BASE_URL or self.base_url
         request_timeout = timeout or settings.OLLAMA_OCR_TIMEOUT
@@ -127,7 +128,8 @@ class OllamaService:
         last_error: Optional[str] = None
         for attempt in range(max_retries + 1):
             try:
-                logger.debug(f"OCR 尝试 {attempt + 1}/{max_retries + 1}: 模型={target_model}, 图片大小={len(image_bytes)} bytes")
+                start_time = time.time()
+                logger.debug(f"OCR 尝试 {attempt + 1}/{max_retries + 1}: 模型={target_model}, 图片大小={len(image_bytes)} bytes, URL={base_url}/api/generate")
                 response = requests.post(
                     f"{base_url}/api/generate",
                     json=payload,
@@ -135,8 +137,12 @@ class OllamaService:
                 )
                 response.raise_for_status()
                 result = response.json()
+                elapsed_time = time.time() - start_time
                 content = result.get("response", "")
-                logger.debug(f"OCR 成功: 返回内容长度={len(content)}")
+                if content:
+                    logger.info(f"OCR 成功: 模型={target_model}, 耗时={elapsed_time:.2f}秒, 返回内容长度={len(content)} 字符")
+                else:
+                    logger.warning(f"OCR 返回空内容: 模型={target_model}, 耗时={elapsed_time:.2f}秒, 响应={result}")
                 return (content or "").strip()
             except requests.exceptions.HTTPError as e:
                 # HTTP 错误，记录详细错误信息
@@ -146,20 +152,30 @@ class OllamaService:
                     error_detail += f": {error_body}"
                 except:
                     error_detail += f": {e.response.text[:200]}"
-                last_error = f"{error_detail} (URL: {base_url}/api/generate)"
-                logger.warning(f"OCR HTTP 错误 (尝试 {attempt + 1}/{max_retries + 1}): {last_error}")
+                last_error = f"{error_detail} (URL: {base_url}/api/generate, 模型: {target_model})"
+                logger.error(f"OCR HTTP 错误 (尝试 {attempt + 1}/{max_retries + 1}): {last_error}")
                 if attempt < max_retries:
-                    time.sleep(1)  # 短暂延迟后重试
+                    time.sleep(1)  # 重试延迟
+            except requests.exceptions.Timeout as e:
+                last_error = f"请求超时: {str(e)} (超时时间: {request_timeout}秒, 模型: {target_model})"
+                logger.error(f"OCR 超时错误 (尝试 {attempt + 1}/{max_retries + 1}): {last_error}")
+                if attempt < max_retries:
+                    time.sleep(2)
+            except requests.exceptions.ConnectionError as e:
+                last_error = f"连接错误: {str(e)} (URL: {base_url}, 模型: {target_model})"
+                logger.error(f"OCR 连接错误 (尝试 {attempt + 1}/{max_retries + 1}): {last_error}")
+                if attempt < max_retries:
+                    time.sleep(2)
             except requests.exceptions.RequestException as e:
-                last_error = f"请求错误: {str(e)}"
-                logger.warning(f"OCR 请求错误 (尝试 {attempt + 1}/{max_retries + 1}): {last_error}")
+                last_error = f"请求错误: {str(e)} (模型: {target_model})"
+                logger.error(f"OCR 请求错误 (尝试 {attempt + 1}/{max_retries + 1}): {last_error}")
                 if attempt < max_retries:
-                    time.sleep(1)
+                    time.sleep(2)
             except Exception as exc:
-                last_error = f"未知错误: {str(exc)}"
-                logger.warning(f"OCR 未知错误 (尝试 {attempt + 1}/{max_retries + 1}): {last_error}")
+                last_error = f"未知错误: {str(exc)} (模型: {target_model})"
+                logger.error(f"OCR 未知错误 (尝试 {attempt + 1}/{max_retries + 1}): {last_error}", exc_info=True)
                 if attempt < max_retries:
-                    time.sleep(1)
+                    time.sleep(2)
         
         # 所有重试都失败
         error_msg = f"OCR识别失败: {last_error}"

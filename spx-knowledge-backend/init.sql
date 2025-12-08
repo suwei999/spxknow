@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS `document_images` (
     `width` INT COMMENT '宽度',
     `height` INT COMMENT '高度',
     `sha256_hash` VARCHAR(64) COMMENT '图片哈希',
-    `ocr_text` TEXT COMMENT 'OCR识别文本',
+    `ocr_text` MEDIUMTEXT COMMENT 'OCR识别文本',
     `metadata` TEXT COMMENT '元数据JSON',
     `vector_model` VARCHAR(50) COMMENT '向量模型',
     `vector_dim` INT COMMENT '向量维度',
